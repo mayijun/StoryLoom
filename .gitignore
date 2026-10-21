@@ -43,6 +43,9 @@ coverage.xml
 *.db
 *.sqlite3
 
+# RAG 本地向量库（ChromaDB 持久化目录）
+memory_store/
+
 # IDE / editors
 .idea/
 .vscode/

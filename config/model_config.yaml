@@ -1,0 +1,123 @@
+# ============================================================
+# 模型配置文件：定义所有可用模型及每个 Agent 角色的模型分配
+# 用户可通过修改此文件（或未来通过 Web 界面）动态调整
+# ============================================================
+
+providers:
+  deepseek:
+    api_base: "https://api.deepseek.com"
+    env_key: "DEEPSEEK_API_KEY"       # 从环境变量读取密钥
+    models:
+      flash:
+        model_id: "deepseek/deepseek-flash"
+        cost_per_1k_tokens: 0.001
+        strengths: ["fast", "cheap", "chinese"]
+      v4pro:
+        model_id: "deepseek/deepseek-v4-pro"
+        cost_per_1k_tokens: 0.01
+        strengths: ["reasoning", "chinese", "long_context"]
+
+  openai:
+    api_base: "https://api.openai.com/v1"
+    env_key: "OPENAI_API_KEY"
+    models:
+      gpt4o:
+        model_id: "openai/gpt-4o"
+        cost_per_1k_tokens: 0.005
+        strengths: ["tool_calling", "structured_output", "multilingual"]
+      gpt4o_mini:
+        model_id: "openai/gpt-4o-mini"
+        cost_per_1k_tokens: 0.0003
+        strengths: ["fast", "cheap", "tool_calling"]
+
+  anthropic:
+    api_base: "https://api.anthropic.com"
+    env_key: "ANTHROPIC_API_KEY"
+    models:
+      claude_sonnet:
+        model_id: "anthropic/claude-sonnet-4-20250514"
+        cost_per_1k_tokens: 0.003
+        strengths: ["creative_writing", "nuance", "safety"]
+      claude_haiku:
+        model_id: "anthropic/claude-haiku-4-20250414"
+        cost_per_1k_tokens: 0.0008
+        strengths: ["fast", "cheap", "structured_output"]
+
+  ollama:
+    api_base: "http://localhost:11434"
+    env_key: null                     # 本地模型无需密钥
+    models:
+      qwen3_8b:
+        model_id: "ollama/qwen3:8b"
+        cost_per_1k_tokens: 0.0
+        strengths: ["free", "private", "chinese"]
+
+# ============================================================
+# Agent 角色 → 模型分配映射
+# 每个角色可配置 primary（首选）和 fallback（后备）模型
+# ============================================================
+
+agent_model_mapping:
+  director:
+    primary: "deepseek.v4pro"
+    fallback: "deepseek.flash"
+    temperature: 0.7
+    reason: "导演需要强逻辑规划能力"
+
+  protagonist:
+    primary: "anthropic.claude_sonnet"
+    fallback: "deepseek.v4pro"
+    temperature: 0.9
+    reason: "主角需要创意表现力和细腻人格"
+
+  ensemble:
+    primary: "deepseek.flash"
+    fallback: "ollama.qwen3_8b"
+    temperature: 0.7
+    reason: "群演成本敏感，用便宜模型"
+
+  consistency:
+    primary: "openai.gpt4o"
+    fallback: "anthropic.claude_haiku"
+    temperature: 0.2
+    reason: "一致性检测需要最稳定的结构化输出"
+
+  prose:
+    primary: "anthropic.claude_sonnet"
+    fallback: "deepseek.v4pro"
+    temperature: 0.85
+    reason: "润色需要极强文学表现力"
+
+  outline:
+    primary: "deepseek.v4pro"
+    fallback: "openai.gpt4o"
+    temperature: 0.6
+    reason: "大纲规划需要长上下文和结构化思维"
+
+  surprise:
+    primary: "anthropic.claude_sonnet"
+    fallback: "deepseek.v4pro"
+    temperature: 0.95
+    reason: "意外 Agent 需要高创造力和跳跃性思维，Claude 最擅长此类任务"
+
+  foreshadowing:
+    primary: "deepseek.v4pro"
+    fallback: "openai.gpt4o"
+    temperature: 0.5
+    reason: "伏笔 Agent 需要严密逻辑追踪和结构化推理，温度低保证稳定性"
+
+# ============================================================
+# 全局策略
+# ============================================================
+
+strategy:
+  # cost_optimized: 优先便宜模型
+  # quality_first: 优先强模型
+  # balanced: 默认按上面 mapping 来
+  mode: "balanced"
+
+  # 当某提供商 API 不可用时自动降级到 fallback
+  auto_fallback: true
+
+  # 单次场景生成的成本上限（美元），超过则强制降级
+  max_cost_per_scene: 0.50
