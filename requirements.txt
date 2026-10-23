@@ -1,3 +1,9 @@
+# ============================================================
+# StoryLoom 统一依赖清单（已合并 backend/requirements.txt）
+# 安装：pip install -r requirements.txt
+# ============================================================
+
+# ---- 核心：CrewAI 多 Agent 引擎 + 多模型 SDK ----
 crewai>=0.121.0
 crewai-tools>=0.38.0
 chromadb>=1.0.0
@@ -6,4 +12,10 @@ python-dotenv>=1.0.0
 pyyaml>=6.0
 openai>=1.30.0
 anthropic>=0.50.0
+
+# ---- Web 后端：FastAPI + Uvicorn（原 backend/requirements.txt）----
+fastapi>=0.115.0
+uvicorn>=0.30.0
+
+# ---- 开发测试 ----
 pytest>=8.0.0

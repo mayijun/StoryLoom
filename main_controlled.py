@@ -2,7 +2,10 @@
 Copyright (C) 2026 Ma Yijun (ma.yijun@outlook.com)
 This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 
-织章 StoryLoom —— 系统控制论增强版入口
+⚠️  实验性模块（Experimental / Optional）
+------------------------------------------
+本文件是「系统控制论增强版」的 CLI 测试入口，仍处于实验阶段，
+**非必要时不加载**。默认入口请使用 `python app.py` 启动 Web 模式。
 
 在基础版流程上叠加 7 大控制论原理：
 反馈闭环、统计滤波、端到端评估、灵敏度分析、

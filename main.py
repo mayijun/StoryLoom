@@ -2,9 +2,11 @@
 Copyright (C) 2026 Ma Yijun (ma.yijun@outlook.com)
 This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 
-织章 StoryLoom —— 基础版入口（多模型演示）
+织章 StoryLoom —— CLI 演示入口（多模型）
 
-演示：不同 Agent 自动使用不同 AI 模型
+⚠️  说明：默认入口为 `python app.py`（Web 模式）。
+本文件用于命令行直接演示小说生成流程，便于快速调试后端逻辑。
+
 流程：意外提案 → 伏笔建议 → 导演裁决 → 角色互动
      → 一致性检测 → 润色 → 记忆与伏笔更新
 """
