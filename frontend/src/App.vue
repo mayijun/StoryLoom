@@ -122,7 +122,7 @@ async function handleGenerate() {
   <div class="app-layout">
     <!-- ==================== 顶栏 ==================== -->
     <header class="app-header">
-      <h1>🎭 多Agent小说工作室</h1>
+      <h1>🧵 织章 StoryLoom</h1>
 
       <!-- 项目选择 -->
       <select
