@@ -11,6 +11,7 @@ This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
   生产环境建议按资产类型分 collection
 """
 
+import os
 from typing import Dict, List
 
 from pydantic import BaseModel, Field
@@ -57,6 +58,11 @@ class SimpleRAGMemory:
         self._fallback_docs: Dict[str, str] = {}
         self.collection = None
 
+        # 允许用环境变量强制跳过 ChromaDB（首次运行需下载 ONNX 模型很慢）
+        if os.environ.get("DISABLE_CHROMADB") == "1":
+            print("  ℹ️ DISABLE_CHROMADB=1，RAG 记忆退化为内存关键词检索")
+            return
+
         try:
             import chromadb
         except ImportError:
@@ -65,10 +71,17 @@ class SimpleRAGMemory:
             )
             return
 
-        self.client = chromadb.PersistentClient(
-            path=f"{store_root}/{project_id}"
-        )
-        self.collection = self.client.get_or_create_collection("lore")
+        try:
+            self.client = chromadb.PersistentClient(
+                path=f"{store_root}/{project_id}"
+            )
+            self.collection = self.client.get_or_create_collection("lore")
+        except Exception as exc:
+            print(
+                f"  ℹ️ ChromaDB 初始化失败: {type(exc).__name__}: {exc}"
+            )
+            self.collection = None
+            self.client = None
 
     def add(self, doc_id: str, text: str, metadata: Dict):
         if self.collection is None:

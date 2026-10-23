@@ -5,13 +5,16 @@ from pathlib import Path
 
 # 让 backend/api 可以裸写 from api.xxx
 _BACKEND = Path(__file__).parent.parent
+_ROOT = _BACKEND.parent
 sys.path.insert(0, str(_BACKEND))
+sys.path.insert(0, str(_ROOT))
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-load_dotenv()
+# 显式加载根目录 .env（不管 uvicorn 从哪启动）
+load_dotenv(_ROOT / ".env")
 
 from api.routers import projects, agents, assets, generation
 
