@@ -60,3 +60,14 @@ desktop.ini
 # Logs
 *.log
 logs/
+
+# 前端（Vue3 / Vite）
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/*.local
+
+# Web 后端（FastAPI）
+backend/__pycache__/
+backend/api/__pycache__/
+backend/api/routers/__pycache__/

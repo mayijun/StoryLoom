@@ -1,0 +1,9 @@
+fastapi>=0.115.0
+uvicorn>=0.30.0
+pydantic>=2.0
+python-dotenv>=1.0.0
+
+# 引用已有的CrewAI后端
+crewai>=0.121.0
+chromadb>=1.0.0
+pyyaml>=6.0
