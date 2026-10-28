@@ -1,21 +1,11 @@
 # ============================================================
-# StoryLoom 统一依赖清单（已合并 backend/requirements.txt）
-# 安装：pip install -r requirements.txt
+# StoryLoom 依赖清单
+# 项目本体及全部依赖的单一来源是 pyproject.toml，
+# 通过 editable 安装一并装齐；请先在项目根目录执行：
+#   pip install -e .
 # ============================================================
 
-# ---- 核心：CrewAI 多 Agent 引擎 + 多模型 SDK ----
-crewai>=0.121.0
-crewai-tools>=0.38.0
-chromadb>=1.0.0
-pydantic>=2.0
-python-dotenv>=1.0.0
-pyyaml>=6.0
-openai>=1.30.0
-anthropic>=0.50.0
+-e .
 
-# ---- Web 后端：FastAPI + Uvicorn（原 backend/requirements.txt）----
-fastapi>=0.115.0
-uvicorn>=0.30.0
-
-# ---- 开发测试 ----
-pytest>=8.0.0
+# ---- 测试 ----
+pytest

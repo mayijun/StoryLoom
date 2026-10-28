@@ -19,8 +19,8 @@ This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 from enum import Enum
 from typing import Callable, Dict, List, Optional
 
-from control.feedback_loop import SceneQualityReport
-from control.robustness import AgentOutput, SensitivityAnalyzer, SensitivityTier
+from storyloom.control.feedback_loop import SceneQualityReport
+from storyloom.control.robustness import AgentOutput, SensitivityAnalyzer, SensitivityTier
 
 
 class ControlDecision(str, Enum):

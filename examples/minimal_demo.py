@@ -16,20 +16,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dotenv import load_dotenv
 
-from agents.factory import AgentFactory
-from assets.models import CharacterAsset, LocationAsset, NovelProject
-from flow.scene_flow import SceneGenerationFlow
-from llm.providers import ModelRegistry
-from llm.router import AgentModelRouter
-from memory.manager import CoreMemory, SimpleRAGMemory
+from storyloom.crews.scene_crew.crew import SceneCrew
+from storyloom.models import CharacterAsset, LocationAsset, NovelProject
+from storyloom.flows.scene_flow import SceneGenerationFlow
+from storyloom.llm.providers import ModelRegistry
+from storyloom.llm.router import AgentModelRouter
+from storyloom.memory import CoreMemory, SimpleRAGMemory
 
 
 def main():
     load_dotenv()
 
-    registry = ModelRegistry("config/model_config.yaml")
+    registry = ModelRegistry()
     router = AgentModelRouter(registry)
-    factory = AgentFactory(router)
+    crew = SceneCrew(router)
 
     project = NovelProject(
         project_id="demo_minimal",
@@ -74,7 +74,7 @@ def main():
         project=project,
         memory=memory,
         rag=rag,
-        factory=factory,
+        crew=crew,
         scene_brief="林夏向旅店老板打听姐姐的消息，老板欲言又止。",
         present_characters=["林夏", "旅店老板"],
     )

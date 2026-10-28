@@ -5,8 +5,8 @@ from fastapi.responses import StreamingResponse
 import json
 import asyncio
 
-from api.schemas import GenerateSceneRequest, GenerateSceneResponse
-from api.engine import engine
+from storyloom.api.schemas import GenerateSceneRequest, GenerateSceneResponse
+from storyloom.api.engine import engine
 
 router = APIRouter(prefix="/api/generate", tags=["generation"])
 

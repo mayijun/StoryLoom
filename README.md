@@ -191,7 +191,7 @@ VectorMemory (RAG记忆 → 按需检索)
 │  └───────────────────────────────────────────────────────────────┘  │
 │                                                                     │
 │  ┌───────────────────────────────────────────────────────────────┐  │
-│  │  Layer 3: Agent层 (AgentFactory + ModelRouter)                │  │
+│  │  Layer 3: Agent层 (SceneCrew + ModelRouter)                   │  │
 │  │  Director | Protagonist | Ensemble | Surprise | Foreshadow   │  │
 │  │  Consistency | Prose | Outline                                │  │
 │  └───────────────────────────────────────────────────────────────┘  │
@@ -263,40 +263,46 @@ VectorMemory (RAG记忆 → 按需检索)
 ```
 StoryLoom/
 │
-├── config/
-│   └── model_config.yaml          # 模型配置：提供商 + Agent→模型映射
+├── pyproject.toml                 # 包定义：依赖 + 入口脚本（pip install -e .）
 │
-├── llm/
+├── src/storyloom/
 │   ├── __init__.py
-│   ├── providers.py               # ModelRegistry + 统一适配层
-│   └── router.py                  # AgentModelRouter + 自动降级
-│
-├── agents/
-│   ├── __init__.py
-│   └── factory.py                 # AgentFactory: 8种Agent的创建工厂
-│
-├── assets/
-│   ├── __init__.py
-│   └── models.py                  # 资产模型: Character/Location/Foreshadowing/Surprise
-│
-├── memory/
-│   ├── __init__.py
-│   └── manager.py                 # CoreMemory (prompt) + SimpleRAGMemory (ChromaDB)
-│
-├── control/                       # 🎛️ 系统控制论模块
-│   ├── __init__.py
-│   ├── feedback_loop.py           # 原理①②③: 反馈闭环 + 统计滤波 + 端到端评估
-│   ├── robustness.py              # 原理④⑤: 灵敏度分析 + 解耦校验
-│   └── hierarchy.py               # 原理⑥⑦: 分层管控 + 人机结合
-│
-├── flow/
-│   ├── __init__.py
-│   ├── scene_flow.py              # 基础版场景生成Flow
-│   └── controlled_scene_flow.py   # 控制论增强版场景生成Flow
-│
-├── media/
-│   ├── __init__.py
-│   └── render_adapter.py          # 多模态渲染接口: Text/TTS/Image/Video
+│   ├── main.py                    # 基础版 CLI 入口 (python -m storyloom.main)
+│   ├── main_controlled.py         # 控制论增强版 CLI 入口（实验性）
+│   ├── models.py                  # 资产模型: Character/Location/Foreshadowing/Surprise
+│   ├── memory.py                  # CoreMemory (prompt) + SimpleRAGMemory (ChromaDB)
+│   │
+│   ├── config/
+│   │   └── model_config.yaml      # 模型配置：提供商 + Agent→模型映射
+│   │
+│   ├── llm/
+│   │   ├── providers.py           # ModelRegistry + 统一适配层
+│   │   └── router.py              # AgentModelRouter + 自动降级
+│   │
+│   ├── crews/                     # 🧩 CrewAI 官方约定 Crew
+│   │   └── scene_crew/
+│   │       ├── crew.py            # @CrewBase SceneCrew: 8种Agent + 标准任务序列
+│   │       └── config/
+│   │           ├── agents.yaml    # Agent 角色定义 (role/goal/backstory)
+│   │           └── tasks.yaml     # 标准任务序列
+│   │
+│   ├── flows/
+│   │   ├── scene_flow.py          # 基础版场景生成Flow
+│   │   └── controlled_scene_flow.py  # 控制论增强版场景生成Flow
+│   │
+│   ├── control/                   # 🎛️ 系统控制论模块
+│   │   ├── feedback_loop.py       # 原理①②③: 反馈闭环 + 统计滤波 + 端到端评估
+│   │   ├── robustness.py          # 原理④⑤: 灵敏度分析 + 解耦校验
+│   │   └── hierarchy.py           # 原理⑥⑦: 分层管控 + 人机结合
+│   │
+│   ├── media/
+│   │   └── render_adapter.py      # 多模态渲染接口: Text/TTS/Image/Video
+│   │
+│   └── api/
+│       ├── main.py                # FastAPI 入口
+│       ├── engine.py              # CrewAI 引擎桥接
+│       ├── schemas.py             # 前后端数据契约
+│       └── routers/               # projects / agents / assets / generation
 │
 ├── docs/
 │   ├── ARCHITECTURE.md            # 详细架构文档
@@ -314,8 +320,7 @@ StoryLoom/
 │   ├── test_control.py
 │   └── test_flow.py
 │
-├── main.py                        # 基础版入口
-├── main_controlled.py             # 控制论增强版入口
+├── app.py                         # Web 模式启动器（默认入口）
 ├── requirements.txt
 ├── .env.example
 ├── LICENSE
@@ -343,8 +348,12 @@ python -m venv .venv
 source .venv/bin/activate  # Linux/Mac
 # .venv\Scripts\activate   # Windows
 
-# 安装依赖
+# 安装依赖（requirements.txt 会以 editable 模式安装项目本体及全部依赖，
+# 依赖的单一来源是 pyproject.toml）
 pip install -r requirements.txt
+# 也可以分开执行：
+# pip install -e .
+# pip install pytest
 ```
 
 > Windows PowerShell 若提示"禁止运行脚本"，先执行：
@@ -376,9 +385,21 @@ python examples/minimal_demo.py
 # 多模型Demo（配置多个API Key后效果最佳）
 python examples/multi_model_demo.py
 
+# 基础版 CLI 演示
+python -m storyloom.main
+
 # 控制论增强版（完整体验）
-python main_controlled.py
+python -m storyloom.main_controlled
 ```
+
+> `pip install -e .` 之后也可以直接使用入口脚本 `storyloom` /
+> `storyloom-controlled`（见 pyproject.toml 的 [project.scripts]）。
+>
+> 项目采用 CrewAI 官方约定的 src/ 包布局：Crew 用 `@CrewBase` + 同级
+> `config/agents.yaml`、`config/tasks.yaml` 定义；Flow 基于
+> `crewai.flow`（Pydantic 结构化状态 + `@start`/`@listen`/`@router`
+> 装饰器），因此支持 `crewai flow plot` 风格的 Flow 结构可视化，
+> 以及 `crewai` CLI 对项目的标准识别。
 
 ### 预期输出
 
@@ -679,7 +700,7 @@ cd storyloom
 pip install -r requirements.txt
 cp .env.example .env
 # Edit .env with your API keys
-python main_controlled.py
+python -m storyloom.main_controlled
 ```
 
 ### Philosophy

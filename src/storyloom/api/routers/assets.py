@@ -2,9 +2,9 @@
 
 from fastapi import APIRouter, HTTPException
 
-from api.schemas import CharacterCreate, LocationCreate
-from api.engine import engine
-from assets.models import CharacterAsset, LocationAsset, Foreshadowing
+from storyloom.api.schemas import CharacterCreate, LocationCreate
+from storyloom.api.engine import engine
+from storyloom.models import CharacterAsset, LocationAsset, Foreshadowing
 
 router = APIRouter(prefix="/api/projects/{project_id}/assets", tags=["assets"])
 

@@ -1,7 +1,7 @@
 """控制论模块单元测试（无需 API Key）"""
 
-from control.hierarchy import ControlDecision, SystemOrchestrator
-from control.robustness import (
+from storyloom.control.hierarchy import ControlDecision, SystemOrchestrator
+from storyloom.control.robustness import (
     AgentOutput,
     DecouplingValidator,
     SensitivityAnalyzer,

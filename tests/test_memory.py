@@ -1,6 +1,6 @@
 """记忆层单元测试（无需 API Key）"""
 
-from memory.manager import CoreMemory, SimpleRAGMemory
+from storyloom.memory import CoreMemory, SimpleRAGMemory
 
 
 def test_core_memory_prompt_block():

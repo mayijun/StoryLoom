@@ -1,0 +1,123 @@
+# ============================================================
+# Copyright (C) 2026 Ma Yijun (ma.yijun@outlook.com)
+# This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
+#
+# 场景生成 Crew 的标准任务序列（6 步），供 crewai CLI / @crew 使用。
+# - agent / context 由 crew.py 的 @task 方法显式装配
+# - description 中的 {placeholder} 在 kickoff(inputs={...}) 时填充；
+#   JSON 示例的花括号已转义为 {{ }} 以兼容 .format 插值
+# - Flow 内部的动态单步 Task 仍在 storyloom/flows/*.py 代码中创建
+# ============================================================
+
+surprise_proposal:
+  description: |
+    故事: {project_title}
+    {memory_block}
+    本场景要求: {scene_brief}
+
+    当前活跃伏笔（可尝试关联）:
+    {active_foreshadowings}
+
+    请评估本场景是否需要意外元素。
+    如果需要，输出 JSON 提案，字段:
+    - surprise_type: character/information/environment/relationship/temporal
+    - description: 意外事件描述
+    - justification: 为什么合理
+    - impact_on_plot: 对后续剧情影响
+    - linked_foreshadow_id: 可关联的伏笔 ID(可为 null)
+    - severity: minor/moderate/major
+    如果不需要，输出: {{"no_surprise": true, "reason": "原因说明"}}
+  expected_output: "JSON 意外事件提案或不需要意外的声明"
+
+foreshadowing_ops:
+  description: |
+    故事: {project_title}
+    {memory_block}
+    本场景: {scene_brief}
+    在场角色: {present_characters}
+
+    ===== 当前伏笔状态表 =====
+    {foreshadow_table}
+
+    ===== 紧急提醒 =====
+    {urgent_alerts}
+
+    ===== SurpriseAgent 的意外提案 =====
+    {surprise_proposal}
+
+    请输出 JSON 格式的伏笔操作建议列表，每项包含:
+    - action: plant/reinforce/activate/resolve/subvert/alert
+    - foreshadow_id: 操作的伏笔 ID(新建时为 null)
+    - description: 具体操作描述
+    - new_foreshadow: 若 action=plant，填写新伏笔详情
+      (description, target_revelation, linked_characters, max_dormant_scenes)
+    - link_to_surprise: 是否与意外提案联动(bool)
+    输出格式: {{"operations": [...]}}
+  expected_output: "JSON 伏笔操作建议列表"
+
+director_plan:
+  description: |
+    故事: {project_title}
+    {memory_block}
+    用户场景要求: {scene_brief}
+
+    ===== 意外 Agent 提案 =====
+    {surprise_proposal}
+
+    ===== 伏笔 Agent 建议 =====
+    {foreshadowing_ops}
+
+    作为导演，请综合以上所有信息，输出最终的'场景意图包' JSON:
+    - goal: 戏剧目标
+    - conflict: 冲突/伏笔
+    - emotion_arc: 情绪曲线
+    - forbidden: 禁止发生的事
+    - adopted_surprise: 采纳的意外（null 表示不采纳）
+    - adopted_foreshadow_ops: 采纳的伏笔操作列表
+    - rejection_reasons: 否决某提案的理由（如有）
+    你有权否决任何提案，但必须给出理由。
+  expected_output: "JSON 场景意图包"
+
+actor_interaction:
+  description: |
+    导演意图(仅供参考，不要直接复述):
+    {director_intent}
+
+    背景资料:
+    {rag_context}
+
+    {memory_block}
+
+    请以【{character_name}】的身份，给出这一刻的内心想法、台词和行动。
+    简洁、符合人设，只写行动日志式的描述。
+  expected_output: "{character_name}的行动与台词记录"
+
+consistency_check:
+  description: |
+    检查以下角色行动记录:
+    {actor_log}
+
+    角色设定:
+    {character_data}
+
+    活跃伏笔:
+    {foreshadow_data}
+
+    检查项：
+    1. 角色行为是否符合人设
+    2. 时间线是否合理
+    3. 已采纳的意外事件是否'合理但意外'而非'莫名其妙'
+    4. 伏笔操作是否与已有设定冲突
+    输出 JSON: {{"passed": ..., "conflicts": [...], "severity": "..."}}
+  expected_output: "JSON 一致性报告"
+
+prose_polish:
+  description: |
+    请把以下角色行动日志，改写成统一风格('{style}')的正式小说正文。
+    像一个隐形在场的叙述者一样，融合对话、动作、心理与环境描写。
+
+    注意：如果有伏笔暗示，要自然地织入叙事中，不能让读者觉得刻意。如果有意外事件，要用节奏感和氛围烘托其冲击力。
+
+    角色行动日志:
+    {actor_log}
+  expected_output: "一段完整的小说正文"

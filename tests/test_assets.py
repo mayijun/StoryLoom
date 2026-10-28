@@ -1,6 +1,6 @@
 """资产层单元测试（无需 API Key）"""
 
-from assets.models import (
+from storyloom.models import (
     CharacterAsset,
     ForeshadowStatus,
     Foreshadowing,

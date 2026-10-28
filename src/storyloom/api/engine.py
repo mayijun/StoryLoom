@@ -2,24 +2,24 @@
 CrewAI引擎桥接：连接FastAPI和已有的CrewAI多Agent后端
 """
 
-import os
-import sys
 import json
 import asyncio
-from typing import List, AsyncGenerator
+from typing import List
 from pathlib import Path
 
-# 将已有的CrewAI后端加入路径
-BACKEND_ROOT = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(BACKEND_ROOT))
+from dotenv import load_dotenv
 
-from llm.providers import ModelRegistry
-from llm.router import AgentModelRouter
-from agents.factory import AgentFactory
-from assets.models import CharacterAsset, LocationAsset, NovelProject, Foreshadowing
-from memory.manager import CoreMemory, SimpleRAGMemory
-from flow.scene_flow import SceneGenerationFlow
-from api.schemas import (
+# 必须在创建 ModelRegistry/Router 之前加载根目录 .env
+# （router.is_available 依赖环境变量中的 API Key）
+load_dotenv(Path(__file__).resolve().parents[3] / ".env")
+
+from storyloom.llm.providers import ModelRegistry
+from storyloom.llm.router import AgentModelRouter
+from storyloom.crews.scene_crew.crew import SceneCrew
+from storyloom.models import CharacterAsset, LocationAsset, NovelProject, Foreshadowing
+from storyloom.memory import CoreMemory, SimpleRAGMemory
+from storyloom.flows.scene_flow import SceneGenerationFlow
+from storyloom.api.schemas import (
     GenerateSceneRequest, GenerationStepUpdate,
     GenerateSceneResponse, ForeshadowingView,
 )
@@ -32,11 +32,9 @@ class NovelEngine:
     """
 
     def __init__(self):
-        self.registry = ModelRegistry(
-            str(BACKEND_ROOT / "config" / "model_config.yaml")
-        )
+        self.registry = ModelRegistry()
         self.router = AgentModelRouter(self.registry)
-        self.factory = AgentFactory(self.router)
+        self.crew = SceneCrew(self.router)
 
         # 项目存储（生产环境用数据库）
         self.projects: dict[str, NovelProject] = {}
@@ -96,7 +94,7 @@ class NovelEngine:
             project=project,
             memory=memory,
             rag=rag,
-            factory=self.factory,
+            crew=self.crew,
             scene_brief=request.scene_brief,
             present_characters=request.present_character_names,
         )
@@ -131,7 +129,7 @@ class NovelEngine:
                 agent_type=aid.split(":")[0],
                 model_used=mkey,
             )
-            for i, (aid, mkey) in enumerate(self.factory._created_agents)
+            for i, (aid, mkey) in enumerate(self.crew._summary)
         ]
 
         return GenerateSceneResponse(

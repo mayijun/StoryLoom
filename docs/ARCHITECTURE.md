@@ -1,7 +1,7 @@
 # 织章 StoryLoom 架构文档
 
-> 本文档是项目设计结论的落地说明，对应 `config/`、`llm/`、`agents/`、`assets/`、
-> `memory/`、`control/`、`flow/`、`media/` 各层实现。
+> 本文档是项目设计结论的落地说明，对应 `src/storyloom/` 包内的
+> `config/`、`llm/`、`crews/`、`flows/`、`control/`、`media/`、`api/` 各层实现。
 
 ---
 
@@ -18,21 +18,21 @@
 │ Layer 5  控制论管控层                control/                │
 │ 灵敏度分析 | 反馈闭环 | 统计滤波 | 质量闸门 | 人机结合         │
 ├──────────────────────────────────────────────────────────────┤
-│ Layer 4  工作流编排层                flow/                   │
+│ Layer 4  工作流编排层                flows/                  │
 │ SceneGenerationFlow / ControlledSceneFlow（CrewAI Flow）      │
 ├──────────────────────────────────────────────────────────────┤
-│ Layer 3  Agent 层                   agents/factory.py       │
+│ Layer 3  Agent 层                   crews/scene_crew/crew.py │
 │ Director | Protagonist | Ensemble | Surprise | Foreshadowing │
 │ Consistency | Prose | Outline                                │
 ├──────────────────────────────────────────────────────────────┤
-│ Layer 2  记忆层 / 资产层      memory/manager.py  assets/      │
+│ Layer 2  记忆层 / 资产层      memory.py  models.py            │
 │ CoreMemory (prompt) + VectorMemory (RAG) | Character/Location │
 │ Foreshadowing / SurpriseProposal                              │
 ├──────────────────────────────────────────────────────────────┤
 │ Layer 1  模型路由层           llm/providers.py  llm/router.py │
 │ DeepSeek | OpenAI | Anthropic | Ollama + 自动降级             │
 ├──────────────────────────────────────────────────────────────┤
-│ Layer 0  项目层                      assets/models.py        │
+│ Layer 0  项目层                      storyloom/models.py     │
 │ NovelProject：资产库 / 记忆实例 / 场景计数 / 伏笔状态          │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -88,8 +88,8 @@ Memory 更新 + 伏笔状态机推进 + 端到端质量评估
 ```
 
 对应实现：
-- 基础版：[scene_flow.py](../flow/scene_flow.py)
-- 控制论版：[controlled_scene_flow.py](../flow/controlled_scene_flow.py)
+- 基础版：[scene_flow.py](../src/storyloom/flows/scene_flow.py)
+- 控制论版：[controlled_scene_flow.py](../src/storyloom/flows/controlled_scene_flow.py)
 
 ---
 

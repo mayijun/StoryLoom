@@ -2,12 +2,12 @@
 
 import pytest
 
-from assets.models import (
+from storyloom.models import (
     ForeshadowStatus,
     Foreshadowing,
     NovelProject,
 )
-from flow.scene_flow import (
+from storyloom.flows.scene_flow import (
     advance_scene_counters,
     apply_foreshadow_ops,
     parse_json_block,

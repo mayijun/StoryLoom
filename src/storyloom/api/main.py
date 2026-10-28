@@ -1,22 +1,17 @@
 """FastAPI 入口"""
 
-import sys
 from pathlib import Path
-
-# 让 backend/api 可以裸写 from api.xxx
-_BACKEND = Path(__file__).parent.parent
-_ROOT = _BACKEND.parent
-sys.path.insert(0, str(_BACKEND))
-sys.path.insert(0, str(_ROOT))
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 # 显式加载根目录 .env（不管 uvicorn 从哪启动）
+_ROOT = Path(__file__).resolve().parents[3]
 load_dotenv(_ROOT / ".env")
 
-from api.routers import projects, agents, assets, generation
+from storyloom.api.routers import projects, agents, assets, generation
+from storyloom.api.engine import engine
 
 app = FastAPI(
     title="多Agent小说生成系统 API",
@@ -40,7 +35,6 @@ app.include_router(generation.router)
 
 @app.get("/api/health")
 async def health():
-    from api.engine import engine
     return {
         "status": "ok",
         "available_models": engine.get_available_models(),
@@ -49,4 +43,4 @@ async def health():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("api.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("storyloom.api.main:app", host="0.0.0.0", port=8000, reload=True)

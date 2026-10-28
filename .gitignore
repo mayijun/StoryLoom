@@ -27,6 +27,7 @@ uv.lock
 
 # Testing / coverage
 .pytest_cache/
+crewai_settings.json
 .coverage
 .coverage.*
 htmlcov/

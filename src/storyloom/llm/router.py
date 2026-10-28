@@ -15,7 +15,7 @@ from typing import Optional, Tuple
 
 from crewai import LLM
 
-from llm.providers import ModelRegistry, ModelSpec
+from storyloom.llm.providers import ModelRegistry, ModelSpec
 
 
 class AgentModelRouter:

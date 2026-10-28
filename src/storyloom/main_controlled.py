@@ -14,22 +14,22 @@ This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 
 from dotenv import load_dotenv
 
-from agents.factory import AgentFactory
-from assets.models import (
+from storyloom.crews.scene_crew.crew import SceneCrew
+from storyloom.models import (
     CharacterAsset,
     Foreshadowing,
     LocationAsset,
     NovelProject,
 )
-from control.hierarchy import SystemOrchestrator
-from control.robustness import (
+from storyloom.control.hierarchy import SystemOrchestrator
+from storyloom.control.robustness import (
     DecouplingValidator,
     SensitivityAnalyzer,
 )
-from flow.controlled_scene_flow import ControlledSceneFlow
-from llm.providers import ModelRegistry
-from llm.router import AgentModelRouter
-from memory.manager import CoreMemory, SimpleRAGMemory
+from storyloom.flows.controlled_scene_flow import ControlledSceneFlow
+from storyloom.llm.providers import ModelRegistry
+from storyloom.llm.router import AgentModelRouter
+from storyloom.memory import CoreMemory, SimpleRAGMemory
 
 
 def build_project() -> NovelProject:
@@ -82,9 +82,9 @@ def run_demo():
     load_dotenv()
 
     # 1. 初始化
-    registry = ModelRegistry("config/model_config.yaml")
+    registry = ModelRegistry()
     router = AgentModelRouter(registry)
-    factory = AgentFactory(router)
+    crew = SceneCrew(router)
     orchestrator = SystemOrchestrator(auto_mode=True)
 
     # 打印系统分析
@@ -118,7 +118,7 @@ def run_demo():
         project=project,
         memory=memory,
         rag=rag,
-        factory=factory,
+        crew=crew,
         orchestrator=orchestrator,
         scene_brief="林夏在旅店大堂被阿泽搭讪，试探来意",
         present_characters=["林夏", "阿泽", "旅店老板"],
@@ -131,7 +131,7 @@ def run_demo():
     print("=" * 60)
     print(final_text)
 
-    factory.print_creation_summary()
+    crew.print_creation_summary()
 
 
 if __name__ == "__main__":

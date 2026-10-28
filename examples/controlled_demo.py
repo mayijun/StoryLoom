@@ -14,7 +14,7 @@ from pathlib import Path
 # 允许直接运行 `python examples/controlled_demo.py`
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from main_controlled import run_demo
+from storyloom.main_controlled import run_demo
 
 if __name__ == "__main__":
     run_demo()

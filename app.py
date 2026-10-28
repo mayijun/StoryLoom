@@ -20,7 +20,6 @@ import subprocess
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.resolve()
-BACKEND_DIR = PROJECT_ROOT / "backend"
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
 
 BACKEND_HOST = "127.0.0.1"
@@ -49,6 +48,16 @@ def wait_for_port(host: str, port: int, timeout: float = 90.0) -> bool:
 
 
 def main() -> None:
+    # storyloom 以 editable 模式安装（pip install -e .）后才可导入
+    try:
+        import storyloom  # noqa: F401
+    except ImportError:
+        print(
+            "❌ 未找到 storyloom 包，请先在项目根目录执行 `pip install -e .`",
+            flush=True,
+        )
+        sys.exit(1)
+
     os.chdir(PROJECT_ROOT)
 
     # Windows 下创建独立进程组，便于整体终止
@@ -57,15 +66,16 @@ def main() -> None:
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
 
     # ---------- 启动后端 ----------
-    print("🚀 启动 FastAPI 后端 (端口 8000)...", flush=True)
+    # 依赖以 editable 模式安装的 storyloom 包，需先执行 `pip install -e .`
+    print("🚀 启动 FastAPI 后端 (端口 8000)...（首次运行请先执行 `pip install -e .`）", flush=True)
     backend_proc = subprocess.Popen(
         [
             sys.executable, "-m", "uvicorn",
-            "api.main:app",
+            "storyloom.api.main:app",
             "--host", BACKEND_HOST,
             "--port", str(BACKEND_PORT),
         ],
-        cwd=str(BACKEND_DIR),
+        cwd=str(PROJECT_ROOT),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         creationflags=creationflags,

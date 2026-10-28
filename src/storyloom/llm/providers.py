@@ -14,6 +14,7 @@ This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import yaml
@@ -37,7 +38,14 @@ class ModelRegistry:
     模型注册中心：解析配置文件，维护所有可用模型的信息
     """
 
-    def __init__(self, config_path: str = "config/model_config.yaml"):
+    def __init__(self, config_path: Optional[str] = None):
+        if config_path is None:
+            # 默认加载包内资源 src/storyloom/config/model_config.yaml
+            config_path = str(
+                Path(__file__).resolve().parent.parent
+                / "config"
+                / "model_config.yaml"
+            )
         with open(config_path, "r", encoding="utf-8") as f:
             self.config = yaml.safe_load(f)
 

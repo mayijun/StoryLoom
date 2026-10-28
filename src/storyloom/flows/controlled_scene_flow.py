@@ -23,20 +23,20 @@ from crewai import Crew, Process, Task
 from crewai.flow.flow import Flow, listen, router, start
 from pydantic import BaseModel, Field
 
-from agents.factory import AgentFactory
-from assets.models import ForeshadowStatus, NovelProject
-from control.feedback_loop import (
+from storyloom.crews.scene_crew.crew import SceneCrew
+from storyloom.models import ForeshadowStatus, NovelProject
+from storyloom.control.feedback_loop import (
     EndToEndEvaluator,
     FeedbackLoop,
     StatisticalFilter,
 )
-from control.hierarchy import ControlDecision, SystemOrchestrator
-from control.robustness import AgentOutput, SensitivityAnalyzer
-from flow.scene_flow import (
+from storyloom.control.hierarchy import ControlDecision, SystemOrchestrator
+from storyloom.control.robustness import AgentOutput, SensitivityAnalyzer
+from storyloom.flows.scene_flow import (
     advance_scene_counters,
     apply_foreshadow_ops,
 )
-from memory.manager import CoreMemory, SimpleRAGMemory
+from storyloom.memory import CoreMemory, SimpleRAGMemory
 
 
 class ConsistencyReport(BaseModel):
@@ -77,7 +77,7 @@ class ControlledSceneFlow(Flow[ControlledSceneFlowState]):
         project: NovelProject,
         memory: CoreMemory,
         rag: SimpleRAGMemory,
-        factory: AgentFactory,
+        crew: SceneCrew,
         orchestrator: SystemOrchestrator,
         scene_brief: str,
         present_characters: List[str],
@@ -88,7 +88,7 @@ class ControlledSceneFlow(Flow[ControlledSceneFlowState]):
         self.state.memory = memory
         self.state.scene_brief = scene_brief
         self.rag = rag
-        self.factory = factory
+        self.crew = crew
         self.orchestrator = orchestrator
         self.present_characters = present_characters
         self.max_retries = max_retries
@@ -103,7 +103,7 @@ class ControlledSceneFlow(Flow[ControlledSceneFlowState]):
         decision = self.orchestrator.decide_control_strategy("surprise")
         profile = SensitivityAnalyzer.get_profile("surprise")
 
-        surprise_agent = self.factory.create_surprise_agent()
+        surprise_agent = self.crew.surprise()
 
         project = self.state.project
         scenes_since_last = (
@@ -133,7 +133,7 @@ class ControlledSceneFlow(Flow[ControlledSceneFlowState]):
         )
 
         if decision == ControlDecision.MULTI_SAMPLE:
-            evaluator = self.factory.create_consistency_checker()
+            evaluator = self.crew.consistency()
             sf = StatisticalFilter(
                 generator=surprise_agent,
                 evaluator=evaluator,
@@ -166,7 +166,7 @@ class ControlledSceneFlow(Flow[ControlledSceneFlowState]):
             "foreshadowing"
         )
 
-        foreshadowing_agent = self.factory.create_foreshadowing_agent()
+        foreshadowing_agent = self.crew.foreshadowing()
 
         project = self.state.project
         fs_table = (
@@ -193,7 +193,7 @@ class ControlledSceneFlow(Flow[ControlledSceneFlowState]):
         )
 
         if decision == ControlDecision.FEEDBACK_LOOP:
-            critic = self.factory.create_consistency_checker()
+            critic = self.crew.consistency()
             loop = FeedbackLoop(
                 generator=foreshadowing_agent,
                 critic=critic,
@@ -230,7 +230,7 @@ class ControlledSceneFlow(Flow[ControlledSceneFlowState]):
         """
         decision = self.orchestrator.decide_control_strategy("director")
 
-        director = self.factory.create_director()
+        director = self.crew.director()
         task_desc = (
             f"故事: {self.state.project.title}\n"
             f"{self.state.memory.as_prompt_block()}\n"
@@ -244,7 +244,7 @@ class ControlledSceneFlow(Flow[ControlledSceneFlowState]):
             ControlDecision.MULTI_SAMPLE,
             ControlDecision.FEEDBACK_LOOP,
         ):
-            critic = self.factory.create_consistency_checker()
+            critic = self.crew.consistency()
             loop = FeedbackLoop(
                 generator=director,
                 critic=critic,
@@ -311,7 +311,7 @@ class ControlledSceneFlow(Flow[ControlledSceneFlowState]):
 
         # 主角：反馈闭环（灵敏度=HIGH）
         for char in primary_chars:
-            agent = self.factory.create_protagonist(char)
+            agent = self.crew.protagonist(char)
             task_desc = (
                 f"导演意图(参考):\n{self.state.director_intent}\n\n"
                 f"背景:\n{rag_context}\n\n"
@@ -323,7 +323,7 @@ class ControlledSceneFlow(Flow[ControlledSceneFlowState]):
                 "protagonist"
             )
             if decision == ControlDecision.FEEDBACK_LOOP:
-                critic = self.factory.create_consistency_checker()
+                critic = self.crew.consistency()
                 loop = FeedbackLoop(
                     generator=agent,
                     critic=critic,
@@ -350,7 +350,7 @@ class ControlledSceneFlow(Flow[ControlledSceneFlowState]):
         # 群演：直接通过（灵敏度=LOW）
         if secondary_chars:
             self.orchestrator.decide_control_strategy("ensemble")
-            ensemble = self.factory.create_ensemble(secondary_chars)
+            ensemble = self.crew.ensemble(secondary_chars)
             for char in secondary_chars:
                 task = Task(
                     description=(
@@ -391,7 +391,7 @@ class ControlledSceneFlow(Flow[ControlledSceneFlowState]):
 
         reports = []
         for _ in range(profile.n_samples):
-            agent = self.factory.create_consistency_checker()
+            agent = self.crew.consistency()
             task = Task(
                 description=(
                     f"检查行动记录:\n{actor_log}\n\n"
@@ -482,7 +482,7 @@ class ControlledSceneFlow(Flow[ControlledSceneFlowState]):
     @listen("proceed")
     def write_prose(self):
         decision = self.orchestrator.decide_control_strategy("prose")
-        prose_agent = self.factory.create_prose_writer(
+        prose_agent = self.crew.prose(
             self.state.project.style
         )
 
@@ -492,7 +492,7 @@ class ControlledSceneFlow(Flow[ControlledSceneFlowState]):
         )
 
         if decision == ControlDecision.FEEDBACK_LOOP:
-            critic = self.factory.create_consistency_checker()
+            critic = self.crew.consistency()
             loop = FeedbackLoop(
                 generator=prose_agent,
                 critic=critic,
@@ -525,7 +525,7 @@ class ControlledSceneFlow(Flow[ControlledSceneFlowState]):
         原理③: 端到端质量评估
         原理⑥: 质量趋势追踪（自适应）
         """
-        evaluator_agent = self.factory.create_consistency_checker()
+        evaluator_agent = self.crew.consistency()
         e2e = EndToEndEvaluator(evaluator_agent)
         report = e2e.evaluate_scene(
             final_prose=prose,

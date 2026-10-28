@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "storyloom"
+version = "0.3.0"
+description = "织章 StoryLoom — 多Agent智能小说生成系统"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {file = "LICENSE"}
+dependencies = [
+  "crewai>=0.121.0", "crewai-tools", "chromadb", "pydantic>=2.0",
+  "python-dotenv", "pyyaml", "openai", "anthropic",
+  "fastapi>=0.115.0", "uvicorn>=0.30.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+storyloom = "storyloom.main:run_demo"
+storyloom-controlled = "storyloom.main_controlled:run_demo"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/storyloom"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -5,7 +5,7 @@ This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 Flow 编排核心 v2：集成 SurpriseAgent + ForeshadowingAgent
 
 新增 pre-scene planning 阶段（意外+伏笔提案 → 导演决策）
-每个步骤内部的 Agent 自动通过 AgentFactory 获得最适合的 AI 模型。
+每个步骤内部的 Agent 自动通过 SceneCrew 获得最适合的 AI 模型。
 
 参考：
 - StoryWriter（清华 KEG）: 多 Agent 分工评估体系
@@ -20,13 +20,13 @@ from crewai import Crew, Process, Task
 from crewai.flow.flow import Flow, listen, router, start
 from pydantic import BaseModel, Field
 
-from agents.factory import AgentFactory
-from assets.models import (
+from storyloom.crews.scene_crew.crew import SceneCrew
+from storyloom.models import (
     Foreshadowing,
     ForeshadowStatus,
     NovelProject,
 )
-from memory.manager import CoreMemory, SimpleRAGMemory
+from storyloom.memory import CoreMemory, SimpleRAGMemory
 
 
 class ConsistencyReport(BaseModel):
@@ -160,7 +160,7 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
         project: NovelProject,
         memory: CoreMemory,
         rag: SimpleRAGMemory,
-        factory: AgentFactory,
+        crew: SceneCrew,
         scene_brief: str,
         present_characters: List[str],
         max_retries: int = 1,
@@ -170,7 +170,7 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
         self.state.memory = memory
         self.state.scene_brief = scene_brief
         self.rag = rag
-        self.factory = factory
+        self.crew = crew
         self.present_characters = present_characters
         self.max_retries = max_retries
         self.rag_context = ""
@@ -213,7 +213,7 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
             else "（当前无活跃伏笔）"
         )
 
-        surprise_agent = self.factory.create_surprise_agent()
+        surprise_agent = self.crew.surprise()
         task = Task(
             description=(
                 f"故事: {project.title}\n"
@@ -298,7 +298,7 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
         )
 
         foreshadowing_agent = (
-            self.factory.create_foreshadowing_agent()
+            self.crew.foreshadowing()
         )
         task = Task(
             description=(
@@ -345,7 +345,7 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
 
         导演做最终裁决：采纳 / 修改 / 否决各提案
         """
-        director = self.factory.create_director()
+        director = self.crew.director()
         task = Task(
             description=(
                 f"故事: {self.state.project.title}\n"
@@ -416,7 +416,7 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
 
         # 每个重要角色独立一个 Agent
         for char in primary_chars:
-            agent = self.factory.create_protagonist(char)
+            agent = self.crew.protagonist(char)
             agents.append(agent)
             tasks.append(Task(
                 description=(
@@ -434,7 +434,7 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
 
         # 所有次要角色合并给一个群演 Agent
         if secondary_chars:
-            ensemble = self.factory.create_ensemble(secondary_chars)
+            ensemble = self.crew.ensemble(secondary_chars)
             agents.append(ensemble)
             for char in secondary_chars:
                 tasks.append(Task(
@@ -467,7 +467,7 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
         ConsistencyAgent 校验人设/时间线/设定冲突
         输出强制为 JSON，解析失败时默认放行避免卡死 flow。
         """
-        agent = self.factory.create_consistency_checker()
+        agent = self.crew.consistency()
         char_data = json.dumps(
             [c.model_dump() for c in self.state.project.characters],
             ensure_ascii=False,
@@ -551,7 +551,7 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
         ProseAgent 把结构化的行动日志转写成文学化的小说正文
         伏笔暗示要自然织入，意外事件要用节奏感烘托冲击力。
         """
-        prose_agent = self.factory.create_prose_writer(
+        prose_agent = self.crew.prose(
             self.state.project.style
         )
         task = Task(

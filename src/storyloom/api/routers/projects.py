@@ -3,8 +3,8 @@
 from fastapi import APIRouter, HTTPException
 import uuid
 
-from api.schemas import ProjectCreate, ProjectView, ProjectListResponse
-from api.engine import engine
+from storyloom.api.schemas import ProjectCreate, ProjectView, ProjectListResponse
+from storyloom.api.engine import engine
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 

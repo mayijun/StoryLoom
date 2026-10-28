@@ -13,17 +13,17 @@ This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 
 from dotenv import load_dotenv
 
-from agents.factory import AgentFactory
-from assets.models import (
+from storyloom.crews.scene_crew.crew import SceneCrew
+from storyloom.models import (
     CharacterAsset,
     Foreshadowing,
     LocationAsset,
     NovelProject,
 )
-from flow.scene_flow import SceneGenerationFlow
-from llm.providers import ModelRegistry
-from llm.router import AgentModelRouter
-from memory.manager import CoreMemory, SimpleRAGMemory
+from storyloom.flows.scene_flow import SceneGenerationFlow
+from storyloom.llm.providers import ModelRegistry
+from storyloom.llm.router import AgentModelRouter
+from storyloom.memory import CoreMemory, SimpleRAGMemory
 
 
 def build_project() -> NovelProject:
@@ -116,13 +116,13 @@ def run_demo():
     load_dotenv()
 
     # 1. 初始化模型路由器
-    registry = ModelRegistry("config/model_config.yaml")
+    registry = ModelRegistry()
     router = AgentModelRouter(registry)
     router.print_assignment_table()
     print(f"🔌 当前可用模型: {registry.list_available()}\n")
 
-    # 2. 初始化 Agent 工厂
-    factory = AgentFactory(router)
+    # 2. 初始化场景 Crew
+    crew = SceneCrew(router)
 
     # 3. 项目资产与记忆
     project = build_project()
@@ -144,7 +144,7 @@ def run_demo():
         project=project,
         memory=memory,
         rag=rag,
-        factory=factory,
+        crew=crew,
         scene_brief=(
             "林夏在旅店大堂被阿泽搭讪，试探她是否知道姐姐下落。"
             "旅店老板在柜台后面擦杯子，偶尔抬头看一眼。"
@@ -179,7 +179,7 @@ def run_demo():
             f"距上次提及{f.scenes_since_last_mention}场景"
         )
 
-    factory.print_creation_summary()
+    crew.print_creation_summary()
 
 
 if __name__ == "__main__":

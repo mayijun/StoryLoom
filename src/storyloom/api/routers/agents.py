@@ -3,8 +3,8 @@
 from fastapi import APIRouter
 from typing import List
 
-from api.schemas import AgentDefinition, AgentListResponse
-from api.engine import engine
+from storyloom.api.schemas import AgentDefinition, AgentListResponse
+from storyloom.api.engine import engine
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
