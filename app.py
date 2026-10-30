@@ -48,12 +48,12 @@ def wait_for_port(host: str, port: int, timeout: float = 90.0) -> bool:
 
 
 def main() -> None:
-    # storyloom 以 editable 模式安装（pip install -e .）后才可导入
+    # storyloom 以 editable 模式安装（uv sync）后才可导入
     try:
         import storyloom  # noqa: F401
     except ImportError:
         print(
-            "❌ 未找到 storyloom 包，请先在项目根目录执行 `pip install -e .`",
+            "❌ 未找到 storyloom 包，请先在项目根目录执行 `uv sync`",
             flush=True,
         )
         sys.exit(1)
@@ -66,8 +66,8 @@ def main() -> None:
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
 
     # ---------- 启动后端 ----------
-    # 依赖以 editable 模式安装的 storyloom 包，需先执行 `pip install -e .`
-    print("🚀 启动 FastAPI 后端 (端口 8000)...（首次运行请先执行 `pip install -e .`）", flush=True)
+    # 依赖以 editable 模式安装的 storyloom 包，需先执行 `uv sync`
+    print("🚀 启动 FastAPI 后端 (端口 8000)...（首次运行请先执行 `uv sync`）", flush=True)
     backend_proc = subprocess.Popen(
         [
             sys.executable, "-m", "uvicorn",

@@ -263,7 +263,7 @@ VectorMemory (RAG记忆 → 按需检索)
 ```
 StoryLoom/
 │
-├── pyproject.toml                 # 包定义：依赖 + 入口脚本（pip install -e .）
+├── pyproject.toml                 # 包定义：依赖 + 入口脚本（uv sync 安装）
 │
 ├── src/storyloom/
 │   ├── __init__.py
@@ -321,7 +321,8 @@ StoryLoom/
 │   └── test_flow.py
 │
 ├── app.py                         # Web 模式启动器（默认入口）
-├── requirements.txt
+├── pyproject.toml
+├── uv.lock
 ├── .env.example
 ├── LICENSE
 └── README.md
@@ -333,7 +334,7 @@ StoryLoom/
 
 ### 环境要求
 
-- Python 3.10+
+- Python 3.11+（或安装 [uv](https://docs.astral.sh/uv/) 后自动管理 Python 版本）
 - 至少一个AI提供商的API Key
 
 ### 安装
@@ -343,17 +344,9 @@ StoryLoom/
 git clone https://github.com/yourname/storyloom.git
 cd storyloom
 
-# 创建虚拟环境
-python -m venv .venv
-source .venv/bin/activate  # Linux/Mac
-# .venv\Scripts\activate   # Windows
-
-# 安装依赖（requirements.txt 会以 editable 模式安装项目本体及全部依赖，
-# 依赖的单一来源是 pyproject.toml）
-pip install -r requirements.txt
-# 也可以分开执行：
-# pip install -e .
-# pip install pytest
+# 使用 uv 一键创建虚拟环境并安装项目本体及全部依赖
+# （依赖的单一来源是 pyproject.toml，含 dev 测试依赖）
+uv sync --extra dev
 ```
 
 > Windows PowerShell 若提示"禁止运行脚本"，先执行：
@@ -392,7 +385,7 @@ python -m storyloom.main
 python -m storyloom.main_controlled
 ```
 
-> `pip install -e .` 之后也可以直接使用入口脚本 `storyloom` /
+> `uv sync` 之后也可以直接使用入口脚本 `storyloom` /
 > `storyloom-controlled`（见 pyproject.toml 的 [project.scripts]）。
 >
 > 项目采用 CrewAI 官方约定的 src/ 包布局：Crew 用 `@CrewBase` + 同级
@@ -697,7 +690,7 @@ to achieve reliable creative output from inherently imperfect AI components.
 ```bash
 git clone https://github.com/yourname/storyloom.git
 cd storyloom
-pip install -r requirements.txt
+uv sync --extra dev
 cp .env.example .env
 # Edit .env with your API keys
 python -m storyloom.main_controlled

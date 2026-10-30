@@ -18,7 +18,6 @@ ENV/
 .Python
 pip-log.txt
 poetry.lock
-uv.lock
 
 # Environment variables / secrets
 .env
