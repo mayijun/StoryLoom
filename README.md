@@ -281,10 +281,16 @@ StoryLoom/
 │   │
 │   ├── crews/                     # 🧩 CrewAI 官方约定 Crew
 │   │   └── scene_crew/
-│   │       ├── crew.py            # @CrewBase SceneCrew: 8种Agent + 标准任务序列
-│   │       └── config/
+│   │       ├── crew.py            # @CrewBase SceneCrew: 从数据库加载 Agent/Task
+│   │       └── config/            # YAML 仅作首次运行的种子数据
 │   │           ├── agents.yaml    # Agent 角色定义 (role/goal/backstory)
 │   │           └── tasks.yaml     # 标准任务序列
+│   │
+│   ├── db/                        # 🗄️ Agent/Task 配置库（SQLAlchemy）
+│   │   ├── models.py              # agent_configs / task_configs 表
+│   │   ├── repository.py          # 读写 + YAML 种子导入
+│   │   ├── config_source.py       # 接入 @CrewBase 的配置描述符
+│   │   └── cli.py                 # storyloom-config 管理命令
 │   │
 │   ├── flows/
 │   │   ├── scene_flow.py          # 基础版场景生成Flow
@@ -318,9 +324,11 @@ StoryLoom/
 │   ├── test_assets.py
 │   ├── test_memory.py
 │   ├── test_control.py
+│   ├── test_db_config.py
 │   └── test_flow.py
 │
 ├── app.py                         # Web 模式启动器（默认入口）
+├── data/                          # 本地 SQLite 配置库（已 git 忽略）
 ├── pyproject.toml
 ├── uv.lock
 ├── .env.example
@@ -434,6 +442,44 @@ python -m storyloom.main_controlled
 ---
 
 ## ⚙️ 配置指南
+
+### Agent / Task 配置（数据库）
+
+Agent 与 Task 定义已从 YAML 迁入轻量级数据库（默认 SQLite，
+文件位于 `data/storyloom.db`）。通过 SQLAlchemy 提供统一接口，
+只需设置环境变量即可切换到 PostgreSQL / MySQL 等大型数据库：
+
+```bash
+STORYLOOM_DATABASE_URL=postgresql+psycopg://user:pass@host:5432/storyloom
+```
+
+`crews/scene_crew/config/*.yaml` 仅作为首次运行的种子数据：
+数据库为空时自动导入，此后数据库是唯一事实来源。
+
+常用命令：
+
+```bash
+uv run storyloom-config list                 # 列出全部 Agent / Task
+uv run storyloom-config show agent director
+uv run storyloom-config set agent director backstory "新的背景设定"
+uv run storyloom-config set task prose_polish enabled false
+uv run storyloom-config add-agent critic --role 文风批评家 --goal 挑刺 --backstory "..."
+uv run storyloom-config add-task style_review --agent critic \
+    --description "审查文风" --expected-output "问题清单" --context prose_polish
+uv run storyloom-config rm task style_review
+uv run storyloom-config seed --overwrite     # 用 YAML 覆盖现有配置
+```
+
+表结构对齐 CrewAI 约定：
+
+- `agent_configs`: role / goal / backstory / allow_delegation / verbose /
+  max_iter / settings(JSON) / enabled / position
+- `task_configs`: description / expected_output / agent_key / context_keys /
+  enabled / position
+
+`SceneCrew.crew()` 按 `position` 装配任务，`agent_key` 指定执行 Agent，
+`context_keys` 指定上游任务输出作为上下文——新增或删除 Agent / Task
+无需改动代码。也可直接用 SQLite / PostgreSQL 客户端编辑这些表。
 
 ### 模型配置 (`config/model_config.yaml`)
 

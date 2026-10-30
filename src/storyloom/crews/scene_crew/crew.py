@@ -4,13 +4,15 @@ This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 
 场景生成 Crew（CrewAI 官方约定版）
 
-- 8 个 Agent 的 role/goal/backstory 定义在同级 config/agents.yaml，
-  由 @CrewBase 自动加载为 self.agents_config
-- 标准任务序列定义在同级 config/tasks.yaml，由 @task 方法装配
+- 8 个 Agent 的 role/goal/backstory 持久化在数据库（agent_configs 表），
+  由 DbConfig 描述符接入 @CrewBase 的 self.agents_config
+- 标准任务序列持久化在数据库（task_configs 表），
+  由 self.tasks_config 读取、self.crew() 按 agent_key/context_keys 装配
+- 同级 config/*.yaml 仅作为首次运行的种子数据，数据库是唯一事实来源
 - 通过 AgentModelRouter 为每个 Agent 注入最适合的 LLM
   （router 为 None 时使用 CrewAI 默认 LLM）
 - protagonist / ensemble / prose 三个 Agent 由 Flow 按资产数据动态生成，
-  YAML 中的 {name}/{persona}/{motivation}/{names}/{brief}/{style}
+  配置中的 {name}/{persona}/{motivation}/{names}/{brief}/{style}
   占位符会被代码填充（_dynamic_config）
 
 Agent 角色划分（8 类）：
@@ -24,18 +26,23 @@ Agent 角色划分（8 类）：
 - ProseAgent         润色 / 叙事者
 """
 
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from crewai import Agent, Crew, Process, Task
-from crewai.project import CrewBase, agent, crew, task
+from crewai.project import CrewBase, agent, crew
 
+from storyloom.db import DbConfig, get_repository
 from storyloom.llm.router import AgentModelRouter
 from storyloom.models import CharacterAsset
 
 
 @CrewBase
 class SceneCrew:
-    """场景生成 Crew：8 个 Agent，YAML 定义角色 + 模型路由注入 LLM"""
+    """场景生成 Crew：Agent / Task 定义来自数据库 + 模型路由注入 LLM"""
+
+    # 覆盖 @CrewBase 的 YAML 加载：实例访问时从数据库读取配置
+    agents_config = DbConfig("agents")
+    tasks_config = DbConfig("tasks")
 
     def __init__(self, router: Optional[AgentModelRouter] = None):
         self.router = router          # AgentModelRouter，可为 None（用 CrewAI 默认 LLM）
@@ -55,12 +62,30 @@ class SceneCrew:
         return llm
 
     def _dynamic_config(self, key: str, **values) -> dict:
-        """复制 YAML 配置并用实际资产数据填充占位符"""
+        """复制数据库中的配置并用实际资产数据填充占位符"""
         config = dict(self.agents_config[key])
         for field in ("role", "goal", "backstory"):
             if isinstance(config.get(field), str):
                 config[field] = config[field].format(**values)
         return config
+
+    def agent_for_key(self, key: str, **values: Any) -> Agent:
+        """
+        按 Agent key 创建实例。
+
+        优先使用本类中带 @agent 的工厂方法（可注入角色专属的模型/参数）；
+        数据库中新增、但没有对应工厂方法的 key，则回退为通用 Agent。
+        """
+        factory = getattr(self, key, None)
+        if callable(factory) and getattr(factory, "is_agent", False):
+            return factory(**values)
+
+        config = self.agents_config.get(key)
+        if config is None:
+            raise KeyError(f"数据库中没有 Agent 定义: {key}")
+        if values:
+            config = self._dynamic_config(key, **values)
+        return Agent(config=config, llm=self._llm(key), verbose=False)
 
     # ---------------- 角色类 Agent ----------------
 
@@ -195,58 +220,39 @@ class SceneCrew:
             verbose=True,
         )
 
-    # ---------------- 标准任务序列（给 crewai CLI / @crew 用） ----------------
-    # 注意：agent / context 在此显式装配，而不写在 tasks.yaml 中，
-    # 避免 CrewBase 在实例化时立即物化全部 Agent（保持无 Key 环境可导入）。
-
-    @task
-    def surprise_proposal(self) -> Task:
-        return Task(config=self.tasks_config["surprise_proposal"], agent=self.surprise())
-
-    @task
-    def foreshadowing_ops(self) -> Task:
-        return Task(
-            config=self.tasks_config["foreshadowing_ops"],
-            agent=self.foreshadowing(),
-        )
-
-    @task
-    def director_plan(self) -> Task:
-        return Task(
-            config=self.tasks_config["director_plan"],
-            agent=self.director(),
-            context=[self.surprise_proposal(), self.foreshadowing_ops()],
-        )
-
-    @task
-    def actor_interaction(self) -> Task:
-        return Task(
-            config=self.tasks_config["actor_interaction"],
-            agent=self.protagonist(),
-            context=[self.director_plan()],
-        )
-
-    @task
-    def consistency_check(self) -> Task:
-        return Task(
-            config=self.tasks_config["consistency_check"],
-            agent=self.consistency(),
-            context=[self.actor_interaction()],
-        )
-
-    @task
-    def prose_polish(self) -> Task:
-        return Task(
-            config=self.tasks_config["prose_polish"],
-            agent=self.prose(),
-            context=[self.consistency_check()],
-        )
+    # ---------------- 标准任务序列 ----------------
+    # 任务完全由数据库 task_configs 表驱动：position 决定顺序，
+    # agent_key 决定执行者，context_keys 决定上游任务的输出作为上下文。
+    # 因此不再定义 @task 方法——新增 / 删除 / 停用任务只需改数据库。
 
     @crew
     def crew(self) -> Crew:
+        """按数据库中的任务顺序与依赖关系装配标准 Crew"""
+        tasks: List[Task] = []
+        built: dict[str, Task] = {}
+
+        for meta in get_repository().load_task_meta():
+            config = self.tasks_config.get(meta["key"])
+            if config is None:
+                continue
+            kwargs: dict[str, Any] = {"config": dict(config)}
+            if meta.get("agent_key"):
+                kwargs["agent"] = self.agent_for_key(meta["agent_key"])
+            context = [
+                built[key]
+                for key in meta.get("context_keys", [])
+                if key in built
+            ]
+            if context:
+                kwargs["context"] = context
+            task = Task(**kwargs)
+            built[meta["key"]] = task
+            tasks.append(task)
+
+        agents = [self.agent_for_key(key) for key in self.agents_config]
         return Crew(
-            agents=self.agents,
-            tasks=self.tasks,
+            agents=agents,
+            tasks=tasks,
             process=Process.sequential,
             verbose=True,
         )
