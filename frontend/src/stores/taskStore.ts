@@ -30,5 +30,22 @@ export const useTaskStore = defineStore('task', () => {
     if (idx >= 0) tasks.value[idx] = res.data
   }
 
-  return { tasks, enabledTasks, fetchTasks, addTask, removeTask, updateTask }
+  /** 拖拽排序：先本地更新，再按新顺序持久化 position */
+  async function reorderTasks(list: TaskConfig[]) {
+    const previous = tasks.value
+    tasks.value = list.map((task, index) => ({ ...task, position: index }))
+    try {
+      const changes = list
+        .map((task, index) => ({ key: task.key, index, old: task.position }))
+        .filter(item => item.old !== item.index)
+      await Promise.all(
+        changes.map(item => api.updateTask(item.key, { position: item.index }))
+      )
+    } catch {
+      tasks.value = previous
+      throw new Error('排序保存失败')
+    }
+  }
+
+  return { tasks, enabledTasks, fetchTasks, addTask, removeTask, updateTask, reorderTasks }
 })

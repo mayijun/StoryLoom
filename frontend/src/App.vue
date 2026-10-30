@@ -153,6 +153,30 @@ async function handleSaveTask() {
   showTaskDialog.value = false
 }
 
+// ---- 拖拽排序 ----
+const dragAgentIndex = ref<number | null>(null)
+const dragTaskIndex = ref<number | null>(null)
+
+async function handleAgentDrop(to: number) {
+  const from = dragAgentIndex.value
+  dragAgentIndex.value = null
+  if (from === null || from === to) return
+  const list = [...agentStore.agents]
+  const [moved] = list.splice(from, 1)
+  list.splice(to, 0, moved)
+  await agentStore.reorderAgents(list)
+}
+
+async function handleTaskDrop(to: number) {
+  const from = dragTaskIndex.value
+  dragTaskIndex.value = null
+  if (from === null || from === to) return
+  const list = [...taskStore.tasks]
+  const [moved] = list.splice(from, 1)
+  list.splice(to, 0, moved)
+  await taskStore.reorderTasks(list)
+}
+
 async function handleCreateCharacter() {
   if (!projectStore.currentProjectId) return
   await assetStore.addCharacter(projectStore.currentProjectId, newChar.value as CharacterAsset)
@@ -243,10 +267,15 @@ async function handleGenerate() {
             </div>
 
             <div
-              v-for="agent in agentStore.agents"
+              v-for="(agent, idx) in agentStore.agents"
               :key="agent.key"
               class="agent-card"
-              :class="{ disabled: !agent.enabled }"
+              :class="{ disabled: !agent.enabled, dragging: dragAgentIndex === idx }"
+              draggable="true"
+              @dragstart="dragAgentIndex = idx"
+              @dragend="dragAgentIndex = null"
+              @dragover.prevent
+              @drop.prevent="handleAgentDrop(idx)"
               @click="openEditAgent(agent)"
             >
               <div class="agent-icon">{{ AGENT_TYPE_META[agent.key as AgentType]?.icon || '⚙️' }}</div>
@@ -286,10 +315,15 @@ async function handleGenerate() {
             </div>
 
             <div
-              v-for="task in taskStore.tasks"
+              v-for="(task, idx) in taskStore.tasks"
               :key="task.key"
               class="agent-card"
-              :class="{ disabled: !task.enabled }"
+              :class="{ disabled: !task.enabled, dragging: dragTaskIndex === idx }"
+              draggable="true"
+              @dragstart="dragTaskIndex = idx"
+              @dragend="dragTaskIndex = null"
+              @dragover.prevent
+              @drop.prevent="handleTaskDrop(idx)"
               @click="openEditTask(task)"
             >
               <div class="agent-icon">📝</div>

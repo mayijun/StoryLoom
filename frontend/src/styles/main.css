@@ -64,6 +64,14 @@ body {
   margin-bottom: 6px;
 }
 
+.config-columns .agent-card[draggable="true"] {
+  cursor: grab;
+}
+
+.agent-card.dragging {
+  opacity: 0.4;
+}
+
 .config-columns .agent-info {
   min-width: 0;
 }

@@ -34,6 +34,23 @@ export const useAgentStore = defineStore('agent', () => {
     if (idx >= 0) agents.value[idx] = res.data
   }
 
+  /** 拖拽排序：先本地更新，再按新顺序持久化 position */
+  async function reorderAgents(list: AgentConfig[]) {
+    const previous = agents.value
+    agents.value = list.map((agent, index) => ({ ...agent, position: index }))
+    try {
+      const changes = list
+        .map((agent, index) => ({ key: agent.key, index, old: agent.position }))
+        .filter(item => item.old !== item.index)
+      await Promise.all(
+        changes.map(item => api.updateAgent(item.key, { position: item.index }))
+      )
+    } catch {
+      agents.value = previous
+      throw new Error('排序保存失败')
+    }
+  }
+
   function addMessage(msg: AgentMessage) {
     messages.value.push(msg)
   }
@@ -44,7 +61,7 @@ export const useAgentStore = defineStore('agent', () => {
 
   return {
     agents, availableModels, runtimeStates, messages, enabledAgents,
-    fetchAgents, addAgent, removeAgent, updateAgent,
+    fetchAgents, addAgent, removeAgent, updateAgent, reorderAgents,
     addMessage, clearMessages,
   }
 })
