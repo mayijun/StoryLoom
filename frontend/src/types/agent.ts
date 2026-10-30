@@ -38,30 +38,34 @@ export type AgentType = TextAgentType | ReservedAgentType
 export type AgentStatus = 'idle' | 'thinking' | 'completed' | 'error'
 
 // ============================================================
-// Agent 定义
+// Agent 配置（与后端数据库 agent_configs 表一致）
 // ============================================================
 
-export interface AgentDefinition {
-  agent_id: string
-  agent_type: AgentType
-  name: string
+export interface AgentConfig {
+  key: string
+  crew: string
+  role: string
+  goal: string
+  backstory: string
+  allow_delegation?: boolean | null
+  verbose?: boolean | null
+  max_iter?: number | null
+  settings: Record<string, any>
   enabled: boolean
+  position: number
+}
 
-  // 文本类配置
-  character_name?: string
-  bound_character_ids: string[]
-
-  // 模型配置
-  model_provider?: string
-  temperature: number
-
-  // 预留配置
-  visual_config?: Record<string, any>
-  audio_config?: Record<string, any>
-  game_config?: Record<string, any>
-
-  // ★ Vue Flow 兼容位置
-  flow_position: { x: number; y: number }
+export interface AgentConfigInput {
+  key: string
+  role: string
+  goal: string
+  backstory: string
+  allow_delegation?: boolean | null
+  verbose?: boolean | null
+  max_iter?: number | null
+  settings?: Record<string, any>
+  enabled?: boolean
+  position?: number
 }
 
 // ============================================================

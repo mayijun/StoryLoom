@@ -5,7 +5,7 @@
 import axios from 'axios'
 import type { ProjectView, ProjectCreate } from '@/types/project'
 import type { CharacterAsset, LocationAsset, Foreshadowing } from '@/types/asset'
-import type { AgentDefinition } from '@/types/agent'
+import type { AgentConfig, AgentConfigInput } from '@/types/agent'
 
 const api = axios.create({
   baseURL: '/api',
@@ -29,10 +29,10 @@ export function useApi() {
   const addForeshadowing = (pid: string, data: any) => api.post(`/projects/${pid}/assets/foreshadowings`, data)
 
   // ---- Agents ----
-  const listAgents = () => api.get('/agents/')
-  const createAgent = (data: AgentDefinition) => api.post('/agents/', data)
-  const updateAgent = (id: string, data: AgentDefinition) => api.put(`/agents/${id}`, data)
-  const deleteAgent = (id: string) => api.delete(`/agents/${id}`)
+  const listAgents = () => api.get<{ agents: AgentConfig[]; available_models: string[] }>('/agents/')
+  const createAgent = (data: AgentConfigInput) => api.post<AgentConfig>('/agents/', data)
+  const updateAgent = (key: string, data: Partial<AgentConfigInput>) => api.put<AgentConfig>(`/agents/${key}`, data)
+  const deleteAgent = (key: string) => api.delete(`/agents/${key}`)
   const getAgentTypes = () => api.get('/agents/types')
 
   // ---- Generation ----

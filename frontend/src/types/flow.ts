@@ -14,14 +14,16 @@
  * - LuckyFlow: AgentFlowNodeTypeCommon 自定义Agent节点
  */
 
+import type { Position } from '@vue-flow/core'
+
 export interface FlowNode {
   id: string
   type: 'agent' | 'asset' | 'process' | 'start' | 'end'
   position: { x: number; y: number }
   data: Record<string, any>
   label?: string
-  sourcePosition?: 'top' | 'right' | 'bottom' | 'left'
-  targetPosition?: 'top' | 'right' | 'bottom' | 'left'
+  sourcePosition?: Position
+  targetPosition?: Position
 }
 
 export interface FlowEdge {

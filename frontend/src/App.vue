@@ -6,7 +6,7 @@ import { useAssetStore } from './stores/assetStore'
 import { useGenerationStore } from './stores/generationStore'
 import { useApi } from './composables/useApi'
 
-import type { AgentDefinition, AgentMessage, AgentType } from './types/agent'
+import type { AgentConfigInput, AgentMessage, AgentType } from './types/agent'
 import type { CharacterAsset } from './types/asset'
 import { AGENT_TYPE_META } from './types/agent'
 import { FORESHADOW_STATUS_META } from './types/asset'
@@ -32,11 +32,11 @@ const showCreateLocation = ref(false)
 
 // 表单数据
 const newProject = ref({ title: '', style: '' })
-const newAgent = ref<Partial<AgentDefinition>>({
-  agent_type: 'protagonist' as AgentType,
-  name: '',
-  character_name: '',
-  temperature: 0.9,
+const newAgent = ref<AgentConfigInput>({
+  key: '',
+  role: '',
+  goal: '',
+  backstory: '',
 })
 const newChar = ref<Partial<CharacterAsset>>({
   name: '', importance_tier: 'primary', persona: '', motivation: '', secrets: '',
@@ -72,20 +72,9 @@ async function handleSelectProject(id: string) {
 }
 
 async function handleCreateAgent() {
-  const agent: AgentDefinition = {
-    agent_id: `agent_${Date.now().toString(36)}`,
-    agent_type: newAgent.value.agent_type as AgentType,
-    name: newAgent.value.name || '',
-    enabled: true,
-    character_name: newAgent.value.character_name,
-    bound_character_ids: [],
-    model_provider: undefined,
-    temperature: newAgent.value.temperature || 0.9,
-    flow_position: { x: 0, y: 0 },
-  }
-  await agentStore.addAgent(agent)
+  await agentStore.addAgent({ ...newAgent.value })
   showCreateAgent.value = false
-  newAgent.value = { agent_type: 'protagonist', name: '', character_name: '', temperature: 0.9 }
+  newAgent.value = { key: '', role: '', goal: '', backstory: '' }
 }
 
 async function handleCreateCharacter() {
@@ -177,27 +166,27 @@ async function handleGenerate() {
 
           <div
             v-for="agent in agentStore.agents"
-            :key="agent.agent_id"
+            :key="agent.key"
             class="agent-card"
             :class="{ disabled: !agent.enabled }"
           >
-            <div class="agent-icon">{{ AGENT_TYPE_META[agent.agent_type]?.icon || '⚙️' }}</div>
+            <div class="agent-icon">{{ AGENT_TYPE_META[agent.key as AgentType]?.icon || '⚙️' }}</div>
             <div class="agent-info">
-              <div class="agent-name">{{ agent.name }}</div>
+              <div class="agent-name">{{ agent.role }}</div>
               <div class="agent-model">
-                {{ AGENT_TYPE_META[agent.agent_type]?.label }}
-                <template v-if="agent.character_name"> · {{ agent.character_name }}</template>
+                {{ agent.key }}
+                <template v-if="!agent.enabled"> · 已停用</template>
               </div>
             </div>
             <div
               class="agent-status"
               :class="{
-                thinking: agentStore.runtimeStates.get(agent.agent_id)?.status === 'thinking'
+                thinking: agentStore.runtimeStates.get(agent.key)?.status === 'thinking'
               }"
             ></div>
             <button
               class="btn btn-icon btn-sm"
-              @click.stop="agentStore.removeAgent(agent.agent_id)"
+              @click.stop="agentStore.removeAgent(agent.key)"
               title="删除"
               style="color:var(--error);background:transparent;border:none;"
             >✕</button>
@@ -444,35 +433,24 @@ async function handleGenerate() {
       <div class="dialog">
         <h3>🤖 添加Agent</h3>
         <div class="form-group">
-          <label>Agent类型</label>
-          <select v-model="newAgent.agent_type">
-            <template v-for="(meta, type) in AGENT_TYPE_META" :key="type">
-              <option v-if="meta.implemented" :value="type">
-                {{ meta.icon }} {{ meta.label }} - {{ meta.description }}
-              </option>
-            </template>
-          </select>
+          <label>Key（唯一标识：小写字母 / 数字 / 下划线）</label>
+          <input v-model="newAgent.key" placeholder="例：critic" />
         </div>
         <div class="form-group">
-          <label>名称</label>
-          <input v-model="newAgent.name" placeholder="例：林夏的扮演者" />
-        </div>
-        <div class="form-group" v-if="newAgent.agent_type === 'protagonist'">
-          <label>绑定角色名</label>
-          <select v-model="newAgent.character_name">
-            <option value="">未绑定</option>
-            <option v-for="c in assetStore.characters" :key="c.name" :value="c.name">
-              {{ c.name }} ({{ c.importance_tier }})
-            </option>
-          </select>
+          <label>Role（角色定位）</label>
+          <input v-model="newAgent.role" placeholder="例：文风批评家" />
         </div>
         <div class="form-group">
-          <label>温度 ({{ newAgent.temperature }})</label>
-          <input type="range" v-model.number="newAgent.temperature" min="0" max="1" step="0.05" />
+          <label>Goal（目标）</label>
+          <input v-model="newAgent.goal" placeholder="例：挑出陈词滥调，保证文风统一" />
+        </div>
+        <div class="form-group">
+          <label>Backstory（背景设定）</label>
+          <textarea v-model="newAgent.backstory" rows="4" placeholder="例：你是苛刻的文学编辑，阅读过上千部小说…"></textarea>
         </div>
         <div class="form-actions">
           <button class="btn btn-secondary" @click="showCreateAgent = false">取消</button>
-          <button class="btn btn-primary" @click="handleCreateAgent" :disabled="!newAgent.name">添加</button>
+          <button class="btn btn-primary" @click="handleCreateAgent" :disabled="!newAgent.key || !newAgent.role || !newAgent.goal || !newAgent.backstory">添加</button>
         </div>
       </div>
     </div>

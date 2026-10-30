@@ -5,49 +5,71 @@ API数据模型：前后端通信的数据契约
 """
 
 from typing import List, Optional, Literal, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 import uuid
 
 
 # ================================================================
-# Agent 相关
+# Agent 相关（字段对齐数据库 agent_configs 表 / CrewAI agent 配置）
 # ================================================================
 
-class AgentDefinition(BaseModel):
-    """Agent定义：前端创建/编辑Agent时的数据结构"""
-    agent_id: str = Field(default_factory=lambda: f"agent_{uuid.uuid4().hex[:8]}")
-    agent_type: Literal[
-        "protagonist", "ensemble", "director",
-        "surprise", "foreshadowing", "consistency",
-        "prose", "structuring", "outline",
-        # 预留类型
-        "visual", "audio", "game_logic", "custom"
-    ]
-    name: str
-    enabled: bool = True
+_AGENT_KEY_PATTERN = r"^[a-z][a-z0-9_]*$"
 
-    # 文本类Agent的配置
-    character_name: Optional[str] = None          # protagonist/ensemble绑定的角色
-    bound_character_ids: List[str] = Field(default_factory=list)  # ensemble绑定的多个角色
 
-    # 模型配置
-    model_provider: Optional[str] = None          # 如 "deepseek.v4pro"
-    temperature: float = 0.8
+class AgentConfigInput(BaseModel):
+    """创建 Agent"""
+    model_config = ConfigDict(extra="forbid")
 
-    # 预留：非文本类Agent的配置占位
-    visual_config: Optional[Dict[str, Any]] = None
-    audio_config: Optional[Dict[str, Any]] = None
-    game_config: Optional[Dict[str, Any]] = None
-
-    # ★ 关键：Vue Flow 兼容的位置信息
-    # 预留给未来拖曳式编辑器使用
-    flow_position: Dict[str, float] = Field(
-        default_factory=lambda: {"x": 0, "y": 0}
+    key: str = Field(
+        ..., min_length=1, max_length=64, pattern=_AGENT_KEY_PATTERN
     )
+    role: str = Field(..., min_length=1)
+    goal: str = Field(..., min_length=1)
+    backstory: str = Field(..., min_length=1)
+
+    allow_delegation: Optional[bool] = None
+    verbose: Optional[bool] = None
+    max_iter: Optional[int] = None
+    settings: Dict[str, Any] = Field(default_factory=dict)
+
+    enabled: bool = True
+    position: Optional[int] = None
+
+
+class AgentConfigUpdate(BaseModel):
+    """部分更新 Agent（key 不可修改，请用删除+新建重命名）"""
+    model_config = ConfigDict(extra="forbid")
+
+    role: Optional[str] = Field(None, min_length=1)
+    goal: Optional[str] = Field(None, min_length=1)
+    backstory: Optional[str] = Field(None, min_length=1)
+
+    allow_delegation: Optional[bool] = None
+    verbose: Optional[bool] = None
+    max_iter: Optional[int] = None
+    settings: Optional[Dict[str, Any]] = None
+
+    enabled: Optional[bool] = None
+    position: Optional[int] = None
+
+
+class AgentConfigView(BaseModel):
+    """Agent 配置（直接对应数据库记录）"""
+    key: str
+    crew: str
+    role: str
+    goal: str
+    backstory: str
+    allow_delegation: Optional[bool] = None
+    verbose: Optional[bool] = None
+    max_iter: Optional[int] = None
+    settings: Dict[str, Any] = Field(default_factory=dict)
+    enabled: bool
+    position: int
 
 
 class AgentListResponse(BaseModel):
-    agents: List[AgentDefinition]
+    agents: List[AgentConfigView]
     available_models: List[str]
 
 
