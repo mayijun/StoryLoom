@@ -6,6 +6,7 @@ import axios from 'axios'
 import type { ProjectView, ProjectCreate } from '@/types/project'
 import type { CharacterAsset, LocationAsset, Foreshadowing } from '@/types/asset'
 import type { AgentConfig, AgentConfigInput } from '@/types/agent'
+import type { TaskConfig, TaskConfigInput } from '@/types/task'
 
 const api = axios.create({
   baseURL: '/api',
@@ -34,6 +35,12 @@ export function useApi() {
   const updateAgent = (key: string, data: Partial<AgentConfigInput>) => api.put<AgentConfig>(`/agents/${key}`, data)
   const deleteAgent = (key: string) => api.delete(`/agents/${key}`)
   const getAgentTypes = () => api.get('/agents/types')
+
+  // ---- Tasks ----
+  const listTasks = () => api.get<{ tasks: TaskConfig[] }>('/tasks/')
+  const createTask = (data: TaskConfigInput) => api.post<TaskConfig>('/tasks/', data)
+  const updateTask = (key: string, data: Partial<TaskConfigInput>) => api.put<TaskConfig>(`/tasks/${key}`, data)
+  const deleteTask = (key: string) => api.delete(`/tasks/${key}`)
 
   // ---- Generation ----
   const generateScene = (data: any) => api.post('/generate/scene', data)
@@ -82,6 +89,7 @@ export function useApi() {
     listLocations, addLocation,
     listForeshadowings, addForeshadowing,
     listAgents, createAgent, updateAgent, deleteAgent, getAgentTypes,
+    listTasks, createTask, updateTask, deleteTask,
     generateScene, generateSceneStream,
     checkHealth,
   }

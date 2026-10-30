@@ -13,7 +13,7 @@ import uuid
 # Agent 相关（字段对齐数据库 agent_configs 表 / CrewAI agent 配置）
 # ================================================================
 
-_AGENT_KEY_PATTERN = r"^[a-z][a-z0-9_]*$"
+_KEY_PATTERN = r"^[a-z][a-z0-9_]*$"
 
 
 class AgentConfigInput(BaseModel):
@@ -21,7 +21,7 @@ class AgentConfigInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     key: str = Field(
-        ..., min_length=1, max_length=64, pattern=_AGENT_KEY_PATTERN
+        ..., min_length=1, max_length=64, pattern=_KEY_PATTERN
     )
     role: str = Field(..., min_length=1)
     goal: str = Field(..., min_length=1)
@@ -71,6 +71,57 @@ class AgentConfigView(BaseModel):
 class AgentListResponse(BaseModel):
     agents: List[AgentConfigView]
     available_models: List[str]
+
+
+# ================================================================
+# Task 相关（字段对齐数据库 task_configs 表 / CrewAI task 配置）
+# ================================================================
+
+class TaskConfigInput(BaseModel):
+    """创建 Task"""
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(
+        ..., min_length=1, max_length=64, pattern=_KEY_PATTERN
+    )
+    description: str = Field(..., min_length=1)
+    expected_output: str = Field(..., min_length=1)
+
+    agent_key: Optional[str] = None
+    context_keys: List[str] = Field(default_factory=list)
+
+    enabled: bool = True
+    position: Optional[int] = None
+
+
+class TaskConfigUpdate(BaseModel):
+    """部分更新 Task（key 不可修改）"""
+    model_config = ConfigDict(extra="forbid")
+
+    description: Optional[str] = Field(None, min_length=1)
+    expected_output: Optional[str] = Field(None, min_length=1)
+
+    agent_key: Optional[str] = None
+    context_keys: Optional[List[str]] = None
+
+    enabled: Optional[bool] = None
+    position: Optional[int] = None
+
+
+class TaskConfigView(BaseModel):
+    """Task 配置（直接对应数据库记录）"""
+    key: str
+    crew: str
+    description: str
+    expected_output: str
+    agent_key: Optional[str] = None
+    context_keys: List[str] = Field(default_factory=list)
+    enabled: bool
+    position: int
+
+
+class TaskListResponse(BaseModel):
+    tasks: List[TaskConfigView]
 
 
 # ================================================================

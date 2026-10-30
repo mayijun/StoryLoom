@@ -4,9 +4,11 @@ import { useProjectStore } from './stores/projectStore'
 import { useAgentStore } from './stores/agentStore'
 import { useAssetStore } from './stores/assetStore'
 import { useGenerationStore } from './stores/generationStore'
+import { useTaskStore } from './stores/taskStore'
 import { useApi } from './composables/useApi'
 
-import type { AgentConfigInput, AgentMessage, AgentType } from './types/agent'
+import type { AgentConfig, AgentConfigInput, AgentMessage, AgentType } from './types/agent'
+import type { TaskConfig, TaskConfigInput } from './types/task'
 import type { CharacterAsset } from './types/asset'
 import { AGENT_TYPE_META } from './types/agent'
 import { FORESHADOW_STATUS_META } from './types/asset'
@@ -16,6 +18,7 @@ const projectStore = useProjectStore()
 const agentStore = useAgentStore()
 const assetStore = useAssetStore()
 const genStore = useGenerationStore()
+const taskStore = useTaskStore()
 
 // ---- 状态 ----
 const serverOnline = ref(false)
@@ -30,13 +33,27 @@ const showCreateAgent = ref(false)
 const showCreateCharacter = ref(false)
 const showCreateLocation = ref(false)
 
+// 配置编辑：null 表示新建
+const editingAgentKey = ref<string | null>(null)
+const editingTaskKey = ref<string | null>(null)
+const showTaskDialog = ref(false)
+
 // 表单数据
 const newProject = ref({ title: '', style: '' })
-const newAgent = ref<AgentConfigInput>({
+const agentForm = ref<AgentConfigInput>({
   key: '',
   role: '',
   goal: '',
   backstory: '',
+  enabled: true,
+})
+const taskForm = ref<TaskConfigInput>({
+  key: '',
+  description: '',
+  expected_output: '',
+  agent_key: null,
+  context_keys: [],
+  enabled: true,
 })
 const newChar = ref<Partial<CharacterAsset>>({
   name: '', importance_tier: 'primary', persona: '', motivation: '', secrets: '',
@@ -50,6 +67,7 @@ onMounted(async () => {
     serverOnline.value = true
     await projectStore.fetchProjects()
     await agentStore.fetchAgents()
+    await taskStore.fetchTasks()
   } catch {
     serverOnline.value = false
   }
@@ -71,10 +89,68 @@ async function handleSelectProject(id: string) {
   selectedChars.value = []
 }
 
-async function handleCreateAgent() {
-  await agentStore.addAgent({ ...newAgent.value })
+function openCreateAgent() {
+  editingAgentKey.value = null
+  agentForm.value = { key: '', role: '', goal: '', backstory: '', enabled: true }
+  showCreateAgent.value = true
+}
+
+function openEditAgent(agent: AgentConfig) {
+  editingAgentKey.value = agent.key
+  agentForm.value = {
+    key: agent.key,
+    role: agent.role,
+    goal: agent.goal,
+    backstory: agent.backstory,
+    enabled: agent.enabled,
+  }
+  showCreateAgent.value = true
+}
+
+async function handleSaveAgent() {
+  if (editingAgentKey.value) {
+    const { key, ...patch } = agentForm.value
+    await agentStore.updateAgent(editingAgentKey.value, patch)
+  } else {
+    await agentStore.addAgent({ ...agentForm.value })
+  }
   showCreateAgent.value = false
-  newAgent.value = { key: '', role: '', goal: '', backstory: '' }
+}
+
+function openCreateTask() {
+  editingTaskKey.value = null
+  taskForm.value = {
+    key: '',
+    description: '',
+    expected_output: '',
+    agent_key: null,
+    context_keys: [],
+    enabled: true,
+  }
+  showTaskDialog.value = true
+}
+
+function openEditTask(task: TaskConfig) {
+  editingTaskKey.value = task.key
+  taskForm.value = {
+    key: task.key,
+    description: task.description,
+    expected_output: task.expected_output,
+    agent_key: task.agent_key ?? null,
+    context_keys: [...task.context_keys],
+    enabled: task.enabled,
+  }
+  showTaskDialog.value = true
+}
+
+async function handleSaveTask() {
+  if (editingTaskKey.value) {
+    const { key, ...patch } = taskForm.value
+    await taskStore.updateTask(editingTaskKey.value, patch)
+  } else {
+    await taskStore.addTask({ ...taskForm.value })
+  }
+  showTaskDialog.value = false
 }
 
 async function handleCreateCharacter() {
@@ -108,7 +184,7 @@ async function handleGenerate() {
 </script>
 
 <template>
-  <div class="app-layout">
+  <div class="app-layout" :class="{ 'layout-wide': activeTab === 'agents' }">
     <!-- ==================== 顶栏 ==================== -->
     <header class="app-header">
       <h1>🧵 织章 StoryLoom</h1>
@@ -154,51 +230,92 @@ async function handleGenerate() {
         </div>
       </div>
 
-      <!-- Agent列表 -->
+      <!-- Agent / Task 双栏编辑 -->
       <template v-if="activeTab === 'agents'">
-        <div class="panel">
-          <div class="panel-title">
-            <span>已启用的Agent</span>
-            <button class="btn btn-sm btn-primary" @click="showCreateAgent = true" style="margin-left:auto;">
-              ＋ 添加
-            </button>
-          </div>
-
-          <div
-            v-for="agent in agentStore.agents"
-            :key="agent.key"
-            class="agent-card"
-            :class="{ disabled: !agent.enabled }"
-          >
-            <div class="agent-icon">{{ AGENT_TYPE_META[agent.key as AgentType]?.icon || '⚙️' }}</div>
-            <div class="agent-info">
-              <div class="agent-name">{{ agent.role }}</div>
-              <div class="agent-model">
-                {{ agent.key }}
-                <template v-if="!agent.enabled"> · 已停用</template>
-              </div>
+        <div class="config-columns">
+          <!-- 左栏：Agents -->
+          <div class="panel">
+            <div class="panel-title">
+              <span>🤖 Agents</span>
+              <button class="btn btn-sm btn-primary" @click="openCreateAgent" style="margin-left:auto;">
+                ＋ 添加
+              </button>
             </div>
+
             <div
-              class="agent-status"
-              :class="{
-                thinking: agentStore.runtimeStates.get(agent.key)?.status === 'thinking'
-              }"
-            ></div>
-            <button
-              class="btn btn-icon btn-sm"
-              @click.stop="agentStore.removeAgent(agent.key)"
-              title="删除"
-              style="color:var(--error);background:transparent;border:none;"
-            >✕</button>
+              v-for="agent in agentStore.agents"
+              :key="agent.key"
+              class="agent-card"
+              :class="{ disabled: !agent.enabled }"
+              @click="openEditAgent(agent)"
+            >
+              <div class="agent-icon">{{ AGENT_TYPE_META[agent.key as AgentType]?.icon || '⚙️' }}</div>
+              <div class="agent-info">
+                <div class="agent-name">{{ agent.role }}</div>
+                <div class="agent-model">
+                  {{ agent.key }}
+                  <template v-if="!agent.enabled"> · 已停用</template>
+                </div>
+              </div>
+              <div
+                class="agent-status"
+                :class="{
+                  thinking: agentStore.runtimeStates.get(agent.key)?.status === 'thinking'
+                }"
+              ></div>
+              <button
+                class="btn btn-icon btn-sm"
+                @click.stop="agentStore.removeAgent(agent.key)"
+                title="删除"
+                style="color:var(--error);background:transparent;border:none;"
+              >✕</button>
+            </div>
+
+            <div v-if="agentStore.agents.length === 0" style="text-align:center;color:var(--text-secondary);padding:20px;font-size:13px;">
+              暂无Agent，点击上方"添加"创建
+            </div>
           </div>
 
-          <div v-if="agentStore.agents.length === 0" style="text-align:center;color:var(--text-secondary);padding:20px;font-size:13px;">
-            暂无Agent，点击上方"添加"创建
+          <!-- 右栏：Tasks -->
+          <div class="panel">
+            <div class="panel-title">
+              <span>📝 Tasks</span>
+              <button class="btn btn-sm btn-primary" @click="openCreateTask" style="margin-left:auto;">
+                ＋ 添加
+              </button>
+            </div>
+
+            <div
+              v-for="task in taskStore.tasks"
+              :key="task.key"
+              class="agent-card"
+              :class="{ disabled: !task.enabled }"
+              @click="openEditTask(task)"
+            >
+              <div class="agent-icon">📝</div>
+              <div class="agent-info">
+                <div class="agent-name">{{ task.key }}</div>
+                <div class="agent-model">
+                  {{ task.agent_key || '未绑定 Agent' }} · {{ task.context_keys.length }} 上下文
+                  <template v-if="!task.enabled"> · 已停用</template>
+                </div>
+              </div>
+              <button
+                class="btn btn-icon btn-sm"
+                @click.stop="taskStore.removeTask(task.key)"
+                title="删除"
+                style="color:var(--error);background:transparent;border:none;"
+              >✕</button>
+            </div>
+
+            <div v-if="taskStore.tasks.length === 0" style="text-align:center;color:var(--text-secondary);padding:20px;font-size:13px;">
+              暂无Task，点击上方"添加"创建
+            </div>
           </div>
         </div>
 
         <!-- 预留Agent类型展示 -->
-        <div class="panel">
+        <div class="panel" style="margin-top:12px;">
           <div class="panel-title">🔮 预留类型</div>
           <div
             v-for="(meta, type) in AGENT_TYPE_META"
@@ -428,29 +545,81 @@ async function handleGenerate() {
       </div>
     </div>
 
-    <!-- ==================== 对话框：创建Agent ==================== -->
+    <!-- ==================== 对话框：新建/编辑 Agent ==================== -->
     <div v-if="showCreateAgent" class="dialog-overlay" @click.self="showCreateAgent = false">
       <div class="dialog">
-        <h3>🤖 添加Agent</h3>
+        <h3>🤖 {{ editingAgentKey ? '编辑 Agent' : '添加 Agent' }}</h3>
         <div class="form-group">
           <label>Key（唯一标识：小写字母 / 数字 / 下划线）</label>
-          <input v-model="newAgent.key" placeholder="例：critic" />
+          <input v-model="agentForm.key" :disabled="!!editingAgentKey" placeholder="例：critic" />
         </div>
         <div class="form-group">
           <label>Role（角色定位）</label>
-          <input v-model="newAgent.role" placeholder="例：文风批评家" />
+          <input v-model="agentForm.role" placeholder="例：文风批评家" />
         </div>
         <div class="form-group">
           <label>Goal（目标）</label>
-          <input v-model="newAgent.goal" placeholder="例：挑出陈词滥调，保证文风统一" />
+          <input v-model="agentForm.goal" placeholder="例：挑出陈词滥调，保证文风统一" />
         </div>
         <div class="form-group">
           <label>Backstory（背景设定）</label>
-          <textarea v-model="newAgent.backstory" rows="4" placeholder="例：你是苛刻的文学编辑，阅读过上千部小说…"></textarea>
+          <textarea v-model="agentForm.backstory" rows="4" placeholder="例：你是苛刻的文学编辑，阅读过上千部小说…"></textarea>
         </div>
+        <label class="checkbox-row">
+          <input type="checkbox" v-model="agentForm.enabled" /> 启用该 Agent
+        </label>
         <div class="form-actions">
           <button class="btn btn-secondary" @click="showCreateAgent = false">取消</button>
-          <button class="btn btn-primary" @click="handleCreateAgent" :disabled="!newAgent.key || !newAgent.role || !newAgent.goal || !newAgent.backstory">添加</button>
+          <button class="btn btn-primary" @click="handleSaveAgent" :disabled="!agentForm.key || !agentForm.role || !agentForm.goal || !agentForm.backstory">
+            {{ editingAgentKey ? '保存' : '添加' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== 对话框：新建/编辑 Task ==================== -->
+    <div v-if="showTaskDialog" class="dialog-overlay" @click.self="showTaskDialog = false">
+      <div class="dialog">
+        <h3>📝 {{ editingTaskKey ? '编辑 Task' : '添加 Task' }}</h3>
+        <div class="form-group">
+          <label>Key（唯一标识：小写字母 / 数字 / 下划线）</label>
+          <input v-model="taskForm.key" :disabled="!!editingTaskKey" placeholder="例：style_review" />
+        </div>
+        <div class="form-group">
+          <label>Description（任务说明，可含 {占位符}）</label>
+          <textarea v-model="taskForm.description" rows="4" placeholder="例：审查本场景正文的文风问题"></textarea>
+        </div>
+        <div class="form-group">
+          <label>Expected Output（期望产出）</label>
+          <textarea v-model="taskForm.expected_output" rows="3" placeholder="例：按严重程度排序的问题清单"></textarea>
+        </div>
+        <div class="form-group">
+          <label>执行 Agent</label>
+          <select v-model="taskForm.agent_key">
+            <option :value="null">未绑定</option>
+            <option v-for="agent in agentStore.agents" :key="agent.key" :value="agent.key">
+              {{ agent.key }} · {{ agent.role }}
+            </option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>上下文依赖（可多选，Ctrl/Cmd + 点击）</label>
+          <select v-model="taskForm.context_keys" multiple size="4">
+            <option
+              v-for="task in taskStore.tasks.filter(t => t.key !== editingTaskKey)"
+              :key="task.key"
+              :value="task.key"
+            >{{ task.key }}</option>
+          </select>
+        </div>
+        <label class="checkbox-row">
+          <input type="checkbox" v-model="taskForm.enabled" /> 启用该 Task
+        </label>
+        <div class="form-actions">
+          <button class="btn btn-secondary" @click="showTaskDialog = false">取消</button>
+          <button class="btn btn-primary" @click="handleSaveTask" :disabled="!taskForm.key || !taskForm.description || !taskForm.expected_output">
+            {{ editingTaskKey ? '保存' : '添加' }}
+          </button>
         </div>
       </div>
     </div>
