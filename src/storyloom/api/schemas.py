@@ -194,6 +194,8 @@ class GenerateSceneRequest(BaseModel):
     scene_brief: str
     present_character_names: List[str]
     render_mode: str = "text_only"
+    # 可选：生成后归属到指定章节（需先创建章节）
+    chapter_id: Optional[str] = None
     # 预留：自定义Agent编排（未来Flow编辑器输出）
     custom_flow: Optional[Dict[str, Any]] = None
 
@@ -216,6 +218,73 @@ class GenerateSceneResponse(BaseModel):
     foreshadowing_updates: List[ForeshadowingView]
     # 预留：多模态输出
     render_outputs: Dict[str, Any] = Field(default_factory=dict)
+
+
+# ================================================================
+# 场景持久化
+# ================================================================
+
+class SceneView(BaseModel):
+    scene_id: str
+    project_id: str
+    chapter_id: Optional[str] = None
+    brief: str
+    present_characters: List[str] = Field(default_factory=list)
+    prose: str
+    quality_score: Optional[float] = None
+    duration_ms: Optional[int] = None
+    model_usage: Dict[str, Any] = Field(default_factory=dict)
+    created_at: Optional[str] = None
+
+
+class SceneUpdate(BaseModel):
+    """编辑已落库场景（仅 prose / brief 等可变字段）"""
+    model_config = ConfigDict(extra="forbid")
+
+    brief: Optional[str] = None
+    present_characters: Optional[List[str]] = None
+    prose: Optional[str] = None
+    quality_score: Optional[float] = None
+    duration_ms: Optional[int] = None
+    model_usage: Optional[Dict[str, Any]] = None
+
+
+# ================================================================
+# 章节结构
+# ================================================================
+
+class ChapterCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    outline: str = ""
+    position: Optional[int] = None
+    status: str = "draft"
+
+
+class ChapterUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: Optional[str] = None
+    outline: Optional[str] = None
+    position: Optional[int] = None
+    status: Optional[str] = None
+
+
+class ChapterView(BaseModel):
+    chapter_id: str
+    project_id: str
+    title: str
+    outline: str
+    position: int
+    status: str
+
+
+class SceneAssignChapter(BaseModel):
+    """把场景归属到章节；chapter_id 为 null 时解除归属"""
+    model_config = ConfigDict(extra="forbid")
+
+    chapter_id: Optional[str] = None
 
 
 # ================================================================

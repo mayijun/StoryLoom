@@ -11,7 +11,17 @@ PostgreSQL / MySQL 等大型数据库，业务代码无需修改。
 
 from storyloom.db.base import database_url, get_engine, reset_engines
 from storyloom.db.config_source import DbConfig
-from storyloom.db.models import AgentConfigRow, Base, TaskConfigRow
+from storyloom.db.models import (
+    AgentConfigRow,
+    Base,
+    ChapterRow,
+    CharacterRow,
+    ForeshadowRow,
+    LocationRow,
+    ProjectRow,
+    SceneRow,
+    TaskConfigRow,
+)
 from storyloom.db.repository import (
     DEFAULT_PROJECT_ID,
     SCENE_CREW,
@@ -23,10 +33,16 @@ from storyloom.db.repository import (
 __all__ = [
     "AgentConfigRow",
     "Base",
+    "ChapterRow",
+    "CharacterRow",
     "CrewConfigRepository",
     "DbConfig",
     "DEFAULT_PROJECT_ID",
+    "ForeshadowRow",
+    "LocationRow",
+    "ProjectRow",
     "SCENE_CREW",
+    "SceneRow",
     "TaskConfigRow",
     "database_url",
     "get_engine",

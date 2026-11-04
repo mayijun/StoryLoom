@@ -25,7 +25,6 @@ from storyloom.api.schemas import (
     GenerateSceneResponse, ForeshadowingView,
 )
 
-
 class NovelEngine:
     """
     小说引擎：封装CrewAI后端，提供API友好的接口
@@ -69,17 +68,46 @@ class NovelEngine:
     # ---------------- 项目管理 ----------------
 
     def _build_project(self, meta: dict) -> NovelProject:
-        """从 projects 表的元数据构造 NovelProject 运行时对象"""
+        """从 projects 表的元数据构造 NovelProject 运行时对象，
+        并从 DB 加载已落库的角色 / 场景 / 伏笔。"""
+        repo = get_repository()
         project = NovelProject(
             project_id=meta["project_id"],
             title=meta["title"],
             style=meta["style"],
-            characters=[],
-            locations=[],
+            characters=[
+                CharacterAsset(
+                    name=c["name"],
+                    importance_tier=c["importance_tier"],
+                    persona=c["persona"],
+                    motivation=c["motivation"],
+                    secrets=c.get("secrets", ""),
+                )
+                for c in repo.list_characters(meta["project_id"])
+            ],
+            locations=[
+                LocationAsset(
+                    name=l["name"], description=l.get("description", "")
+                )
+                for l in repo.list_locations(meta["project_id"])
+            ],
         )
         project.scene_count = meta["scene_count"]
-        project.foreshadowings = []  # 伏笔暂不落库，保持与现有流程一致
-        # characters / locations 当前也不落库，置空即可
+        project.foreshadowings = [
+            Foreshadowing(
+                foreshadow_id=f["foreshadow_id"],
+                description=f["description"],
+                planted_in_scene=f["planted_in_scene"],
+                target_revelation=f["target_revelation"],
+                status=f["status"],
+                reinforcement_count=f["reinforcement_count"],
+                max_dormant_scenes=f["max_dormant_scenes"],
+                scenes_since_last_mention=f["scenes_since_last_mention"],
+                linked_characters=list(f.get("linked_characters", [])),
+                linked_surprise_ids=list(f.get("linked_surprise_ids", [])),
+            )
+            for f in repo.list_foreshadowings(meta["project_id"])
+        ]
         return project
 
     def _get_or_load_project(self, project_id: str) -> NovelProject:
@@ -153,12 +181,22 @@ class NovelEngine:
 
     def add_character(self, project_id, char: CharacterAsset):
         project = self._get_or_load_project(project_id)
-        project.characters.append(char)
-        # 同步更新 DB 中的 character_count
+        # 先落库（upsert：重名则更新）
+        get_repository().upsert_character(
+            project_id,
+            name=char.name,
+            importance_tier=char.importance_tier,
+            persona=char.persona,
+            motivation=char.motivation,
+            secrets=char.secrets,
+        )
+        # 同步内存：若已存在则替换，否则追加
+        project.characters = [
+            c for c in project.characters if c.name != char.name
+        ] + [char]
         get_repository().update_project_stats(
             project_id, character_count=len(project.characters)
         )
-        # 自动加入RAG
         self.rags[project_id].add(
             f"char_{char.name}",
             f"{char.name}: {char.persona}. 动机: {char.motivation}",
@@ -167,17 +205,65 @@ class NovelEngine:
 
     def add_location(self, project_id, loc: LocationAsset):
         project = self._get_or_load_project(project_id)
-        project.locations.append(loc)
+        get_repository().upsert_location(
+            project_id, name=loc.name, description=loc.description
+        )
+        project.locations = [
+            l for l in project.locations if l.name != loc.name
+        ] + [loc]
         self.rags[project_id].add(
             f"loc_{loc.name}",
             f"{loc.name}: {loc.description}",
             {"type": "location"},
         )
 
+    def add_foreshadowing(self, project_id, fs: Foreshadowing):
+        project = self._get_or_load_project(project_id)
+        get_repository().upsert_foreshadowing(
+            project_id,
+            foreshadow_id=fs.foreshadow_id,
+            description=fs.description,
+            planted_in_scene=fs.planted_in_scene,
+            target_revelation=fs.target_revelation,
+            status=fs.status.value,
+            reinforcement_count=fs.reinforcement_count,
+            max_dormant_scenes=fs.max_dormant_scenes,
+            scenes_since_last_mention=fs.scenes_since_last_mention,
+            linked_characters=fs.linked_characters,
+            linked_surprise_ids=fs.linked_surprise_ids,
+        )
+        project.foreshadowings = [
+            f for f in project.foreshadowings
+            if f.foreshadow_id != fs.foreshadow_id
+        ] + [fs]
+        get_repository().update_project_stats(
+            project_id, foreshadowing_count=len(project.foreshadowings)
+        )
+
+    def delete_foreshadowing(self, project_id, foreshadow_id: str) -> bool:
+        project = self._get_or_load_project(project_id)
+        ok = get_repository().delete_foreshadowing(foreshadow_id, project_id)
+        if ok:
+            project.foreshadowings = [
+                f for f in project.foreshadowings
+                if f.foreshadow_id != foreshadow_id
+            ]
+            get_repository().update_project_stats(
+                project_id,
+                foreshadowing_count=len(project.foreshadowings),
+            )
+        return ok
+
     async def generate_scene(
-        self, request: GenerateSceneRequest
+        self,
+        request: GenerateSceneRequest,
+        scene_id: Optional[str] = None,
     ) -> GenerateSceneResponse:
-        """生成场景（同步执行，异步包装）"""
+        """生成场景（同步执行，异步包装）。
+
+        scene_id 不为空时表示**重跑**已有场景：用传入的 scene_id 覆盖正文，
+        不递增 scene_count。
+        """
         project = self._get_or_load_project(request.project_id)
         memory = self.memories[request.project_id]
         rag = self.rags[request.project_id]
@@ -193,6 +279,7 @@ class NovelEngine:
             crew=crew,
             scene_brief=request.scene_brief,
             present_characters=request.present_character_names,
+            is_regenerate=scene_id is not None,
         )
         flow.render_mode = request.render_mode
 
@@ -200,9 +287,59 @@ class NovelEngine:
         loop = asyncio.get_event_loop()
         final_text = await loop.run_in_executor(None, flow.kickoff)
 
-        # scene_flow 在 kickoff 内部已经 project.scene_count += 1；
+        repo = get_repository()
+
+        # 重跑：用原 scene_id 覆盖；新建：用 scene_count 生成新编号
+        if scene_id is not None:
+            target_scene_id = scene_id
+            repo.update_scene(
+                target_scene_id,
+                chapter_id=request.chapter_id,
+                brief=request.scene_brief,
+                present_characters=request.present_character_names,
+                prose=str(final_text),
+            )
+        else:
+            # scene_flow 在 kickoff 内部已经 project.scene_count += 1；
+            target_scene_id = f"scene_{project.scene_count}"
+            try:
+                repo.create_scene(
+                    scene_id=target_scene_id,
+                    project_id=request.project_id,
+                    chapter_id=request.chapter_id,
+                    brief=request.scene_brief,
+                    present_characters=request.present_character_names,
+                    prose=str(final_text),
+                    model_usage=dict(crew._summary) if hasattr(crew, "_summary") else {},
+                )
+            except ValueError:
+                # scene_id 已存在（极端情况）→ 覆盖
+                repo.update_scene(
+                    target_scene_id,
+                    chapter_id=request.chapter_id,
+                    brief=request.scene_brief,
+                    present_characters=request.present_character_names,
+                    prose=str(final_text),
+                )
+
+        # 同步生成过程中可能变更的伏笔状态到 DB
+        for fs in project.foreshadowings:
+            repo.upsert_foreshadowing(
+                request.project_id,
+                foreshadow_id=fs.foreshadow_id,
+                description=fs.description,
+                planted_in_scene=fs.planted_in_scene,
+                target_revelation=fs.target_revelation,
+                status=fs.status.value,
+                reinforcement_count=fs.reinforcement_count,
+                max_dormant_scenes=fs.max_dormant_scenes,
+                scenes_since_last_mention=fs.scenes_since_last_mention,
+                linked_characters=fs.linked_characters,
+                linked_surprise_ids=fs.linked_surprise_ids,
+            )
+
         # 把更新后的统计写回数据库，保证下次重启仍能看到最新值
-        get_repository().update_project_stats(
+        repo.update_project_stats(
             request.project_id,
             scene_count=project.scene_count,
             character_count=len(project.characters),
@@ -238,7 +375,7 @@ class NovelEngine:
         ]
 
         return GenerateSceneResponse(
-            scene_id=f"scene_{project.scene_count}",
+            scene_id=target_scene_id,
             final_prose=str(final_text),
             steps=steps,
             foreshadowing_updates=fs_views,

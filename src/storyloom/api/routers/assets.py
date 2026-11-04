@@ -1,4 +1,8 @@
-"""资产管理API"""
+"""资产管理API（角色 / 场景 / 伏笔）。
+
+数据落库（characters / locations / foreshadowings 表），
+通过 engine 的方法同步写入 DB 与运行时 NovelProject 对象。
+"""
 
 from fastapi import APIRouter, HTTPException
 
@@ -8,6 +12,8 @@ from storyloom.models import CharacterAsset, LocationAsset, Foreshadowing
 
 router = APIRouter(prefix="/api/projects/{project_id}/assets", tags=["assets"])
 
+
+# ---------------- 角色 ----------------
 
 @router.post("/characters")
 async def add_character(project_id: str, data: CharacterCreate):
@@ -31,14 +37,22 @@ async def delete_character(project_id: str, name: str):
     p = engine.get_project(project_id)
     if not p:
         raise HTTPException(404)
-    p.characters = [c for c in p.characters if c.name != name]
+    from storyloom.db import get_repository
+    ok = get_repository().delete_character_asset(name, project_id)
+    if ok:
+        p.characters = [c for c in p.characters if c.name != name]
+        get_repository().update_project_stats(
+            project_id, character_count=len(p.characters)
+        )
     return {"status": "ok"}
 
+
+# ---------------- 场景 / 地点 ----------------
 
 @router.post("/locations")
 async def add_location(project_id: str, data: LocationCreate):
     if project_id not in engine.projects:
-        raise HTTPException(404)
+        raise HTTPException(404, "Project not found")
     loc = LocationAsset(name=data.name, description=data.description)
     engine.add_location(project_id, loc)
     return {"status": "ok", "location": loc.model_dump()}
@@ -52,13 +66,26 @@ async def list_locations(project_id: str):
     return [l.model_dump() for l in p.locations]
 
 
+@router.delete("/locations/{name}")
+async def delete_location(project_id: str, name: str):
+    p = engine.get_project(project_id)
+    if not p:
+        raise HTTPException(404)
+    from storyloom.db import get_repository
+    get_repository().delete_location_asset(name, project_id)
+    p.locations = [l for l in p.locations if l.name != name]
+    return {"status": "ok"}
+
+
+# ---------------- 伏笔 ----------------
+
 @router.post("/foreshadowings")
 async def add_foreshadowing(project_id: str, data: dict):
     p = engine.get_project(project_id)
     if not p:
         raise HTTPException(404)
     fs = Foreshadowing(**data)
-    p.foreshadowings.append(fs)
+    engine.add_foreshadowing(project_id, fs)
     return {"status": "ok", "foreshadowing": fs.model_dump(mode="json")}
 
 
@@ -68,3 +95,12 @@ async def list_foreshadowings(project_id: str):
     if not p:
         raise HTTPException(404)
     return [f.model_dump(mode="json") for f in p.foreshadowings]
+
+
+@router.delete("/foreshadowings/{foreshadow_id}")
+async def delete_foreshadowing(project_id: str, foreshadow_id: str):
+    p = engine.get_project(project_id)
+    if not p:
+        raise HTTPException(404)
+    engine.delete_foreshadowing(project_id, foreshadow_id)
+    return {"status": "ok"}

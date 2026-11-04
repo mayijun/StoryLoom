@@ -164,6 +164,7 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
         scene_brief: str,
         present_characters: List[str],
         max_retries: int = 1,
+        is_regenerate: bool = False,
     ):
         super().__init__()
         self.state.project = project
@@ -174,6 +175,8 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
         self.present_characters = present_characters
         self.max_retries = max_retries
         self.rag_context = ""
+        # 重跑同一编号场景时：不递增 scene_count，不推进伏笔沉睡计数
+        self.is_regenerate = is_regenerate
 
     # ============================================================
     # Step 0a: SurpriseAgent 提出意外事件提案
@@ -589,7 +592,9 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
         self.state.memory.add_scene_summary(prose)
 
         project = self.state.project
-        advance_scene_counters(project)
+        # 重跑同一编号场景时不推进计数（scene_count 不递增，伏笔沉睡不推进）
+        if not self.is_regenerate:
+            advance_scene_counters(project)
 
         # 尝试解析导演采纳的伏笔操作并应用
         try:

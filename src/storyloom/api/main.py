@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 _ROOT = Path(__file__).resolve().parents[3]
 load_dotenv(_ROOT / ".env")
 
-from storyloom.api.routers import projects, agents, tasks, assets, generation
+from storyloom.api.routers import projects, agents, tasks, assets, generation, scenes, chapters
 from storyloom.api.engine import engine
 
 app = FastAPI(
@@ -32,6 +32,8 @@ app.include_router(agents.router)
 app.include_router(tasks.router)
 app.include_router(assets.router)
 app.include_router(generation.router)
+app.include_router(scenes.router)
+app.include_router(chapters.router)
 
 
 @app.get("/api/health")

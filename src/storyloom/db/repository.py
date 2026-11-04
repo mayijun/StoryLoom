@@ -18,7 +18,17 @@ from sqlalchemy import func, inspect, select
 from sqlalchemy.orm import Session
 
 from storyloom.db.base import database_url, get_engine
-from storyloom.db.models import AgentConfigRow, Base, ProjectRow, TaskConfigRow
+from storyloom.db.models import (
+    AgentConfigRow,
+    Base,
+    ChapterRow,
+    CharacterRow,
+    ForeshadowRow,
+    LocationRow,
+    ProjectRow,
+    SceneRow,
+    TaskConfigRow,
+)
 
 SCENE_CREW = "scene_crew"
 # 内置示例项目：原有配置与种子数据都归属于它，用户可直接上手试用
@@ -112,7 +122,7 @@ class CrewConfigRepository:
 
         # 丢弃旧表（如果需要迁移）
         if legacy:
-            for table in ("agent_configs", "task_configs"):
+            for table in ("agent_configs", "task_configs", "scenes"):
                 if legacy.get(table):
                     with self.engine.begin() as conn:
                         conn.exec_driver_sql(f"DROP TABLE IF EXISTS {table}")
@@ -136,6 +146,7 @@ class CrewConfigRepository:
         """
         检测是否需要迁移（旧表缺 project_id 列或缺外键）。
         如果需要，把旧表数据读出来返回，之后由 create_all 重建新表。
+        同时处理 #2 场景：scenes 表已存在但缺指向 chapters 的外键。
         """
         inspector = inspect(self.engine)
         need_migration = False
@@ -167,6 +178,28 @@ class CrewConfigRepository:
                         dict(zip(col_names, row)) for row in raw_rows
                     ]
                 preserved[table] = {"columns": list(columns), "rows": rows}
+
+        # scenes 表迁移：已存在但缺指向 chapters 的外键（#2 之前建的库）
+        if inspector.has_table("scenes"):
+            scene_fks = inspector.get_foreign_keys("scenes")
+            has_chapter_fk = any(
+                "chapter_id" in fk["constrained_columns"]
+                and "chapters" in fk.get("referred_table", "")
+                for fk in scene_fks
+            )
+            if not has_chapter_fk:
+                need_migration = True
+                with self.engine.connect() as conn:
+                    col_names = [c["name"] for c in inspector.get_columns("scenes")]
+                    col_sql = ", ".join(col_names)
+                    raw_rows = conn.exec_driver_sql(
+                        f"SELECT {col_sql} FROM scenes"
+                    ).all()
+                    rows = [dict(zip(col_names, row)) for row in raw_rows]
+                preserved["scenes"] = {
+                    "columns": list({c["name"] for c in inspector.get_columns("scenes")}),
+                    "rows": rows,
+                }
 
         return preserved if need_migration else None
 
@@ -342,6 +375,186 @@ class CrewConfigRepository:
                 row.foreshadowing_count = foreshadowing_count
             session.flush()
             return _project_record(row)
+
+    # ---------------- 场景（SceneRow） ----------------
+
+    def list_scenes(self, project_id: str) -> List[Dict[str, Any]]:
+        self.create_all()
+        with self.session() as session:
+            rows = session.scalars(
+                select(SceneRow)
+                .where(SceneRow.project_id == project_id)
+                .order_by(SceneRow.created_at, SceneRow.scene_id)
+            ).all()
+            return [_scene_record(row) for row in rows]
+
+    def get_scene(self, scene_id: str) -> Optional[Dict[str, Any]]:
+        with self.session() as session:
+            row = session.scalar(
+                select(SceneRow).where(SceneRow.scene_id == scene_id)
+            )
+            return _scene_record(row) if row else None
+
+    def create_scene(
+        self,
+        scene_id: str,
+        project_id: str,
+        brief: str,
+        present_characters: Optional[List[str]] = None,
+        prose: str = "",
+        quality_score: Optional[float] = None,
+        duration_ms: Optional[int] = None,
+        model_usage: Optional[Dict[str, Any]] = None,
+        chapter_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        self.create_all()
+        self.ensure_project(project_id)
+        with self.session() as session:
+            if session.get(SceneRow, scene_id) is not None:
+                raise ValueError(f"场景已存在: {scene_id}")
+            row = SceneRow(
+                scene_id=scene_id,
+                project_id=project_id,
+                chapter_id=chapter_id,
+                brief=brief,
+                present_characters=list(present_characters or []),
+                prose=prose,
+                quality_score=quality_score,
+                duration_ms=duration_ms,
+                model_usage=dict(model_usage or {}),
+            )
+            session.add(row)
+            session.flush()
+            return _scene_record(row)
+
+    def update_scene(self, scene_id: str, **fields: Any) -> Optional[Dict[str, Any]]:
+        allowed = {
+            "brief", "present_characters", "prose",
+            "quality_score", "duration_ms", "model_usage", "chapter_id",
+        }
+        unknown = set(fields) - allowed
+        if unknown:
+            raise ValueError(f"未知的场景字段: {sorted(unknown)}")
+        with self.session() as session:
+            row = session.get(SceneRow, scene_id)
+            if row is None:
+                return None
+            for field, value in fields.items():
+                if value is not None:
+                    setattr(row, field, value)
+            session.flush()
+            return _scene_record(row)
+
+    def delete_scene(self, scene_id: str) -> bool:
+        with self.session() as session:
+            row = session.get(SceneRow, scene_id)
+            if row is None:
+                return False
+            session.delete(row)
+            return True
+
+    # ---------------- 章节（ChapterRow） ----------------
+
+    def list_chapters(self, project_id: str) -> List[Dict[str, Any]]:
+        self.create_all()
+        with self.session() as session:
+            rows = session.scalars(
+                select(ChapterRow)
+                .where(ChapterRow.project_id == project_id)
+                .order_by(ChapterRow.position, ChapterRow.chapter_id)
+            ).all()
+            return [_chapter_record(row) for row in rows]
+
+    def get_chapter(self, chapter_id: str) -> Optional[Dict[str, Any]]:
+        with self.session() as session:
+            row = session.get(ChapterRow, chapter_id)
+            return _chapter_record(row) if row else None
+
+    def create_chapter(
+        self,
+        chapter_id: str,
+        project_id: str,
+        title: str,
+        outline: str = "",
+        position: Optional[int] = None,
+        status: str = "draft",
+    ) -> Dict[str, Any]:
+        self.create_all()
+        self.ensure_project(project_id)
+        with self.session() as session:
+            if session.get(ChapterRow, chapter_id) is not None:
+                raise ValueError(f"章节已存在: {chapter_id}")
+            if position is None:
+                # 自动取当前项目最大 position + 1
+                max_pos = session.scalar(
+                    select(func.coalesce(func.max(ChapterRow.position), -1)).where(
+                        ChapterRow.project_id == project_id
+                    )
+                )
+                position = (max_pos or 0) + 1
+            row = ChapterRow(
+                chapter_id=chapter_id,
+                project_id=project_id,
+                title=title,
+                outline=outline,
+                position=position,
+                status=status,
+            )
+            session.add(row)
+            session.flush()
+            return _chapter_record(row)
+
+    def update_chapter(self, chapter_id: str, **fields: Any) -> Optional[Dict[str, Any]]:
+        allowed = {"title", "outline", "position", "status"}
+        unknown = set(fields) - allowed
+        if unknown:
+            raise ValueError(f"未知的章节字段: {sorted(unknown)}")
+        with self.session() as session:
+            row = session.get(ChapterRow, chapter_id)
+            if row is None:
+                return None
+            for field, value in fields.items():
+                if value is not None:
+                    setattr(row, field, value)
+            session.flush()
+            return _chapter_record(row)
+
+    def delete_chapter(self, chapter_id: str) -> bool:
+        with self.session() as session:
+            row = session.get(ChapterRow, chapter_id)
+            if row is None:
+                return False
+            session.delete(row)
+            return True
+
+    def assign_scene_to_chapter(
+        self, scene_id: str, chapter_id: Optional[str]
+    ) -> Optional[Dict[str, Any]]:
+        """把场景归属到某章节；chapter_id=None 表示解除归属。"""
+        with self.session() as session:
+            row = session.get(SceneRow, scene_id)
+            if row is None:
+                return None
+            if chapter_id is not None and session.get(ChapterRow, chapter_id) is None:
+                raise ValueError(f"章节不存在: {chapter_id}")
+            row.chapter_id = chapter_id
+            session.flush()
+            return _scene_record(row)
+
+    def list_scenes_by_chapter(
+        self, project_id: str, chapter_id: Optional[str]
+    ) -> List[Dict[str, Any]]:
+        """列出某项目下指定章节的场景；chapter_id=None 列出未归属章节的场景。"""
+        self.create_all()
+        with self.session() as session:
+            stmt = select(SceneRow).where(SceneRow.project_id == project_id)
+            if chapter_id is None:
+                stmt = stmt.where(SceneRow.chapter_id.is_(None))
+            else:
+                stmt = stmt.where(SceneRow.chapter_id == chapter_id)
+            stmt = stmt.order_by(SceneRow.created_at, SceneRow.scene_id)
+            rows = session.scalars(stmt).all()
+            return [_scene_record(row) for row in rows]
 
     def delete_project(self, project_id: str) -> bool:
         """
@@ -729,6 +942,228 @@ class CrewConfigRepository:
             session.delete(row)
             return True
 
+    # ---------------- 角色（CharacterRow） ----------------
+
+    def list_characters(self, project_id: str) -> List[Dict[str, Any]]:
+        self.create_all()
+        with self.session() as session:
+            rows = session.scalars(
+                select(CharacterRow)
+                .where(CharacterRow.project_id == project_id)
+                .order_by(CharacterRow.id)
+            ).all()
+            return [_character_record(row) for row in rows]
+
+    def get_character_asset(
+        self, name: str, project_id: str
+    ) -> Optional[Dict[str, Any]]:
+        with self.session() as session:
+            row = session.scalar(
+                select(CharacterRow).where(
+                    CharacterRow.project_id == project_id,
+                    CharacterRow.name == name,
+                )
+            )
+            return _character_record(row) if row else None
+
+    def upsert_character(
+        self,
+        project_id: str,
+        name: str,
+        importance_tier: str,
+        persona: str,
+        motivation: str,
+        secrets: str = "",
+    ) -> Dict[str, Any]:
+        self.create_all()
+        self.ensure_project(project_id)
+        with self.session() as session:
+            row = session.scalar(
+                select(CharacterRow).where(
+                    CharacterRow.project_id == project_id,
+                    CharacterRow.name == name,
+                )
+            )
+            if row is None:
+                row = CharacterRow(
+                    project_id=project_id,
+                    name=name,
+                    importance_tier=importance_tier,
+                    persona=persona,
+                    motivation=motivation,
+                    secrets=secrets,
+                )
+                session.add(row)
+            else:
+                row.importance_tier = importance_tier
+                row.persona = persona
+                row.motivation = motivation
+                row.secrets = secrets
+            session.flush()
+            return _character_record(row)
+
+    def delete_character_asset(self, name: str, project_id: str) -> bool:
+        with self.session() as session:
+            row = session.scalar(
+                select(CharacterRow).where(
+                    CharacterRow.project_id == project_id,
+                    CharacterRow.name == name,
+                )
+            )
+            if row is None:
+                return False
+            session.delete(row)
+            return True
+
+    # ---------------- 场景/地点（LocationRow） ----------------
+
+    def list_locations(self, project_id: str) -> List[Dict[str, Any]]:
+        self.create_all()
+        with self.session() as session:
+            rows = session.scalars(
+                select(LocationRow)
+                .where(LocationRow.project_id == project_id)
+                .order_by(LocationRow.id)
+            ).all()
+            return [_location_record(row) for row in rows]
+
+    def get_location_asset(
+        self, name: str, project_id: str
+    ) -> Optional[Dict[str, Any]]:
+        with self.session() as session:
+            row = session.scalar(
+                select(LocationRow).where(
+                    LocationRow.project_id == project_id,
+                    LocationRow.name == name,
+                )
+            )
+            return _location_record(row) if row else None
+
+    def upsert_location(
+        self, project_id: str, name: str, description: str = ""
+    ) -> Dict[str, Any]:
+        self.create_all()
+        self.ensure_project(project_id)
+        with self.session() as session:
+            row = session.scalar(
+                select(LocationRow).where(
+                    LocationRow.project_id == project_id,
+                    LocationRow.name == name,
+                )
+            )
+            if row is None:
+                row = LocationRow(
+                    project_id=project_id, name=name, description=description
+                )
+                session.add(row)
+            else:
+                row.description = description
+            session.flush()
+            return _location_record(row)
+
+    def delete_location_asset(self, name: str, project_id: str) -> bool:
+        with self.session() as session:
+            row = session.scalar(
+                select(LocationRow).where(
+                    LocationRow.project_id == project_id,
+                    LocationRow.name == name,
+                )
+            )
+            if row is None:
+                return False
+            session.delete(row)
+            return True
+
+    # ---------------- 伏笔（ForeshadowRow） ----------------
+
+    def list_foreshadowings(self, project_id: str) -> List[Dict[str, Any]]:
+        self.create_all()
+        with self.session() as session:
+            rows = session.scalars(
+                select(ForeshadowRow)
+                .where(ForeshadowRow.project_id == project_id)
+                .order_by(ForeshadowRow.id)
+            ).all()
+            return [_foreshadow_record(row) for row in rows]
+
+    def get_foreshadowing(
+        self, foreshadow_id: str, project_id: str
+    ) -> Optional[Dict[str, Any]]:
+        with self.session() as session:
+            row = session.scalar(
+                select(ForeshadowRow).where(
+                    ForeshadowRow.project_id == project_id,
+                    ForeshadowRow.foreshadow_id == foreshadow_id,
+                )
+            )
+            return _foreshadow_record(row) if row else None
+
+    def upsert_foreshadowing(
+        self,
+        project_id: str,
+        foreshadow_id: str,
+        description: str,
+        planted_in_scene: str,
+        target_revelation: str,
+        status: str = "planted",
+        reinforcement_count: int = 0,
+        max_dormant_scenes: int = 5,
+        scenes_since_last_mention: int = 0,
+        linked_characters: Optional[List[str]] = None,
+        linked_surprise_ids: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        self.create_all()
+        self.ensure_project(project_id)
+        with self.session() as session:
+            row = session.scalar(
+                select(ForeshadowRow).where(
+                    ForeshadowRow.project_id == project_id,
+                    ForeshadowRow.foreshadow_id == foreshadow_id,
+                )
+            )
+            if row is None:
+                row = ForeshadowRow(
+                    project_id=project_id,
+                    foreshadow_id=foreshadow_id,
+                    description=description,
+                    planted_in_scene=planted_in_scene,
+                    target_revelation=target_revelation,
+                    status=status,
+                    reinforcement_count=reinforcement_count,
+                    max_dormant_scenes=max_dormant_scenes,
+                    scenes_since_last_mention=scenes_since_last_mention,
+                    linked_characters=list(linked_characters or []),
+                    linked_surprise_ids=list(linked_surprise_ids or []),
+                )
+                session.add(row)
+            else:
+                row.description = description
+                row.planted_in_scene = planted_in_scene
+                row.target_revelation = target_revelation
+                row.status = status
+                row.reinforcement_count = reinforcement_count
+                row.max_dormant_scenes = max_dormant_scenes
+                row.scenes_since_last_mention = scenes_since_last_mention
+                row.linked_characters = list(linked_characters or [])
+                row.linked_surprise_ids = list(linked_surprise_ids or [])
+            session.flush()
+            return _foreshadow_record(row)
+
+    def delete_foreshadowing(
+        self, foreshadow_id: str, project_id: str
+    ) -> bool:
+        with self.session() as session:
+            row = session.scalar(
+                select(ForeshadowRow).where(
+                    ForeshadowRow.project_id == project_id,
+                    ForeshadowRow.foreshadow_id == foreshadow_id,
+                )
+            )
+            if row is None:
+                return False
+            session.delete(row)
+            return True
+
     # ---------------- 种子导入 ----------------
 
     @staticmethod
@@ -935,4 +1370,65 @@ def _project_record(row: ProjectRow) -> Dict[str, Any]:
         "scene_count": row.scene_count,
         "character_count": row.character_count,
         "foreshadowing_count": row.foreshadowing_count,
+    }
+
+
+def _scene_record(row: SceneRow) -> Dict[str, Any]:
+    return {
+        "scene_id": row.scene_id,
+        "project_id": row.project_id,
+        "chapter_id": row.chapter_id,
+        "brief": row.brief,
+        "present_characters": list(row.present_characters or []),
+        "prose": row.prose or "",
+        "quality_score": row.quality_score,
+        "duration_ms": row.duration_ms,
+        "model_usage": dict(row.model_usage or {}),
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+def _chapter_record(row: ChapterRow) -> Dict[str, Any]:
+    return {
+        "chapter_id": row.chapter_id,
+        "project_id": row.project_id,
+        "title": row.title,
+        "outline": row.outline or "",
+        "position": row.position,
+        "status": row.status,
+    }
+
+
+def _character_record(row: CharacterRow) -> Dict[str, Any]:
+    return {
+        "name": row.name,
+        "project_id": row.project_id,
+        "importance_tier": row.importance_tier,
+        "persona": row.persona,
+        "motivation": row.motivation,
+        "secrets": row.secrets or "",
+    }
+
+
+def _location_record(row: LocationRow) -> Dict[str, Any]:
+    return {
+        "name": row.name,
+        "project_id": row.project_id,
+        "description": row.description or "",
+    }
+
+
+def _foreshadow_record(row: ForeshadowRow) -> Dict[str, Any]:
+    return {
+        "foreshadow_id": row.foreshadow_id,
+        "project_id": row.project_id,
+        "description": row.description,
+        "planted_in_scene": row.planted_in_scene,
+        "target_revelation": row.target_revelation,
+        "status": row.status,
+        "reinforcement_count": row.reinforcement_count,
+        "max_dormant_scenes": row.max_dormant_scenes,
+        "scenes_since_last_mention": row.scenes_since_last_mention,
+        "linked_characters": list(row.linked_characters or []),
+        "linked_surprise_ids": list(row.linked_surprise_ids or []),
     }
