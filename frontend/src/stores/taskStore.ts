@@ -9,29 +9,29 @@ export const useTaskStore = defineStore('task', () => {
 
   const enabledTasks = computed(() => tasks.value.filter(t => t.enabled))
 
-  async function fetchTasks() {
-    const res = await api.listTasks()
+  async function fetchTasks(projectId?: string) {
+    const res = await api.listTasks(projectId)
     tasks.value = res.data.tasks
   }
 
-  async function addTask(task: TaskConfigInput) {
-    const res = await api.createTask(task)
+  async function addTask(task: TaskConfigInput, projectId?: string) {
+    const res = await api.createTask(task, projectId)
     tasks.value.push(res.data)
   }
 
-  async function removeTask(key: string) {
-    await api.deleteTask(key)
+  async function removeTask(key: string, projectId?: string) {
+    await api.deleteTask(key, projectId)
     tasks.value = tasks.value.filter(t => t.key !== key)
   }
 
-  async function updateTask(key: string, patch: Partial<TaskConfigInput>) {
-    const res = await api.updateTask(key, patch)
+  async function updateTask(key: string, patch: Partial<TaskConfigInput>, projectId?: string) {
+    const res = await api.updateTask(key, patch, projectId)
     const idx = tasks.value.findIndex(t => t.key === key)
     if (idx >= 0) tasks.value[idx] = res.data
   }
 
   /** 拖拽排序：先本地更新，再按新顺序持久化 position */
-  async function reorderTasks(list: TaskConfig[]) {
+  async function reorderTasks(list: TaskConfig[], projectId?: string) {
     const previous = tasks.value
     tasks.value = list.map((task, index) => ({ ...task, position: index }))
     try {
@@ -39,7 +39,7 @@ export const useTaskStore = defineStore('task', () => {
         .map((task, index) => ({ key: task.key, index, old: task.position }))
         .filter(item => item.old !== item.index)
       await Promise.all(
-        changes.map(item => api.updateTask(item.key, { position: item.index }))
+        changes.map(item => api.updateTask(item.key, { position: item.index }, projectId))
       )
     } catch {
       tasks.value = previous

@@ -31,7 +31,7 @@ from typing import Any, List, Optional, Tuple
 from crewai import Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, crew
 
-from storyloom.db import DbConfig, get_repository
+from storyloom.db import DEFAULT_PROJECT_ID, DbConfig, get_repository
 from storyloom.llm.router import AgentModelRouter
 from storyloom.models import CharacterAsset
 
@@ -44,8 +44,13 @@ class SceneCrew:
     agents_config = DbConfig("agents")
     tasks_config = DbConfig("tasks")
 
-    def __init__(self, router: Optional[AgentModelRouter] = None):
+    def __init__(
+        self,
+        router: Optional[AgentModelRouter] = None,
+        project_id: str = DEFAULT_PROJECT_ID,
+    ):
         self.router = router          # AgentModelRouter，可为 None（用 CrewAI 默认 LLM）
+        self.project_id = project_id  # 读取该小说项目的 Agent / Task 配置
         self._summary: List[Tuple[str, str]] = []
         # (agent_key, model_key) 记录，供 print_creation_summary
 
@@ -231,7 +236,7 @@ class SceneCrew:
         tasks: List[Task] = []
         built: dict[str, Task] = {}
 
-        for meta in get_repository().load_task_meta():
+        for meta in get_repository().load_task_meta(self.project_id):
             config = self.tasks_config.get(meta["key"])
             if config is None:
                 continue

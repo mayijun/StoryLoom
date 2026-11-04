@@ -11,9 +11,13 @@ CrewAI 的 @CrewBase 会从 YAML 路径加载配置并赋给实例属性；
 - CrewBase 的 YAML 赋值被忽略（数据库才是事实来源）
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
-from storyloom.db.repository import SCENE_CREW, get_repository
+from storyloom.db.repository import (
+    DEFAULT_PROJECT_ID,
+    SCENE_CREW,
+    get_repository,
+)
 
 
 class DbConfig:
@@ -30,16 +34,22 @@ class DbConfig:
         if obj is None:
             return f"config/{self.kind}.yaml"
 
-        cache: Dict[str, Dict[str, Any]] = obj.__dict__.setdefault(
+        project_id = getattr(obj, "project_id", DEFAULT_PROJECT_ID)
+        cache: Dict[Tuple[str, str], Dict[str, Any]] = obj.__dict__.setdefault(
             "_db_config_cache", {}
         )
-        if self.kind not in cache:
+        cache_key = (self.kind, project_id)
+        if cache_key not in cache:
             repo = get_repository()
             if self.kind == "agents":
-                cache[self.kind] = repo.load_agents(self.crew)
+                cache[cache_key] = repo.load_agents(
+                    project_id=project_id, crew=self.crew
+                )
             else:
-                cache[self.kind] = repo.load_tasks(self.crew)
-        return cache[self.kind]
+                cache[cache_key] = repo.load_tasks(
+                    project_id=project_id, crew=self.crew
+                )
+        return cache[cache_key]
 
     def __set__(self, obj: Any, value: Any) -> None:
         # CrewBase 会把 YAML 内容赋给该属性：数据库才是唯一来源，忽略

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, provide } from 'vue'
+import { ref, computed, onMounted, provide } from 'vue'
 import { useProjectStore } from './stores/projectStore'
 import { useAgentStore } from './stores/agentStore'
 import { useAssetStore } from './stores/assetStore'
@@ -61,13 +61,16 @@ const newChar = ref<Partial<CharacterAsset>>({
 const newLoc = ref({ name: '', description: '' })
 
 // ---- 生命周期 ----
+// Agent / Task 配置从属于小说项目；未选项目时使用内置 demo 示例项目
+const currentProjectId = computed(() => projectStore.currentProjectId ?? 'demo')
+
 onMounted(async () => {
   try {
     await api.checkHealth()
     serverOnline.value = true
     await projectStore.fetchProjects()
-    await agentStore.fetchAgents()
-    await taskStore.fetchTasks()
+    await agentStore.fetchAgents(currentProjectId.value)
+    await taskStore.fetchTasks(currentProjectId.value)
   } catch {
     serverOnline.value = false
   }
@@ -86,6 +89,9 @@ async function handleCreateProject() {
 async function handleSelectProject(id: string) {
   await projectStore.selectProject(id)
   await assetStore.fetchAll(id)
+  // 切换项目后，Agent / Task 配置也要切换到该项目自己的
+  await agentStore.fetchAgents(currentProjectId.value)
+  await taskStore.fetchTasks(currentProjectId.value)
   selectedChars.value = []
 }
 
@@ -110,9 +116,9 @@ function openEditAgent(agent: AgentConfig) {
 async function handleSaveAgent() {
   if (editingAgentKey.value) {
     const { key, ...patch } = agentForm.value
-    await agentStore.updateAgent(editingAgentKey.value, patch)
+    await agentStore.updateAgent(editingAgentKey.value, patch, currentProjectId.value)
   } else {
-    await agentStore.addAgent({ ...agentForm.value })
+    await agentStore.addAgent({ ...agentForm.value }, currentProjectId.value)
   }
   showCreateAgent.value = false
 }
@@ -146,9 +152,9 @@ function openEditTask(task: TaskConfig) {
 async function handleSaveTask() {
   if (editingTaskKey.value) {
     const { key, ...patch } = taskForm.value
-    await taskStore.updateTask(editingTaskKey.value, patch)
+    await taskStore.updateTask(editingTaskKey.value, patch, currentProjectId.value)
   } else {
-    await taskStore.addTask({ ...taskForm.value })
+    await taskStore.addTask({ ...taskForm.value }, currentProjectId.value)
   }
   showTaskDialog.value = false
 }
@@ -164,7 +170,7 @@ async function handleAgentDrop(to: number) {
   const list = [...agentStore.agents]
   const [moved] = list.splice(from, 1)
   list.splice(to, 0, moved)
-  await agentStore.reorderAgents(list)
+  await agentStore.reorderAgents(list, currentProjectId.value)
 }
 
 async function handleTaskDrop(to: number) {
@@ -174,7 +180,7 @@ async function handleTaskDrop(to: number) {
   const list = [...taskStore.tasks]
   const [moved] = list.splice(from, 1)
   list.splice(to, 0, moved)
-  await taskStore.reorderTasks(list)
+  await taskStore.reorderTasks(list, currentProjectId.value)
 }
 
 async function handleCreateCharacter() {
@@ -294,7 +300,7 @@ async function handleGenerate() {
               ></div>
               <button
                 class="btn btn-icon btn-sm"
-                @click.stop="agentStore.removeAgent(agent.key)"
+                @click.stop="agentStore.removeAgent(agent.key, currentProjectId)"
                 title="删除"
                 style="color:var(--error);background:transparent;border:none;"
               >✕</button>
@@ -336,7 +342,7 @@ async function handleGenerate() {
               </div>
               <button
                 class="btn btn-icon btn-sm"
-                @click.stop="taskStore.removeTask(task.key)"
+                @click.stop="taskStore.removeTask(task.key, currentProjectId)"
                 title="删除"
                 style="color:var(--error);background:transparent;border:none;"
               >✕</button>

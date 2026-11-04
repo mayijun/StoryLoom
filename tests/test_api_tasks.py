@@ -1,4 +1,7 @@
-"""Task 配置 API 的数据库 CRUD 测试（不启动 HTTP 服务）"""
+"""Task 配置 API 的数据库 CRUD 测试（不启动 HTTP 服务）
+
+端点函数被直接调用（非 TestClient），Query 参数需显式传入。
+"""
 
 import asyncio
 
@@ -7,6 +10,8 @@ from fastapi import HTTPException
 
 from storyloom.api.schemas import TaskConfigInput, TaskConfigUpdate
 from storyloom.db import reset_engines, reset_repositories
+
+DEMO = "demo"
 
 
 @pytest.fixture
@@ -26,7 +31,7 @@ def tasks_api(tmp_path, monkeypatch):
 
 
 def test_list_tasks_comes_from_database(tasks_api):
-    response = asyncio.run(tasks_api.list_tasks())
+    response = asyncio.run(tasks_api.list_tasks(project_id=DEMO))
     keys = [task.key for task in response.tasks]
 
     assert len(keys) == 6
@@ -41,10 +46,12 @@ def test_create_conflict_and_get(tasks_api):
                 description="审查文风",
                 expected_output="问题清单",
                 agent_key="director",
-            )
+            ),
+            project_id=DEMO,
         )
     )
     assert created["key"] == "style_review"
+    assert created["project_id"] == DEMO
     assert created["position"] > 0
     assert created["context_keys"] == []
 
@@ -55,12 +62,13 @@ def test_create_conflict_and_get(tasks_api):
                     key="style_review",
                     description="重复",
                     expected_output="重复",
-                )
+                ),
+                project_id=DEMO,
             )
         )
     assert exc_info.value.status_code == 409
 
-    fetched = asyncio.run(tasks_api.get_task("style_review"))
+    fetched = asyncio.run(tasks_api.get_task("style_review", project_id=DEMO))
     assert fetched["description"] == "审查文风"
 
 
@@ -73,7 +81,8 @@ def test_create_rejects_unknown_agent(tasks_api):
                     description="描述",
                     expected_output="产物",
                     agent_key="not_exists",
-                )
+                ),
+                project_id=DEMO,
             )
         )
     assert exc_info.value.status_code == 400
@@ -86,7 +95,8 @@ def test_update_and_delete(tasks_api):
                 key="style_review",
                 description="审查文风",
                 expected_output="问题清单",
-            )
+            ),
+            project_id=DEMO,
         )
     )
 
@@ -98,6 +108,7 @@ def test_update_and_delete(tasks_api):
                 agent_key="director",
                 context_keys=["prose_polish"],
             ),
+            project_id=DEMO,
         )
     )
     assert updated["enabled"] is False
@@ -105,19 +116,56 @@ def test_update_and_delete(tasks_api):
     assert updated["context_keys"] == ["prose_polish"]
 
     cleared = asyncio.run(
-        tasks_api.update_task("style_review", TaskConfigUpdate(agent_key=None))
+        tasks_api.update_task(
+            "style_review", TaskConfigUpdate(agent_key=None), project_id=DEMO
+        )
     )
     assert cleared["agent_key"] is None
 
-    asyncio.run(tasks_api.delete_task("style_review"))
+    asyncio.run(tasks_api.delete_task("style_review", project_id=DEMO))
     with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(tasks_api.get_task("style_review"))
+        asyncio.run(tasks_api.get_task("style_review", project_id=DEMO))
     assert exc_info.value.status_code == 404
 
     with pytest.raises(HTTPException) as exc_info:
         asyncio.run(
             tasks_api.update_task(
-                "style_review", TaskConfigUpdate(description="x")
+                "style_review", TaskConfigUpdate(description="x"), project_id=DEMO
             )
         )
     assert exc_info.value.status_code == 404
+
+
+def test_projects_have_isolated_tasks(tasks_api):
+    """不同小说项目的 Task 相互隔离：同名 key 可在各项目独立存在"""
+    asyncio.run(
+        tasks_api.create_task(
+            TaskConfigInput(
+                key="style_review",
+                description="demo 的审查任务",
+                expected_output="问题清单",
+            ),
+            project_id=DEMO,
+        )
+    )
+
+    # novel2 有自己独立的一套默认任务，未受 demo 新增影响
+    other = asyncio.run(tasks_api.list_tasks(project_id="novel2"))
+    assert len(other.tasks) == 6
+    assert "style_review" not in [t.key for t in other.tasks]
+
+    # novel2 可以创建同名任务，内容独立
+    asyncio.run(
+        tasks_api.create_task(
+            TaskConfigInput(
+                key="style_review",
+                description="novel2 的审查任务",
+                expected_output="问题清单",
+            ),
+            project_id="novel2",
+        )
+    )
+    demo_task = asyncio.run(tasks_api.get_task("style_review", project_id=DEMO))
+    other_task = asyncio.run(tasks_api.get_task("style_review", project_id="novel2"))
+    assert demo_task["description"] == "demo 的审查任务"
+    assert other_task["description"] == "novel2 的审查任务"

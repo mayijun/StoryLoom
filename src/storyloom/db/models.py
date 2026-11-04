@@ -32,14 +32,17 @@ class Base(DeclarativeBase):
 
 
 class AgentConfigRow(Base):
-    """Agent 定义（一个 crew 下的一个角色）"""
+    """Agent 定义（某个小说项目、某个 crew 下的一个角色）"""
 
     __tablename__ = "agent_configs"
     __table_args__ = (
-        UniqueConstraint("crew", "key", name="uq_agent_crew_key"),
+        UniqueConstraint("project_id", "crew", "key", name="uq_agent_project_crew_key"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        String(64), default="demo", index=True
+    )
     crew: Mapped[str] = mapped_column(
         String(64), default="scene_crew", index=True
     )
@@ -70,14 +73,17 @@ class AgentConfigRow(Base):
 
 
 class TaskConfigRow(Base):
-    """Task 定义（一个 crew 下的一个任务）"""
+    """Task 定义（某个小说项目、某个 crew 下的一个任务）"""
 
     __tablename__ = "task_configs"
     __table_args__ = (
-        UniqueConstraint("crew", "key", name="uq_task_crew_key"),
+        UniqueConstraint("project_id", "crew", "key", name="uq_task_project_crew_key"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        String(64), default="demo", index=True
+    )
     crew: Mapped[str] = mapped_column(
         String(64), default="scene_crew", index=True
     )

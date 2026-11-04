@@ -30,17 +30,42 @@ export function useApi() {
   const addForeshadowing = (pid: string, data: any) => api.post(`/projects/${pid}/assets/foreshadowings`, data)
 
   // ---- Agents ----
-  const listAgents = () => api.get<{ agents: AgentConfig[]; available_models: string[] }>('/agents/')
-  const createAgent = (data: AgentConfigInput) => api.post<AgentConfig>('/agents/', data)
-  const updateAgent = (key: string, data: Partial<AgentConfigInput>) => api.put<AgentConfig>(`/agents/${key}`, data)
-  const deleteAgent = (key: string) => api.delete(`/agents/${key}`)
+  // Agent / Task 从属于小说项目，通过 project_id 查询参数隔离
+  const listAgents = (projectId?: string) =>
+    api.get<{ agents: AgentConfig[]; available_models: string[] }>('/agents/', {
+      params: projectId ? { project_id: projectId } : undefined,
+    })
+  const createAgent = (data: AgentConfigInput, projectId?: string) =>
+    api.post<AgentConfig>('/agents/', data, {
+      params: projectId ? { project_id: projectId } : undefined,
+    })
+  const updateAgent = (key: string, data: Partial<AgentConfigInput>, projectId?: string) =>
+    api.put<AgentConfig>(`/agents/${key}`, data, {
+      params: projectId ? { project_id: projectId } : undefined,
+    })
+  const deleteAgent = (key: string, projectId?: string) =>
+    api.delete(`/agents/${key}`, {
+      params: projectId ? { project_id: projectId } : undefined,
+    })
   const getAgentTypes = () => api.get('/agents/types')
 
   // ---- Tasks ----
-  const listTasks = () => api.get<{ tasks: TaskConfig[] }>('/tasks/')
-  const createTask = (data: TaskConfigInput) => api.post<TaskConfig>('/tasks/', data)
-  const updateTask = (key: string, data: Partial<TaskConfigInput>) => api.put<TaskConfig>(`/tasks/${key}`, data)
-  const deleteTask = (key: string) => api.delete(`/tasks/${key}`)
+  const listTasks = (projectId?: string) =>
+    api.get<{ tasks: TaskConfig[] }>('/tasks/', {
+      params: projectId ? { project_id: projectId } : undefined,
+    })
+  const createTask = (data: TaskConfigInput, projectId?: string) =>
+    api.post<TaskConfig>('/tasks/', data, {
+      params: projectId ? { project_id: projectId } : undefined,
+    })
+  const updateTask = (key: string, data: Partial<TaskConfigInput>, projectId?: string) =>
+    api.put<TaskConfig>(`/tasks/${key}`, data, {
+      params: projectId ? { project_id: projectId } : undefined,
+    })
+  const deleteTask = (key: string, projectId?: string) =>
+    api.delete(`/tasks/${key}`, {
+      params: projectId ? { project_id: projectId } : undefined,
+    })
 
   // ---- Generation ----
   const generateScene = (data: any) => api.post('/generate/scene', data)

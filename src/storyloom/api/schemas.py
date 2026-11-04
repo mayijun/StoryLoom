@@ -56,6 +56,7 @@ class AgentConfigUpdate(BaseModel):
 class AgentConfigView(BaseModel):
     """Agent 配置（直接对应数据库记录）"""
     key: str
+    project_id: str
     crew: str
     role: str
     goal: str
@@ -111,6 +112,7 @@ class TaskConfigUpdate(BaseModel):
 class TaskConfigView(BaseModel):
     """Task 配置（直接对应数据库记录）"""
     key: str
+    project_id: str
     crew: str
     description: str
     expected_output: str

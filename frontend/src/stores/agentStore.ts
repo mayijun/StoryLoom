@@ -12,30 +12,30 @@ export const useAgentStore = defineStore('agent', () => {
 
   const enabledAgents = computed(() => agents.value.filter(a => a.enabled))
 
-  async function fetchAgents() {
-    const res = await api.listAgents()
+  async function fetchAgents(projectId?: string) {
+    const res = await api.listAgents(projectId)
     agents.value = res.data.agents
     availableModels.value = res.data.available_models
   }
 
-  async function addAgent(agent: AgentConfigInput) {
-    const res = await api.createAgent(agent)
+  async function addAgent(agent: AgentConfigInput, projectId?: string) {
+    const res = await api.createAgent(agent, projectId)
     agents.value.push(res.data)
   }
 
-  async function removeAgent(key: string) {
-    await api.deleteAgent(key)
+  async function removeAgent(key: string, projectId?: string) {
+    await api.deleteAgent(key, projectId)
     agents.value = agents.value.filter(a => a.key !== key)
   }
 
-  async function updateAgent(key: string, patch: Partial<AgentConfigInput>) {
-    const res = await api.updateAgent(key, patch)
+  async function updateAgent(key: string, patch: Partial<AgentConfigInput>, projectId?: string) {
+    const res = await api.updateAgent(key, patch, projectId)
     const idx = agents.value.findIndex(a => a.key === key)
     if (idx >= 0) agents.value[idx] = res.data
   }
 
   /** 拖拽排序：先本地更新，再按新顺序持久化 position */
-  async function reorderAgents(list: AgentConfig[]) {
+  async function reorderAgents(list: AgentConfig[], projectId?: string) {
     const previous = agents.value
     agents.value = list.map((agent, index) => ({ ...agent, position: index }))
     try {
@@ -43,7 +43,7 @@ export const useAgentStore = defineStore('agent', () => {
         .map((agent, index) => ({ key: agent.key, index, old: agent.position }))
         .filter(item => item.old !== item.index)
       await Promise.all(
-        changes.map(item => api.updateAgent(item.key, { position: item.index }))
+        changes.map(item => api.updateAgent(item.key, { position: item.index }, projectId))
       )
     } catch {
       agents.value = previous

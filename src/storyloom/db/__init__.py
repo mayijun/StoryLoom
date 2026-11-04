@@ -13,6 +13,7 @@ from storyloom.db.base import database_url, get_engine, reset_engines
 from storyloom.db.config_source import DbConfig
 from storyloom.db.models import AgentConfigRow, Base, TaskConfigRow
 from storyloom.db.repository import (
+    DEFAULT_PROJECT_ID,
     SCENE_CREW,
     CrewConfigRepository,
     get_repository,
@@ -24,6 +25,7 @@ __all__ = [
     "Base",
     "CrewConfigRepository",
     "DbConfig",
+    "DEFAULT_PROJECT_ID",
     "SCENE_CREW",
     "TaskConfigRow",
     "database_url",

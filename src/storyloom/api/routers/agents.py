@@ -1,10 +1,11 @@
 """Agent 配置管理 API（数据库 CRUD）
 
 数据存储在 agent_configs 表（默认 SQLite，可通过 STORYLOOM_DATABASE_URL
-切换到 PostgreSQL / MySQL），与 CrewAI 的 Agent 配置字段一致。
+切换到 PostgreSQL / MySQL），按小说项目（project_id）隔离，
+与 CrewAI 的 Agent 配置字段一致。
 """
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 from typing import Dict, Any
 
 from storyloom.api.schemas import (
@@ -14,7 +15,7 @@ from storyloom.api.schemas import (
     AgentListResponse,
 )
 from storyloom.api.engine import engine
-from storyloom.db import get_repository
+from storyloom.db import DEFAULT_PROJECT_ID, get_repository
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
@@ -22,17 +23,19 @@ router = APIRouter(prefix="/api/agents", tags=["agents"])
 _NULLABLE_FIELDS = {"allow_delegation", "verbose", "max_iter"}
 
 
-def _repo():
+def _repo(project_id: str):
     repo = get_repository()
-    # 保证首次请求前已建表并导入种子数据
-    repo.ensure_seeded()
+    # 保证首次请求前已建表，并为该项目导入默认配置
+    repo.ensure_seeded(project_id)
     return repo
 
 
 @router.get("/", response_model=AgentListResponse)
-async def list_agents():
+async def list_agents(
+    project_id: str = Query(DEFAULT_PROJECT_ID, description="小说项目 ID"),
+):
     return AgentListResponse(
-        agents=_repo().list_agents(),
+        agents=_repo(project_id).list_agents(project_id),
         available_models=engine.get_available_models(),
     )
 
@@ -114,9 +117,12 @@ async def get_agent_types():
     response_model=AgentConfigView,
     status_code=status.HTTP_201_CREATED,
 )
-async def create_agent(agent: AgentConfigInput):
-    repo = _repo()
-    if repo.get_agent(agent.key) is not None:
+async def create_agent(
+    agent: AgentConfigInput,
+    project_id: str = Query(DEFAULT_PROJECT_ID, description="小说项目 ID"),
+):
+    repo = _repo(project_id)
+    if repo.get_agent(agent.key, project_id) is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Agent 已存在: {agent.key}",
@@ -126,12 +132,15 @@ async def create_agent(agent: AgentConfigInput):
         for key, value in agent.model_dump().items()
         if key != "key" and value is not None
     }
-    return repo.upsert_agent(agent.key, **payload)
+    return repo.upsert_agent(agent.key, project_id=project_id, **payload)
 
 
 @router.get("/{key}", response_model=AgentConfigView)
-async def get_agent(key: str):
-    record = _repo().get_agent(key)
+async def get_agent(
+    key: str,
+    project_id: str = Query(DEFAULT_PROJECT_ID, description="小说项目 ID"),
+):
+    record = _repo(project_id).get_agent(key, project_id)
     if record is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -141,9 +150,13 @@ async def get_agent(key: str):
 
 
 @router.put("/{key}", response_model=AgentConfigView)
-async def update_agent(key: str, patch: AgentConfigUpdate):
-    repo = _repo()
-    existing = repo.get_agent(key)
+async def update_agent(
+    key: str,
+    patch: AgentConfigUpdate,
+    project_id: str = Query(DEFAULT_PROJECT_ID, description="小说项目 ID"),
+):
+    repo = _repo(project_id)
+    existing = repo.get_agent(key, project_id)
     if existing is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -161,12 +174,15 @@ async def update_agent(key: str, patch: AgentConfigUpdate):
     }
     if not payload:
         return existing
-    return repo.upsert_agent(key, **payload)
+    return repo.upsert_agent(key, project_id=project_id, **payload)
 
 
 @router.delete("/{key}")
-async def delete_agent(key: str):
-    if not _repo().delete_agent(key):
+async def delete_agent(
+    key: str,
+    project_id: str = Query(DEFAULT_PROJECT_ID, description="小说项目 ID"),
+):
+    if not _repo(project_id).delete_agent(key, project_id):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Agent 不存在: {key}",

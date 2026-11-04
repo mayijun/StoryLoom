@@ -18,7 +18,7 @@ import argparse
 import sys
 from typing import Any, List, Optional
 
-from storyloom.db.repository import get_repository
+from storyloom.db.repository import DEFAULT_PROJECT_ID, get_repository
 
 _BOOL_FIELDS = {"allow_delegation", "verbose", "enabled"}
 _INT_FIELDS = {"max_iter", "position"}
@@ -69,6 +69,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="数据库 URL（默认读取 STORYLOOM_DATABASE_URL 或本地 SQLite）",
     )
+    parser.add_argument(
+        "--project",
+        default=DEFAULT_PROJECT_ID,
+        help="小说项目 ID（默认 demo 示例项目）",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("list", help="列出全部 Agent 和 Task")
@@ -118,18 +123,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     repo = get_repository(args.url)
 
     if args.command == "list":
-        repo.ensure_seeded()
-        print("Agents:")
-        _print_agents(repo.list_agents())
+        repo.ensure_seeded(args.project)
+        print(f"Agents (project: {args.project}):")
+        _print_agents(repo.list_agents(args.project))
         print("\nTasks:")
-        _print_tasks(repo.list_tasks())
+        _print_tasks(repo.list_tasks(args.project))
         return 0
 
     if args.command == "show":
         record = (
-            repo.get_agent(args.key)
+            repo.get_agent(args.key, args.project)
             if args.kind == "agent"
-            else repo.get_task(args.key)
+            else repo.get_task(args.key, args.project)
         )
         if record is None:
             print(f"未找到 {args.kind}: {args.key}", file=sys.stderr)
@@ -140,9 +145,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.command == "set":
         value = _coerce(args.field, args.value)
         if args.kind == "agent":
-            record = repo.upsert_agent(args.key, **{args.field: value})
+            record = repo.upsert_agent(
+                args.key, project_id=args.project, **{args.field: value}
+            )
         else:
-            record = repo.upsert_task(args.key, **{args.field: value})
+            record = repo.upsert_task(
+                args.key, project_id=args.project, **{args.field: value}
+            )
         print(f"已更新 {args.kind} {args.key}.{args.field} = {record[args.field]}")
         return 0
 
@@ -160,7 +169,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             fields["verbose"] = _coerce("verbose", args.verbose)
         if args.max_iter is not None:
             fields["max_iter"] = args.max_iter
-        repo.upsert_agent(args.key, **fields)
+        repo.upsert_agent(args.key, project_id=args.project, **fields)
         print(f"已新增 agent: {args.key}")
         return 0
 
@@ -173,15 +182,15 @@ def main(argv: Optional[List[str]] = None) -> int:
             fields["agent_key"] = args.agent_key
         if args.context:
             fields["context_keys"] = _coerce("context_keys", args.context)
-        repo.upsert_task(args.key, **fields)
+        repo.upsert_task(args.key, project_id=args.project, **fields)
         print(f"已新增 task: {args.key}")
         return 0
 
     if args.command == "rm":
         deleted = (
-            repo.delete_agent(args.key)
+            repo.delete_agent(args.key, args.project)
             if args.kind == "agent"
-            else repo.delete_task(args.key)
+            else repo.delete_task(args.key, args.project)
         )
         if not deleted:
             print(f"未找到 {args.kind}: {args.key}", file=sys.stderr)
@@ -190,7 +199,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     if args.command == "seed":
-        inserted = repo.seed_from_yaml(overwrite=args.overwrite)
+        inserted = repo.seed_from_yaml(
+            project_id=args.project, overwrite=args.overwrite
+        )
         print(
             f"种子导入完成：agents +{inserted['agents']}，"
             f"tasks +{inserted['tasks']}"

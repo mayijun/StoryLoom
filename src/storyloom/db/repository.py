@@ -14,13 +14,15 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
 import yaml
-from sqlalchemy import func, select
+from sqlalchemy import func, inspect, select
 from sqlalchemy.orm import Session
 
 from storyloom.db.base import database_url, get_engine
 from storyloom.db.models import AgentConfigRow, Base, TaskConfigRow
 
 SCENE_CREW = "scene_crew"
+# 内置示例项目：原有配置与种子数据都归属于它，用户可直接上手试用
+DEFAULT_PROJECT_ID = "demo"
 
 _CONFIG_DIR = (
     Path(__file__).resolve().parents[1] / "crews" / "scene_crew" / "config"
@@ -91,33 +93,113 @@ class CrewConfigRepository:
             session.close()
 
     def create_all(self) -> None:
+        # 1) 旧表先迁移（重建含 project_id 的新表并搬数据）
+        migrated = self._migrate_to_project_scope()
+        # 2) 再补建缺失的表
+        Base.metadata.create_all(self.engine)
+        if migrated:
+            # 旧库数据已归入 demo 项目，从种子补齐其余配置
+            self.seed_from_yaml()
+
+    def _migrate_to_project_scope(self) -> bool:
+        """
+        旧库升级：为 agent_configs / task_configs 增加 project_id 列，
+        并把历史数据归入 demo 项目。
+
+        SQLite 无法删除旧约束，因此重建表；其他数据库用 ALTER TABLE。
+        返回是否发生了迁移。
+        """
+        inspector = inspect(self.engine)
+        migrated = False
+        for table in ("agent_configs", "task_configs"):
+            if not inspector.has_table(table):
+                continue
+            columns = {c["name"] for c in inspector.get_columns(table)}
+            if "project_id" in columns:
+                continue
+            migrated = True
+            if self.engine.dialect.name == "sqlite":
+                self._rebuild_sqlite_for_project_scope(table)
+            else:
+                prefix = "agent" if table == "agent_configs" else "task"
+                with self.engine.begin() as conn:
+                    conn.exec_driver_sql(
+                        f"ALTER TABLE {table} ADD COLUMN project_id "
+                        f"VARCHAR(64) NOT NULL DEFAULT '{DEFAULT_PROJECT_ID}'"
+                    )
+                    try:
+                        conn.exec_driver_sql(
+                            f"ALTER TABLE {table} "
+                            f"DROP CONSTRAINT uq_{prefix}_crew_key"
+                        )
+                    except Exception:
+                        pass
+                    conn.exec_driver_sql(
+                        f"ALTER TABLE {table} ADD CONSTRAINT "
+                        f"uq_{prefix}_project_crew_key "
+                        "UNIQUE (project_id, crew, key)"
+                    )
+        return migrated
+
+    def _rebuild_sqlite_for_project_scope(self, table: str) -> None:
+        legacy = f"{table}_legacy"
+        inspector = inspect(self.engine)
+        old_columns = [c["name"] for c in inspector.get_columns(table)]
+        with self.engine.begin() as conn:
+            conn.exec_driver_sql(f"ALTER TABLE {table} RENAME TO {legacy}")
+
         Base.metadata.create_all(self.engine)
 
-    def ensure_seeded(self) -> None:
-        """建表；若该 crew 还没有任何 Agent，则从 YAML 种子导入"""
+        new_columns = {
+            c["name"] for c in inspect(self.engine).get_columns(table)
+        }
+        # created_at / updated_at 不搬运：旧库可能是 NULL，
+        # 新表 NOT NULL + server_default，插入时自动补当前时间
+        shared = [
+            name
+            for name in old_columns
+            if name in new_columns
+            and name not in ("project_id", "created_at", "updated_at")
+        ]
+        shared_sql = ", ".join(shared)
+        with self.engine.begin() as conn:
+            conn.exec_driver_sql(
+                f"INSERT INTO {table} (project_id, {shared_sql}) "
+                f"SELECT '{DEFAULT_PROJECT_ID}', {shared_sql} FROM {legacy}"
+            )
+            conn.exec_driver_sql(f"DROP TABLE {legacy}")
+
+    def ensure_seeded(self, project_id: str = DEFAULT_PROJECT_ID) -> None:
+        """建表；若该项目还没有任何 Agent，则从 YAML 种子导入"""
         self.create_all()
         with self.session() as session:
             has_agents = session.scalar(
                 select(AgentConfigRow.id)
-                .where(AgentConfigRow.crew == SCENE_CREW)
+                .where(
+                    AgentConfigRow.project_id == project_id,
+                    AgentConfigRow.crew == SCENE_CREW,
+                )
                 .limit(1)
             )
         if not has_agents:
-            self.seed_from_yaml()
+            self.seed_from_yaml(project_id=project_id)
 
     # ---------------- 读取：给 CrewAI 用 ----------------
 
-    def load_agents(self, crew: str = SCENE_CREW) -> Dict[str, Dict[str, Any]]:
+    def load_agents(
+        self, project_id: str = DEFAULT_PROJECT_ID, crew: str = SCENE_CREW
+    ) -> Dict[str, Dict[str, Any]]:
         """
         返回 CrewAI 可直接使用的 agents 配置字典：
 
             {"director": {"role": ..., "goal": ..., "backstory": ...}, ...}
         """
-        self.ensure_seeded()
+        self.ensure_seeded(project_id)
         with self.session() as session:
             rows = session.scalars(
                 select(AgentConfigRow)
                 .where(
+                    AgentConfigRow.project_id == project_id,
                     AgentConfigRow.crew == crew,
                     AgentConfigRow.enabled.is_(True),
                 )
@@ -125,13 +207,16 @@ class CrewConfigRepository:
             ).all()
             return {row.key: _agent_config(row) for row in rows}
 
-    def load_tasks(self, crew: str = SCENE_CREW) -> Dict[str, Dict[str, Any]]:
+    def load_tasks(
+        self, project_id: str = DEFAULT_PROJECT_ID, crew: str = SCENE_CREW
+    ) -> Dict[str, Dict[str, Any]]:
         """返回 CrewAI 可直接使用的 tasks 配置字典"""
-        self.ensure_seeded()
+        self.ensure_seeded(project_id)
         with self.session() as session:
             rows = session.scalars(
                 select(TaskConfigRow)
                 .where(
+                    TaskConfigRow.project_id == project_id,
                     TaskConfigRow.crew == crew,
                     TaskConfigRow.enabled.is_(True),
                 )
@@ -146,14 +231,15 @@ class CrewConfigRepository:
             }
 
     def load_task_meta(
-        self, crew: str = SCENE_CREW
+        self, project_id: str = DEFAULT_PROJECT_ID, crew: str = SCENE_CREW
     ) -> List[Dict[str, Any]]:
         """返回任务的装配元信息（顺序、agent、context）"""
-        self.ensure_seeded()
+        self.ensure_seeded(project_id)
         with self.session() as session:
             rows = session.scalars(
                 select(TaskConfigRow)
                 .where(
+                    TaskConfigRow.project_id == project_id,
                     TaskConfigRow.crew == crew,
                     TaskConfigRow.enabled.is_(True),
                 )
@@ -171,32 +257,46 @@ class CrewConfigRepository:
 
     # ---------------- 读取：给管理界面 / CLI 用 ----------------
 
-    def list_agents(self, crew: str = SCENE_CREW) -> List[Dict[str, Any]]:
-        self.ensure_seeded()
+    def list_agents(
+        self, project_id: str = DEFAULT_PROJECT_ID, crew: str = SCENE_CREW
+    ) -> List[Dict[str, Any]]:
+        self.ensure_seeded(project_id)
         with self.session() as session:
             rows = session.scalars(
                 select(AgentConfigRow)
-                .where(AgentConfigRow.crew == crew)
+                .where(
+                    AgentConfigRow.project_id == project_id,
+                    AgentConfigRow.crew == crew,
+                )
                 .order_by(AgentConfigRow.position, AgentConfigRow.id)
             ).all()
             return [_agent_record(row) for row in rows]
 
-    def list_tasks(self, crew: str = SCENE_CREW) -> List[Dict[str, Any]]:
-        self.ensure_seeded()
+    def list_tasks(
+        self, project_id: str = DEFAULT_PROJECT_ID, crew: str = SCENE_CREW
+    ) -> List[Dict[str, Any]]:
+        self.ensure_seeded(project_id)
         with self.session() as session:
             rows = session.scalars(
                 select(TaskConfigRow)
-                .where(TaskConfigRow.crew == crew)
+                .where(
+                    TaskConfigRow.project_id == project_id,
+                    TaskConfigRow.crew == crew,
+                )
                 .order_by(TaskConfigRow.position, TaskConfigRow.id)
             ).all()
             return [_task_record(row) for row in rows]
 
     def get_agent(
-        self, key: str, crew: str = SCENE_CREW
+        self,
+        key: str,
+        project_id: str = DEFAULT_PROJECT_ID,
+        crew: str = SCENE_CREW,
     ) -> Optional[Dict[str, Any]]:
         with self.session() as session:
             row = session.scalar(
                 select(AgentConfigRow).where(
+                    AgentConfigRow.project_id == project_id,
                     AgentConfigRow.crew == crew,
                     AgentConfigRow.key == key,
                 )
@@ -204,11 +304,15 @@ class CrewConfigRepository:
             return _agent_record(row) if row else None
 
     def get_task(
-        self, key: str, crew: str = SCENE_CREW
+        self,
+        key: str,
+        project_id: str = DEFAULT_PROJECT_ID,
+        crew: str = SCENE_CREW,
     ) -> Optional[Dict[str, Any]]:
         with self.session() as session:
             row = session.scalar(
                 select(TaskConfigRow).where(
+                    TaskConfigRow.project_id == project_id,
                     TaskConfigRow.crew == crew,
                     TaskConfigRow.key == key,
                 )
@@ -218,7 +322,11 @@ class CrewConfigRepository:
     # ---------------- 写入 ----------------
 
     def upsert_agent(
-        self, key: str, crew: str = SCENE_CREW, **fields: Any
+        self,
+        key: str,
+        project_id: str = DEFAULT_PROJECT_ID,
+        crew: str = SCENE_CREW,
+        **fields: Any,
     ) -> Dict[str, Any]:
         unknown = set(fields) - set(_AGENT_FIELDS)
         if unknown:
@@ -227,6 +335,7 @@ class CrewConfigRepository:
         with self.session() as session:
             row = session.scalar(
                 select(AgentConfigRow).where(
+                    AgentConfigRow.project_id == project_id,
                     AgentConfigRow.crew == crew,
                     AgentConfigRow.key == key,
                 )
@@ -239,8 +348,15 @@ class CrewConfigRepository:
                     raise ValueError(
                         f"新建 Agent 缺少必填字段: {sorted(missing)}"
                     )
-                fields.setdefault("position", self._next_position(session, crew, AgentConfigRow))
-                row = AgentConfigRow(crew=crew, key=key, **fields)
+                fields.setdefault(
+                    "position",
+                    self._next_position(
+                        session, project_id, crew, AgentConfigRow
+                    ),
+                )
+                row = AgentConfigRow(
+                    project_id=project_id, crew=crew, key=key, **fields
+                )
                 session.add(row)
             else:
                 for name, value in fields.items():
@@ -249,7 +365,11 @@ class CrewConfigRepository:
             return _agent_record(row)
 
     def upsert_task(
-        self, key: str, crew: str = SCENE_CREW, **fields: Any
+        self,
+        key: str,
+        project_id: str = DEFAULT_PROJECT_ID,
+        crew: str = SCENE_CREW,
+        **fields: Any,
     ) -> Dict[str, Any]:
         unknown = set(fields) - set(_TASK_FIELDS)
         if unknown:
@@ -258,6 +378,7 @@ class CrewConfigRepository:
         with self.session() as session:
             row = session.scalar(
                 select(TaskConfigRow).where(
+                    TaskConfigRow.project_id == project_id,
                     TaskConfigRow.crew == crew,
                     TaskConfigRow.key == key,
                 )
@@ -272,8 +393,15 @@ class CrewConfigRepository:
                     raise ValueError(
                         f"新建 Task 缺少必填字段: {sorted(missing)}"
                     )
-                fields.setdefault("position", self._next_position(session, crew, TaskConfigRow))
-                row = TaskConfigRow(crew=crew, key=key, **fields)
+                fields.setdefault(
+                    "position",
+                    self._next_position(
+                        session, project_id, crew, TaskConfigRow
+                    ),
+                )
+                row = TaskConfigRow(
+                    project_id=project_id, crew=crew, key=key, **fields
+                )
                 session.add(row)
             else:
                 for name, value in fields.items():
@@ -281,10 +409,16 @@ class CrewConfigRepository:
             session.flush()
             return _task_record(row)
 
-    def delete_agent(self, key: str, crew: str = SCENE_CREW) -> bool:
+    def delete_agent(
+        self,
+        key: str,
+        project_id: str = DEFAULT_PROJECT_ID,
+        crew: str = SCENE_CREW,
+    ) -> bool:
         with self.session() as session:
             row = session.scalar(
                 select(AgentConfigRow).where(
+                    AgentConfigRow.project_id == project_id,
                     AgentConfigRow.crew == crew,
                     AgentConfigRow.key == key,
                 )
@@ -294,10 +428,16 @@ class CrewConfigRepository:
             session.delete(row)
             return True
 
-    def delete_task(self, key: str, crew: str = SCENE_CREW) -> bool:
+    def delete_task(
+        self,
+        key: str,
+        project_id: str = DEFAULT_PROJECT_ID,
+        crew: str = SCENE_CREW,
+    ) -> bool:
         with self.session() as session:
             row = session.scalar(
                 select(TaskConfigRow).where(
+                    TaskConfigRow.project_id == project_id,
                     TaskConfigRow.crew == crew,
                     TaskConfigRow.key == key,
                 )
@@ -310,15 +450,23 @@ class CrewConfigRepository:
     # ---------------- 种子导入 ----------------
 
     @staticmethod
-    def _next_position(session: Session, crew: str, model) -> int:
+    def _next_position(
+        session: Session, project_id: str, crew: str, model
+    ) -> int:
         """新增条目时排到末尾"""
         current = session.scalar(
-            select(func.max(model.position)).where(model.crew == crew)
+            select(func.max(model.position)).where(
+                model.project_id == project_id,
+                model.crew == crew,
+            )
         )
         return 0 if current is None else current + 1
 
     def seed_from_yaml(
-        self, crew: str = SCENE_CREW, overwrite: bool = False
+        self,
+        project_id: str = DEFAULT_PROJECT_ID,
+        crew: str = SCENE_CREW,
+        overwrite: bool = False,
     ) -> Dict[str, int]:
         """
         把 crew 的 agents.yaml / tasks.yaml 导入数据库。
@@ -334,6 +482,7 @@ class CrewConfigRepository:
             for position, (key, conf) in enumerate(agents_yaml.items()):
                 row = session.scalar(
                     select(AgentConfigRow).where(
+                        AgentConfigRow.project_id == project_id,
                         AgentConfigRow.crew == crew,
                         AgentConfigRow.key == key,
                     )
@@ -362,7 +511,12 @@ class CrewConfigRepository:
                 }
                 if row is None:
                     session.add(
-                        AgentConfigRow(crew=crew, key=key, **payload)
+                        AgentConfigRow(
+                            project_id=project_id,
+                            crew=crew,
+                            key=key,
+                            **payload,
+                        )
                     )
                     inserted["agents"] += 1
                 elif overwrite:
@@ -372,6 +526,7 @@ class CrewConfigRepository:
             for position, (key, conf) in enumerate(tasks_yaml.items()):
                 row = session.scalar(
                     select(TaskConfigRow).where(
+                        TaskConfigRow.project_id == project_id,
                         TaskConfigRow.crew == crew,
                         TaskConfigRow.key == key,
                     )
@@ -390,7 +545,12 @@ class CrewConfigRepository:
                 }
                 if row is None:
                     session.add(
-                        TaskConfigRow(crew=crew, key=key, **payload)
+                        TaskConfigRow(
+                            project_id=project_id,
+                            crew=crew,
+                            key=key,
+                            **payload,
+                        )
                     )
                     inserted["tasks"] += 1
                 elif overwrite:
@@ -453,6 +613,7 @@ def _agent_config(row: AgentConfigRow) -> Dict[str, Any]:
 def _agent_record(row: AgentConfigRow) -> Dict[str, Any]:
     return {
         "key": row.key,
+        "project_id": row.project_id,
         "crew": row.crew,
         "role": row.role,
         "goal": row.goal,
@@ -469,6 +630,7 @@ def _agent_record(row: AgentConfigRow) -> Dict[str, Any]:
 def _task_record(row: TaskConfigRow) -> Dict[str, Any]:
     return {
         "key": row.key,
+        "project_id": row.project_id,
         "crew": row.crew,
         "description": row.description,
         "expected_output": row.expected_output,

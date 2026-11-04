@@ -16,6 +16,7 @@ load_dotenv(Path(__file__).resolve().parents[3] / ".env")
 from storyloom.llm.providers import ModelRegistry
 from storyloom.llm.router import AgentModelRouter
 from storyloom.crews.scene_crew.crew import SceneCrew
+from storyloom.db import DEFAULT_PROJECT_ID, get_repository
 from storyloom.models import CharacterAsset, LocationAsset, NovelProject, Foreshadowing
 from storyloom.memory import CoreMemory, SimpleRAGMemory
 from storyloom.flows.scene_flow import SceneGenerationFlow
@@ -34,12 +35,30 @@ class NovelEngine:
     def __init__(self):
         self.registry = ModelRegistry()
         self.router = AgentModelRouter(self.registry)
-        self.crew = SceneCrew(self.router)
+        # 每个小说项目拥有独立的 Agent / Task 配置，因此按项目缓存 Crew
+        self.crews: dict[str, SceneCrew] = {}
+        self.crew = self._crew_for(DEFAULT_PROJECT_ID)
 
         # 项目存储（生产环境用数据库）
         self.projects: dict[str, NovelProject] = {}
         self.memories: dict[str, CoreMemory] = {}
         self.rags: dict[str, SimpleRAGMemory] = {}
+
+        # 内置示例项目：沿用数据库中已有的 Agent / Task，供用户直接上手
+        get_repository().ensure_seeded(DEFAULT_PROJECT_ID)
+        self.create_project(
+            DEFAULT_PROJECT_ID,
+            "示例项目 · 快速上手",
+            "film_narrative",
+        )
+
+    def _crew_for(self, project_id: str) -> SceneCrew:
+        """获取（或创建）某个小说项目专属的 Crew 实例"""
+        crew = self.crews.get(project_id)
+        if crew is None:
+            crew = SceneCrew(self.router, project_id=project_id)
+            self.crews[project_id] = crew
+        return crew
 
     def get_available_models(self) -> List[str]:
         return self.registry.list_available()
@@ -55,6 +74,8 @@ class NovelEngine:
         self.projects[project_id] = project
         self.memories[project_id] = CoreMemory()
         self.rags[project_id] = SimpleRAGMemory(project_id)
+        # 新项目自动获得一套默认 Agent / Task 配置，之后可独立修改
+        get_repository().ensure_seeded(project_id)
         return project
 
     def get_project(self, project_id) -> NovelProject:
@@ -86,6 +107,7 @@ class NovelEngine:
         project = self.projects[request.project_id]
         memory = self.memories[request.project_id]
         rag = self.rags[request.project_id]
+        crew = self._crew_for(request.project_id)
 
         # 更新在场角色
         memory.characters_present = request.present_character_names
@@ -94,7 +116,7 @@ class NovelEngine:
             project=project,
             memory=memory,
             rag=rag,
-            crew=self.crew,
+            crew=crew,
             scene_brief=request.scene_brief,
             present_characters=request.present_character_names,
         )
@@ -129,7 +151,7 @@ class NovelEngine:
                 agent_type=aid.split(":")[0],
                 model_used=mkey,
             )
-            for i, (aid, mkey) in enumerate(self.crew._summary)
+            for i, (aid, mkey) in enumerate(crew._summary)
         ]
 
         return GenerateSceneResponse(
