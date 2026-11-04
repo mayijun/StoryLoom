@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 from typing import Dict, Optional
 
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Engine, create_engine, event
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
@@ -44,6 +44,16 @@ def get_engine(url: Optional[str] = None) -> Engine:
                 db_path = Path(resolved.replace("sqlite:///", ""))
                 db_path.parent.mkdir(parents=True, exist_ok=True)
         engine = create_engine(resolved, future=True, **kwargs)
+        if resolved.startswith("sqlite"):
+            # SQLite 默认关闭外键约束，需每次连接显式开启
+            # 注意：必须用原生字符串给 sqlite3.Connection.execute，
+            # 不能用 sqlalchemy.text()，否则 sqlite3 会报 TypeError
+            # 参考：https://www.sqlite.org/foreignkeys.html
+            event.listen(
+                engine,
+                "connect",
+                lambda conn, _: conn.execute("PRAGMA foreign_keys = ON"),
+            )
         _engines[resolved] = engine
     return engine
 
