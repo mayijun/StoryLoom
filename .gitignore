@@ -7,6 +7,7 @@ __pycache__/
 build/
 dist/
 .eggs/
+# TRAE 工作区（含未公开的信息，禁止入库）
 .trae/
 
 # Virtual environments

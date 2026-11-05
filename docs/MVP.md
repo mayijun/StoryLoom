@@ -2,8 +2,7 @@
 
 > 本文档是进度的唯一口径：
 > 已完成的写在「当前阶段」，未完成的写在「差距清单」。
-> 架构依据见 [ARCHITECTURE.md](ARCHITECTURE.md)，完整演进计划见
-> [architecture_evolution_plan.md](../.trae/documents/architecture_evolution_plan.md)。
+> 架构依据见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
 ---
 
@@ -48,33 +47,53 @@
 
 1. 玩家自由输入能被 GM 裁决并改变世界状态；
 2. 世界状态可存档、读档、回放且一致；
-3. 扩展包能改变世界行为（至少一个 `skill` + 一个 `mod`）。
+3. 扩展包能改变世界行为（至少一个 `skill` + 一个 `mod`）；
+4. 前端可玩，真实人能做测试评价。
 
 ### 2.2 范围
 
 | # | 模块 | 必须交付 |
 |---|---|---|
-| M0-1 | `world/state.py` | `WorldState`、`Fact`、`CharState`、`LocationState`、世界时间 |
-| M0-2 | `world/game_master.py` | 在场校验、移动 + 旅行耗时、简单行动判定、`state_delta` |
-| M0-3 | `runtime/` | `PlayerIntent`、`IntentRouter`、`StageDirective`、`TextAdapter` |
-| M0-4 | `flows/turn_flow.py` | TurnLoop：`perceive → interpret → director_frame → actor_round → adjudicate → consistency → render → commit → plan_next` |
-| M0-5 | `extensions/` | 统一 manifest、`ExtensionHost`、`skill` 注入、`mod` 规则注册、`policy`/`asset` 解析 |
-| M0-6 | `saves` | `saves` 表 + `SaveService`（快照 + 回放） |
-| M0-7 | API | `POST /game/{pid}/turn`、`GET /game/{pid}/state`、`POST/GET /game/{pid}/saves` |
-| M0-8 | Demo | `examples/world_demo/`：1 skill + 1 map mod + 2 角色 / 2 地点 |
-| M0-9 | 测试 | GM 裁决、`Fact` 过滤、存档回放、manifest 校验、导演模式回归 |
+| M0-1 | `world/state.py` | `WorldState` + `Fact` + `CharState` + `LocationState` · 可序列化 · 支持 `state_delta` 合并 · 世界时间 |
+| M0-2 | `world/game_master.py` | 在场校验 / 移动 + 旅行耗时 / 简单行动判定 · 输出结构化结果 |
+| M0-3 | `runtime/` | `PlayerIntent` · `IntentRouter` · `StageDirective` · `TextAdapter` · 全部可 JSON 序列化 |
+| M0-4 | `flows/turn_flow.py` | TurnLoop 七阶段 · **async** · retry ≤ N · 四个出口 · **超时控制** |
+| M0-5 | `extensions/` | 统一 manifest · `ExtensionHost` · `skill` 注入 · `mod` 规则注册 · `policy`/`asset` 解析 · **per-instance 隔离** |
+| M0-6 | `saves` | `SaveService` · 本地快照 + 回放（先文件，M0 后接 DB） |
+| M0-7 | API（**全部 async**） | `POST /game/{pid}/turn` · `GET /game/{pid}/state` · `POST/GET /game/{pid}/saves` · `POST /extensions/resolve` |
+| M0-8 | 前端扩展 | 游戏模式：对话框 / 选项 / backlog / 存档读取 |
+| M0-9 | Demo | `examples/world_demo/`：1 skill + 1 map mod + 2 角色 / 2 地点 |
+| M0-10 | 测试 | GM 裁决、`Fact` 过滤、存档回放、manifest 校验、导演模式回归 |
 
-### 2.3 明确不做
+### 2.3 运行时架构预留（M0 就留对，不大手术）
+
+这些不是 M0 要做的事，是**M0 必须设计成将来能做**的事：
+
+| # | 预留点 | 做法 |
+|---|---|---|
+| 1 | Runtime 无状态 | `WorldState` 不持久化到 DB；每 turn 从请求体接收、返回 `state_delta` |
+| 2 | 扩展包 per-instance | `ExtensionHost` 每个 `instance_id` 独立实例，不做类级缓存 |
+| 3 | 所有 endpoint async | FastAPI async endpoint + LiteLLM `completion_async()` |
+| 4 | TurnLoop 超时控制 | 每 turn 调用方可传 `max_duration_ms`，超时立即返回 `timeout` |
+| 5 | 请求级配额 | bootstrap 传入 `max_turns / max_retries / max_cost`，超限立即拒绝 |
+| 6 | 模型 Key 动态注入 | `bootstrap` 请求体传入 `provider_api_keys`，只在 Runtime 内存 |
+| 7 | 结构化 JSON 日志 | 带 `instance_id / work_id / turn_id / trace_id` |
+| 8 | API 版本化 | 端点路径带 `/v1/`，将来 v2 并行 |
+
+> M0 验收通过后再加 `/runtime/v1/bootstrap` / `/runtime/v1/{instance_id}/turn` 等接口，
+> 把 Step A 的 `/game/...` 端点重命名加 deprecation 标记即可，不重构架构。
+
+### 2.4 明确不做（M0 期间）
 
 - TFC 五档动态计算（固定 `L2`，接口预留）；
 - Fate / Casting / 好感度 / 路线图；
 - Belief 欺骗与误解（只做 `known_by` 过滤）；
 - 审核策略执行（只留 `ModerationGate` 接口，默认 passthrough）；
 - 图片 / 音频渲染（只解析 `asset` manifest）；
-- 游戏模式前端（M0 用 API + CLI 演示，M1 再做界面）；
+- 实时多人；
 - 多模态。
 
-### 2.4 验收
+### 2.5 验收
 
 | # | 场景 | 预期 |
 |---|---|---|
@@ -84,6 +103,16 @@
 | A4 | 存档 → 读档 → 回放 | 文本与状态完全一致，不重新生成 |
 | A5 | 关闭 style skill / 启用 map mod | 文风变化 / 旅行耗时生效；坏 manifest 被拒绝 |
 | A6 | 导演模式生成场景 | 原 `scene_brief` 流程不回归，现有数据不受影响 |
+| A7 | 前端游戏模式 | 对话框展示 StageDirective，玩家可输入行动，存档/读档可用 |
+
+### 2.6 性能指标（M0 后压测）
+
+| 指标 | 目标 |
+|---|---|
+| 单 turn P95 延迟 | ≤ 10s（含 LLM 调用） |
+| 冷启动 | ≤ 3s |
+| 单实例并发 turn 数 | ≥ 100 |
+| 性能扩展 | 增加实例 ≈ 线性增加吞吐 |
 
 ---
 
@@ -93,22 +122,22 @@
 
 | 模块 | 现状 | 缺口 | 优先级 |
 |---|---|---|---|
-| 世界状态 | 只有 `NovelProject` 资产与 `scene_count` | `WorldState` / `Fact` / 时间 / 地点 / 角色状态 | P0 |
+| 世界状态 | 只有 `NovelProject` 资产与 `scene_count` | `WorldState` / `Fact` / 时间 / 地点 / 角色状态 · 可序列化 | P0 |
 | 裁决 | 只有一致性检查 | `GameMaster`：合法性、`state_delta`、`time_delta` | P0 |
 | 输入 | `scene_brief` 字符串 | `PlayerIntent` + `IntentRouter` | P0 |
-| 输出 | `prose` 字符串 | `StageDirective` + `StageRenderer` + `TextAdapter` | P0 |
-| 循环 | 一次性 `@start → @listen` 管道 | `TurnLoop` 回环 + 四个出口 + 上限保护 | P0 |
-| 扩展 | Agent/Task YAML 种子 | 统一 manifest + `ExtensionHost` + 四类扩展加载 | P0 |
-| 存档 | 无 | `saves` 表 + 快照 + 回放 | P0 |
+| 输出 | `prose` 字符串 | `StageDirective` + `StageRenderer` + `TextAdapter` · 可序列化 | P0 |
+| 循环 | 一次性 `@start → @listen` 管道 | `TurnLoop` 回环 + 四个出口 + 上限保护 + async + 超时 | P0 |
+| 扩展 | Agent/Task YAML 种子 | 统一 manifest + `ExtensionHost` + 四类扩展加载 · per-instance | P0 |
+| 存档 | 无 | `SaveService`（快照 + 回放） | P0 |
 | 信息隔离 | prompt 直接拼项目资产 | `view(agent_id)` 按 `known_by` 过滤 | P0 |
-| API | 项目 / 资产 / 场景 / 章节 | `/game/...` 三个端点 | P0 |
+| API | 项目 / 资产 / 场景 / 章节 | `/game/...` 三个端点 + `/extensions/resolve` · 全部 async | P0 |
+| 前端 | 只有作者工作台 | 游戏模式：对话框 / 选项 / backlog / 存档 | P0 |
 | Demo | 无 | `examples/world_demo` | P1 |
 
 ### 3.2 游戏模式玩法（M1 / M2）
 
 | 模块 | 缺口 | 阶段 |
 |---|---|---|
-| 游戏前端 | 对话框 / 选项 / backlog / 已读跳过 | M1 |
 | TFC | 五档动态计算 + 信号 | M1 |
 | 审核 | `policy` pack + 规则 / 分类器 | M1 |
 | 媒体 | 图片 / 音频资源调度 | M1 |
@@ -119,9 +148,9 @@
 | 视角 | `POVController` + `Belief` 全量 | M2 |
 | 多模态 | 视频 / 生成式媒体 / TTS | M3 |
 
-### 3.3 文档与实现对齐（已完成于本次整理）
+### 3.3 文档与实现对齐（已完成）
 
-- `TECHNICAL.md`：修正「资产未落库」「三张表」「58 tests」等过时描述；
+- `TECHNICAL.md`：修正过时描述；
 - `ARCHITECTURE.md`：补充双模式与基座抽象；
 - `README.md`：更新定位与当前状态；
 - `CONTROL_THEORY.md` / `MODEL_SELECTION.md`：补充新架构下的角色定位。
@@ -131,14 +160,14 @@
 ## 4. 实施顺序
 
 ```
-W1  world/ + saves          状态与快照
-W2  runtime/ + GameMaster   意图、指令、裁决
-W3  turn_flow + API         循环打通
-W4  extensions + demo       可插拔验证
-W5  tests + docs            验收
+W1  world/ + saves          状态、裁决、快照
+W2  runtime/ + TurnLoop     意图、指令、async 循环
+W3  extensions + API        扩展宿主 + 端点（全部 async）
+W4  前端游戏模式 + demo     可玩界面 + 示例世界
+W5  tests + 压测 + docs     验收
 ```
 
-W4 可与 W3 并行。M0 完成的判定以 §2.4 六条验收全部通过为准。
+W3 / W4 可并行。M0 完成的判定以 §2.5 七条验收全部通过 + §2.6 压测指标达标为准。
 
 ---
 
@@ -148,4 +177,5 @@ W4 可与 W3 并行。M0 完成的判定以 §2.4 六条验收全部通过为准
 - 不做实时多人；
 - 不做视频生成；
 - 不做特定 galgame 的全套演出；
-- 不重构作者模式的 8 个 Agent。
+- 不重构作者模式的 8 个 Agent；
+- 不做云部署脚本（先本地 Docker Compose 跑通）。
