@@ -1,163 +1,275 @@
-# 织章 StoryLoom 架构文档
+# 织章 StoryLoom 架构
 
-> 本文档是项目设计结论的落地说明，对应 `src/storyloom/` 包内的
-> `config/`、`llm/`、`crews/`、`flows/`、`control/`、`media/`、`api/` 各层实现。
+> 本文档描述「双模式 + 基座 + 扩展」的总体架构。
+> 进度与差距见 [MVP.md](MVP.md)，完整演进计划见
+> [architecture_evolution_plan.md](../.trae/documents/architecture_evolution_plan.md)。
 
 ---
 
-## 1. 分层架构
+## 1. 两种模式，一个基座
+
+| | 导演模式 | 游戏 / 扮演模式 |
+|---|---|---|
+| 用户 | 作者 | 玩家 |
+| 输入 | 场景指令 / 章节意图 | 角色行动 / 选择 |
+| 主导扩展 | `skill`：类型知识、结构模板、文风 | `mod`：地图、时间、数值、系统 |
+| 权限 | 可改写事实（`FactOverride`，审计 + 快照） | 行动需 GM 裁决，可失败 |
+| 产物 | 小说章节 | 可交互的文字世界 |
+
+两种模式共用同一套世界状态、裁决、渲染与扩展机制。导演模式保留现有的
+`scene_brief → 场景正文` 入口；游戏模式走 `PlayerIntent → TurnLoop`。
+
+---
+
+## 2. 分层
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ Layer 7  Web 界面层（规划）                                   │
-│ FastAPI + Streamlit：项目管理 / 资产编辑 / 生成 / 历史回溯      │
+│ Layer 5  表现层        PresentationAdapter                   │
+│          TextAdapter / AdvAdapter / NvlAdapter / 未来 3D       │
 ├──────────────────────────────────────────────────────────────┤
-│ Layer 6  多模态渲染层                media/render_adapter.py │
-│ RenderAdapter → TextOnly / TTS / Image / Video               │
+│ Layer 4  叙事导演层    NarrativeDirector + TFC + Fate         │
+│          节奏、张力、伏笔、命运、信息预算（全部可扩展）          │
 ├──────────────────────────────────────────────────────────────┤
-│ Layer 5  控制论管控层                control/                │
-│ 灵敏度分析 | 反馈闭环 | 统计滤波 | 质量闸门 | 人机结合         │
+│ Layer 3  角色层        AutonomousAgent / Actor / Ensemble      │
+│          记忆 → 反思 → 计划 → 行动；只拿 view(agent_id)        │
 ├──────────────────────────────────────────────────────────────┤
-│ Layer 4  工作流编排层                flows/                  │
-│ SceneGenerationFlow / ControlledSceneFlow（CrewAI Flow）      │
+│ Layer 2  世界层        WorldState + GameMaster                │
+│          Fact 真相 / Belief 认知 / 时间 / 地点 / Flag / 裁决    │
 ├──────────────────────────────────────────────────────────────┤
-│ Layer 3  Agent 层                   crews/scene_crew/crew.py │
-│ Director | Protagonist | Ensemble | Surprise | Foreshadowing │
-│ Consistency | Prose | Outline                                │
+│ Layer 1  基座层        IntentRouter + ExtensionHost + Save     │
+│          PlayerIntent / StageDirective / manifest / 快照       │
 ├──────────────────────────────────────────────────────────────┤
-│ Layer 2  记忆层 / 资产层      memory.py  models.py            │
-│ CoreMemory (prompt) + VectorMemory (RAG) | Character/Location │
-│ Foreshadowing / SurpriseProposal                              │
-├──────────────────────────────────────────────────────────────┤
-│ Layer 1  模型路由层           llm/providers.py  llm/router.py │
-│ DeepSeek | OpenAI | Anthropic | Ollama + 自动降级             │
-├──────────────────────────────────────────────────────────────┤
-│ Layer 0  项目层                      storyloom/models.py     │
-│ NovelProject：资产库 / 记忆实例 / 场景计数 / 伏笔状态          │
+│ Layer 0  模型与存储    llm/router + db/repository             │
+│          DeepSeek / OpenAI / Anthropic / Ollama + SQLite       │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-每层只依赖下一层的接口，因此替换模型、增加渲染器、接入 Web 界面
-都不需要改动已有 Agent 与 Flow 的核心逻辑。
+依赖方向自上而下，扩展包只能挂在 Layer 1 定义的接口上，不修改核心层。
 
 ---
 
-## 2. Agent 角色设计
+## 3. 核心抽象
 
-| Agent | 职责 | 数量策略 | 默认模型 |
-|-------|------|---------|---------|
-| 导演 DirectorAgent | 输出"场景意图包"做间接引导，不替角色说话 | 每个场景 1 个 | deepseek.v4pro |
-| 主角 ProtagonistAgent | 独立人格、动机、记忆 | 1 个 primary 角色 = 1 实例 | anthropic.claude_sonnet |
-| 群演 EnsembleAgent | 承载多个次要角色，按任务切换人格 | 每场景 1 个（可装 N 个角色） | deepseek.flash |
-| 意外 SurpriseAgent | 提出"合理但未被预期"的事件提案 | 每场景 1 个 | anthropic.claude_sonnet |
-| 伏笔 ForeshadowingAgent | 管理伏笔种植/强化/揭示/回收/颠覆 | 每场景 1 个 | deepseek.v4pro |
-| 一致性 ConsistencyAgent | 校验人设、时间线、设定冲突 | 每场景 1 个（可控多次采样） | openai.gpt4o |
-| 润色 ProseAgent | 行动日志 → 文学化正文 | 每场景 1 个 | anthropic.claude_sonnet |
-| 大纲 OutlineAgent | 卷→章→场景结构规划 | 按项目 | deepseek.v4pro |
-
-### 关键设计决策
-
-1. **导演只做间接引导**：导演输出的是结构化 JSON（戏剧目标、冲突、情绪曲线、
-   禁止事项），不输出正文，也不指定角色具体动作。角色 Agent 决定怎么演，
-   保留涌现感。
-2. **重要角色与次要角色异构**：`importance_tier` 决定实例化方式，
-   既保证主角的独立性，又压缩群演成本。
-3. **一致性检测强制结构化**：推理模型在复杂结构化输出上不稳定，
-   所有检测结果都按 `ConsistencyReport` 解析，失败时保守放行。
-
----
-
-## 3. 场景生成 Pipeline
-
-```
-SurpriseAgent（意外提案，可控冷却期）
-        ↓
-ForeshadowingAgent（伏笔操作建议 + 超时预警）
-        ↓
-DirectorAgent（综合裁决，产出场景意图包）
-        ↓
-RAG 检索（按资产类型取需要时才取的背景）
-        ↓
-Actor Crew（主角独立实例 + 群演共享实例）
-        ↓
-ConsistencyAgent（冲突则回退重试，最多 N 次）
-        ↓
-ProseAgent（统一文风转写正文）
-        ↓
-Memory 更新 + 伏笔状态机推进 + 端到端质量评估
-```
-
-对应实现：
-- 基础版：[scene_flow.py](../src/storyloom/flows/scene_flow.py)
-- 控制论版：[controlled_scene_flow.py](../src/storyloom/flows/controlled_scene_flow.py)
-
----
-
-## 4. 资产层与项目层
+### 3.1 输入总线：`PlayerIntent`
 
 ```python
-NovelProject
-├── project_id / title / style
-├── characters: List[CharacterAsset]     # 人设卡 + importance_tier
-├── locations: List[LocationAsset]       # 场景环境
-├── foreshadowings: List[Foreshadowing]  # 伏笔状态机
-├── scene_count / surprise_cooldown      # 节奏控制
-└── last_major_surprise_scene
+class PlayerIntent(BaseModel):
+    kind: Literal["text", "choice", "click", "qte", "skip", "save", "load", "meta"]
+    payload: dict
 ```
 
-- 资产的结构化字段直接进 prompt，自由文本字段可自动 embedding 入库。
-- 多项目隔离在 `NovelProject` 层完成，每个项目有独立的向量库 namespace
-  （`memory_store/{project_id}`）。
-- 资产可以"启用/禁用"，实现"这一幕只有这几个资产参与"的动态组合。
+选项与自由输入共存：`choice` 是传统 galgame，`text` 是动态文字世界，
+两者走同一条解析与裁决链。
+
+### 3.2 状态容器：Fact / Belief / Memory
+
+| 层 | 内容 | 维护者 | 用途 |
+|---|---|---|---|
+| `Fact` | 客观真相 | GM，唯一 | 裁决 |
+| `Belief` | 角色相信什么 | 每个 Agent 一份 | 决策，允许错/被骗 |
+| `Memory` | 角色经历过什么 | 每个 Agent 一份 | 叙事与回忆 |
+
+```python
+class Fact(BaseModel):
+    id: str
+    subject: str
+    predicate: str
+    object: str
+    truth: Literal["true", "false", "unknown"]
+    known_by: set[str]
+    asserted_by: str | None
+    source_event: str
+```
+
+**信息隔离纪律**：
+
+- Agent 的 prompt 只注入 `view(agent_id)`，不拿全局 `WorldState`；
+- GM 只信 `Fact`，不信 Agent 转述；
+- 写入 `Belief` 走 GM 统一处理（谁告诉了谁）。
+
+第一阶段只启用 `known_by` 过滤（`known_only + scoped`）；欺骗 / 误解
+（`belief_full`）在 M2 开放。
+
+### 3.3 裁决：`GameMaster`
+
+```
+ActionProposal
+  → 存在性 / 在场性 / 可见性
+  → allowed_actions(地点, 角色)
+  → 资源、能力、世界规则
+  → 在场 NPC 反应（只读工具）
+  → AdjudicationResult { success, outcome, state_delta, time_delta }
+```
+
+LLM 决定「想做什么」，GM 决定「能不能发生」。规则缺口策略可配：
+`reject | llm_referee | human_review`。
+
+### 3.4 输出总线：`StageDirective`
+
+```python
+class StageDirective(BaseModel):
+    kind: Literal[
+        "say", "show", "hide", "bg", "bgm", "se",
+        "wait", "shake", "flash", "cg", "choice",
+        "move", "effect", "end"
+    ]
+    params: dict
+```
+
+渲染层产出指令序列，`PresentationAdapter` 决定怎么演。文本只是 `say`
+的一种表现；ADV、NVL、未来的 3D / 多模态都消费同一串指令。
+
+### 3.5 扩展宿主：`ExtensionHost`
+
+统一 manifest，四种 `kind`：
+
+| kind | 权限 | 作用 |
+|---|---|---|
+| `skill` | 只读 | prompt / 知识 / 文风 |
+| `mod` | 可写 | 状态、规则、确定性工具 |
+| `policy` | 只读 | 审核策略包 |
+| `asset` | 只读 | 图片 / 音频资源 |
+
+```yaml
+id: map_basic
+kind: mod
+api_version: 1
+requires: { time_resolution: minute }
+contributes:
+  state: { namespace: map, fields: [locations, routes] }
+  rules:
+    - { id: map.move, access: gm_only, handler: builtin.map.move }
+  tools:
+    - { id: map.route, access: llm_tool, read_only: true, handler: builtin.map.route }
+```
+
+### 3.6 能力分级
+
+| 能力 | 谁触发 | LLM 可 function call |
+|---|---|---|
+| `read` / `simulate` | 任意 Agent | ✅ |
+| `random` / `mutate` | 仅 GM | ❌ |
+| `authoring` | 仅导演模式 | 只出提案 |
+| `render` | 仅渲染层 | ❌ |
+
+LLM 的工具结果只作提案依据，GM 裁决时用 `WorldState` 复核。
 
 ---
 
-## 5. 记忆层
+## 4. TurnLoop
 
 ```
+boot
+ → perceive → classify → interpret
+ → director_frame      （TFC / 导演参数 / 命运预兆）
+ → actor_round         （按 detail_plan 决定实例化谁）
+ → adjudicate          （GM 规则、随机、时间推进）
+ → consistency         （冲突 → retry ≤ N）
+ → moderation_gate     （暂存态审核）
+ → render_scene        （产出 StageDirective）
+ → commit              （事务转正）
+ → plan_next
+      ├─ next_turn → perceive
+      ├─ end_arc
+      ├─ stop
+      └─ human_review
+```
+
+- 循环用 `@router` 回到上游；
+- 出口条件：`max_turns`、`arc_complete`、`player_quit`、`quality_gate_failed`、
+  `human_review_required`；
+- 硬上限：`max_turns_per_session`、`max_retries_per_turn`、`max_cost_per_turn`。
+
+---
+
+## 5. 世界状态与记忆
+
+```
+WorldState
+├── time_minutes / precision
+├── characters: CharState（位置 / 情绪 / 健康 / 知识 / 目标 / 背包）
+├── locations: LocationState（出口 / 旅行耗时 / 在场角色）
+├── facts: Fact（truth / known_by / asserted_by）
+├── flags / relationships
+└── pending_promises（伏笔 / 命运承诺）
+
 CoreMemory（直接拼入 prompt）
-├── 当前场景状态（地点、在场角色）
-├── 最近 2~3 个场景摘要（滚动压缩）
-└── 导演当前指令包
+├── 当前场景状态
+├── 最近 2~3 个场景摘要
+└── 导演当前参数
 
 SimpleRAGMemory（按需检索）
-├── 世界观设定 / 角色背景 / 场景细节
-├── ChromaDB 持久化，按项目隔离
-└── 未安装 chromadb 时退化为关键词检索
+├── 世界观 / 角色背景 / 场景细节
+├── ChromaDB，按项目隔离
+└── 未安装时退化为关键词检索
 ```
 
-设计原则：**关键记忆直接给，背景记忆按需取**。
-把所有设定一次性塞进 prompt 会稀释模型注意力，反而降低一致性。
+原则：**关键记忆直接给，背景记忆按需取**；Agent 只拿自己的 `view`。
 
 ---
 
-## 6. 多模态预留
+## 6. 与现有实现的映射
 
-`ProseAgent` 的产出可先转成结构化中间表示：
+| 现有模块 | 在新架构中的位置 | 状态 |
+|---|---|---|
+| `api/engine.py` | 项目 / 资产运行时，新增 game 方法 | 复用 + 扩展 |
+| `crews/scene_crew/` | 导演模式渲染管道 | 保留 |
+| `flows/scene_flow.py` | 导演模式的单场景子流程 | 保留 |
+| `flows/controlled_scene_flow.py` | 控制论增强版 | 保留 |
+| `control/` | 全层质量控制 | 保留 |
+| `memory.py` | Layer 3 记忆 | 复用 |
+| `llm/router.py` | Layer 0 模型路由 | 复用 |
+| `models.py` | 资产模型 | 复用 |
+| `db/repository.py` | Layer 0 持久化 | 复用 + 新增 `saves` |
+| `media/render_adapter.py` | Layer 5 表现层雏形 | 重构为 `PresentationAdapter` |
 
-```json
-{
-  "scene_id": "scene_03",
-  "speaker": "林夏",
-  "dialogue": "你确定？",
-  "narration": "她的手指微微收紧",
-  "emotion_tag": "tension",
-  "camera_hint": "close-up"
-}
+新增模块：
+
 ```
-
-未来接入 TTS / Seedance / 图片生成时，只需在 `media/render_adapter.py`
-新增一个 `RenderAdapter` 子类，Agent 与 Flow 逻辑不变。
-
-**这是补救成本最高的一处设计，所以现在就定下来。**
+src/storyloom/
+├── world/        # state.py / game_master.py / rules.py
+├── runtime/      # intent.py / directive.py / renderer.py
+├── extensions/   # manifest.py / host.py / registry.py
+├── flows/turn_flow.py
+└── examples/world_demo/
+```
 
 ---
 
-## 7. 扩展路线
+## 7. 控制论
+
+控制论层完整保留，并重新定位：
+
+| 原理 | 新位置 |
+|---|---|
+| 反馈闭环 | GM 裁决 + 一致性 + 审核三重闭环 |
+| 统计滤波 | 关键裁决多次采样 / 投票 |
+| 灵敏度分析 | 按 `importance_tier` 决定 tick 频率与审核强度 |
+| 解耦控制 | `PlayerIntent` / `StageDirective` / `Fact` 三层解耦 |
+| 分层管控 | 基座 / 扩展 / 导演 / 表现四层 |
+| 人机结合 | 关键裁决、审核不确定、命运收束转人工 |
+
+详见 [CONTROL_THEORY.md](CONTROL_THEORY.md)。
+
+---
+
+## 8. 多模态预留
+
+`ProseAgent` / `StageDirective` 的产出是结构化中间表示，未来接入 TTS、
+图片、视频时只需新增 `PresentationAdapter` 或 `MediaProvider`，Agent 与
+Flow 逻辑不变。
+
+第一阶段媒体范围：`image + audio`；`video` 在类型系统预留、默认关闭。
+
+---
+
+## 9. 演进阶段
 
 | 阶段 | 内容 | 状态 |
-|------|------|------|
-| Phase 1 | 多 Agent 协作、多模型路由、伏笔管理、控制论管控、分层记忆 | ✅ |
-| Phase 2 | Web 界面、多项目管理、章节串联、历史回溯、SQLite 持久化 | 🔲 |
-| Phase 3 | TTS 语音小说、插图、短剧视频 | 🔲 |
-| Phase 4 | 交互式分支叙事、多人协作、游戏引擎集成 | 🔲 |
+|---|---|---|
+| 作者模式 MVP | 场景生成 / 资产与场景落库 / 章节 / Web 工作台 | ✅ |
+| M0 | 世界状态、GM、双总线、TurnLoop、扩展宿主、存档 | 🔲 |
+| M1 | 游戏前端、TFC、审核、媒体、Flag/Choice | 🔲 |
+| M2 | 命运、Casting、路线图、POV、Belief 全量 | 🔲 |
+| M3 | 视频、生成式媒体、TTS | 🔲 |

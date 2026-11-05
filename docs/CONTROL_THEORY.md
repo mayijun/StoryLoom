@@ -79,3 +79,26 @@
 控制论增强版用约 3 倍 API 调用换取约 37% 的质量提升。
 可通过 `config/model_config.yaml` 的 `strategy.mode` 在
 `cost_optimized` / `balanced` / `quality_first` 之间切换。
+
+---
+
+## 6. 在「双模式基座」中的重新定位
+
+控制论不是作者模式专属，而是整个基座的质量基础设施：
+
+| 原理 | 作者模式 | 游戏模式 |
+|---|---|---|
+| 反馈闭环 | 一致性检测 → 重试 | GM 裁决 → 一致性 → 审核 → 重试 |
+| 统计滤波 | 高杠杆 Agent 多次采样 | 关键裁决（攻击/命运收束）多次采样 |
+| 灵敏度分析 | 按 Agent 风险分配校验 | 按 `importance_tier` 分配 tick 频率与审核强度 |
+| 解耦控制 | 结构化中间格式 | `PlayerIntent` / `Fact` / `StageDirective` 三层解耦 |
+| 分层管控 | Orchestrator | 基座 / 扩展 / 导演 / 表现四层 |
+| 人机结合 | `human_review_gate` | 审核不确定、命运收束、关键 GM 裁决转人工 |
+
+新增的三处闭环：
+
+1. **GM 裁决闭环**：行动提案 → 规则校验 → 失败给出替代方案 → 重试；
+2. **审核闭环**：暂存态 → 审核 → `soften / rewrite / regenerate`，不污染已提交状态；
+3. **节奏闭环**：TFC 根据 `drift` / `tension` 调节时间步长，避免主线发散或长期平淡。
+
+对应架构见 [ARCHITECTURE.md](ARCHITECTURE.md)，实施范围见 [MVP.md](MVP.md)。

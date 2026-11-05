@@ -1,7 +1,8 @@
 # 织章 StoryLoom — 技术细节
 
-> 本文档汇集 README 之外的所有技术实现信息。
-> 想了解项目原理请看 [README.md](../README.md)。
+> 本文档描述**当前已经实现**的技术细节。
+> 架构与演进方向见 [ARCHITECTURE.md](ARCHITECTURE.md)，
+> 下一阶段 MVP 与差距见 [MVP.md](MVP.md)。
 
 ---
 
@@ -14,20 +15,21 @@
 | 🎬 导演 director | 场景意图规划，间接引导而非操控角色 | DeepSeek V4 Pro | 🔴 CRITICAL |
 | 🎭 主角 protagonist | 独立人格，基于动机自主行动 | Claude Sonnet | 🟠 HIGH |
 | 👥 群演 ensemble | 多个次要角色共享 1 实例，压缩成本 | DeepSeek Flash | 🟢 LOW |
-| 🎲 意外 surprise | 提出"预期之外、情理之中"的事件提案 | Claude Sonnet | 🟠 HIGH |
+| 🎲 意外 surprise | 提出「预期之外、情理之中」的事件提案 | Claude Sonnet | 🟠 HIGH |
 | 📌 伏笔 foreshadowing | 伏笔全生命周期管理 | DeepSeek V4 Pro | 🟠 HIGH |
 | ✅ 一致性 consistency | 校验人设/时间线/设定冲突 | GPT-4o | 🔴 CRITICAL |
 | ✍️ 润色 prose | 行动日志 → 文学化正式正文 | Claude Sonnet | 🟡 MEDIUM |
 | 📋 大纲 outline | 章节级结构规划 | DeepSeek V4 Pro | 🟡 MEDIUM |
 
-- **YAML 种子**：`crews/scene_crew/config/agents.yaml` + `tasks.yaml` 首次运行导入数据库，之后数据库是唯一事实来源
-- **可配置**：每个项目可独立增删改 Agent / Task、调整执行顺序、启停
+- **YAML 种子**：`crews/scene_crew/config/agents.yaml` + `tasks.yaml` 首次运行导入数据库，
+  之后数据库是唯一事实来源；
+- **可配置**：每个项目可独立增删改 Agent / Task、调整执行顺序、启停。
 
 ### 🔀 多模型路由 + 自动降级
 
-- `config/model_config.yaml` 配置提供商与 Agent→模型映射，改配置不改代码
-- 支持 DeepSeek / OpenAI / Anthropic / Ollama（本地）
-- 主模型不可用时自动切到 fallback
+- `config/model_config.yaml` 配置提供商与 Agent→模型映射，改配置不改代码；
+- 支持 DeepSeek / OpenAI / Anthropic / Ollama（本地）；
+- 主模型不可用时自动切到 fallback。
 
 ### 🎛️ 系统控制论质量管控
 
@@ -43,45 +45,58 @@
 
 ### 📌 伏笔生命周期管理
 
-显式状态机，解决长篇写作"伏笔遗忘"：
-
 ```
 PLANTED ──→ REINFORCED ──→ ACTIVATED ──→ RESOLVED
  (埋下)       (强化暗示)     (触发揭示)     (完成回收)
-                  └──→ SUBVERTED（与意外Agent联动的颠覆回收）
+                  └──→ SUBVERTED（与意外 Agent 联动的颠覆回收）
 ```
 
-- 超时预警（超过 N 场景未提及）
-- 密度控制（同时活跃伏笔上限）
-- 伏笔 × 意外联动
+- 超时预警（超过 N 场景未提及）；
+- 密度控制（同时活跃伏笔上限）；
+- 伏笔 × 意外联动；
+- 状态推进在 `scene_flow.py` / `controlled_scene_flow.py` 内完成。
 
 ### 🧠 分层记忆
 
-- **CoreMemory**（直接拼入 prompt）：当前场景状态、最近 2~3 场景摘要、导演指令包
-- **VectorMemory**（RAG，ChromaDB）：世界观设定 / 角色背景 / 历史章节
+- **CoreMemory**（直接拼入 prompt）：当前场景状态、最近 2~3 场景摘要、导演指令包；
+- **SimpleRAGMemory**（按需检索）：世界观设定 / 角色背景 / 历史章节，ChromaDB 按项目隔离，
+  未安装时退化为关键词检索。
+
+> 当前记忆只覆盖单次生成过程；历史场景正文尚未批量回填 RAG（见 MVP P1）。
 
 ### 🎲 可控随机性
 
-意外 Agent 提"合理但未被预期"的事件：5 种类型（角色/信息/环境/关系/时间）、
+意外 Agent 提「合理但未被预期」的事件：5 种类型（角色/信息/环境/关系/时间）、
 四重约束（合理/可追溯/有后果/节制）、冷却期、导演审批。
 
 ### 🗄️ 持久化与多项目隔离
 
-- 三张表：`projects`（项目元数据）/ `agent_configs` / `task_configs`
-- `agent_configs` / `task_configs` 对 `projects.project_id` 外键 `ON DELETE CASCADE`
-- SQLite 默认（`data/storyloom.db`），设 `STORYLOOM_DATABASE_URL` 可切 PostgreSQL/MySQL
-- SQLite 连接自动 `PRAGMA foreign_keys = ON`
-- 旧库自动迁移（缺 `project_id` 列或缺外键 → 重建补全，数据不丢）
+SQLite 默认（`data/storyloom.db`），设 `STORYLOOM_DATABASE_URL` 可切 PostgreSQL/MySQL。
 
-> ⚠️ 角色 / 场景 / 伏笔等**资产当前只存在引擎内存中，未落库**，服务重启后丢失。
-> 见末尾「MVP 缺口」P0 项。
+当前 8 张表：
+
+| 表 | 作用 |
+|---|---|
+| `projects` | 项目元数据 |
+| `agent_configs` | 每项目 Agent 配置 |
+| `task_configs` | 每项目 Task 配置 |
+| `chapters` | 章节目录 |
+| `scenes` | 已生成场景（brief / prose / 质量分 / 耗时 / 章节归属） |
+| `characters` | 角色资产 |
+| `locations` | 地点资产 |
+| `foreshadowings` | 伏笔资产与状态 |
+
+- `agent_configs` / `task_configs` 对 `projects.project_id` 外键 `ON DELETE CASCADE`；
+- SQLite 连接自动 `PRAGMA foreign_keys = ON`；
+- 旧库自动迁移（缺 `project_id` 列或缺外键 → 重建补全，数据不丢）。
 
 ### 🌐 Web 界面（Vue 3 单页）
 
-- 顶栏：项目选择 / 新建项目 / API 在线状态
-- 左栏：**Agent · Task 双栏编辑**——增删改、拖拽排序、启停
-- 主区：**场景剧场**——输入场景描述 + 选择在场角色 → 流式生成 → Agent 消息流 → 最终正文
-- 右栏：**资产**——角色 / 场景 / 伏笔三标签
+- 顶栏：项目选择 / 新建项目 / API 在线状态；
+- 左栏：Agent · Task 双栏编辑（增删改、拖拽排序、启停）；
+- 主区：场景剧场（场景描述 + 在场角色 → 流式生成 → Agent 消息流 → 正文）；
+- 右栏：资产（角色 / 地点 / 伏笔）；
+- 场景历史与章节管理。
 
 ### ⚙️ 配置 CLI
 
@@ -105,7 +120,7 @@ uv run storyloom-config seed --overwrite
 | 向量库 | ChromaDB |
 | 数据库 | SQLite（默认）/ PostgreSQL / MySQL |
 | 前端 | Vue 3 · Vite · Pinia · PrimeVue |
-| 测试 | pytest（58 passed） |
+| 测试 | pytest |
 
 ---
 
@@ -120,12 +135,14 @@ StoryLoom/
 │   │   ├── schemas.py           # Pydantic 数据契约
 │   │   └── routers/
 │   │       ├── projects.py      # /api/projects
-│   │       ├── agents.py        # /api/agents?project_id=
-│   │       ├── tasks.py         # /api/tasks?project_id=
-│   │       ├── assets.py        # /api/characters · /locations · /foreshadowings
-│   │       └── generation.py    # /api/generation/scene · /scene/stream
+│   │       ├── agents.py        # /api/agents
+│   │       ├── tasks.py         # /api/tasks
+│   │       ├── assets.py        # /api/projects/{id}/assets
+│   │       ├── generation.py    # /api/generate
+│   │       ├── scenes.py        # /api/projects/{id}/scenes
+│   │       └── chapters.py      # /api/projects/{id}/chapters
 │   ├── db/
-│   │   ├── models.py            # ProjectRow / AgentConfigRow / TaskConfigRow（含外键）
+│   │   ├── models.py            # 8 张表的 ORM 模型
 │   │   ├── base.py              # 引擎 + SQLite PRAGMA foreign_keys
 │   │   ├── repository.py        # CRUD + 旧库迁移
 │   │   ├── config_source.py     # CrewAI 配置描述符（从 DB 加载）
@@ -133,20 +150,31 @@ StoryLoom/
 │   ├── crews/scene_crew/
 │   │   ├── crew.py              # @CrewBase SceneCrew
 │   │   └── config/              # agents.yaml / tasks.yaml（种子）
-│   ├── llm/                     # providers.py（ModelRegistry）+ router.py（自动降级）
+│   ├── llm/                     # providers.py + router.py
 │   ├── flows/                   # scene_flow.py / controlled_scene_flow.py
 │   ├── control/                 # feedback_loop · robustness · hierarchy
 │   ├── memory.py                # CoreMemory + SimpleRAGMemory
-│   ├── models.py                # Character/Location/Foreshadowing/Surprise/NovelProject
+│   ├── models.py                # 资产模型 / 伏笔 / 意外 / NovelProject
+│   ├── media/                   # render_adapter.py（表现层雏形）
 │   └── config/model_config.yaml
 ├── frontend/                    # Vue 3 + Vite + Pinia
 │   └── src/
-│       ├── App.vue              # 单页三栏
+│       ├── App.vue
 │       ├── stores/              # project / agent / task / asset / generation
 │       └── composables/useApi.ts
 ├── tests/
 ├── data/                        # SQLite（已 git 忽略）
 └── app.py                       # 启动器
+```
+
+下一阶段将新增：
+
+```
+├── world/        # state.py / game_master.py / rules.py
+├── runtime/      # intent.py / directive.py / renderer.py
+├── extensions/   # manifest.py / host.py / registry.py
+├── flows/turn_flow.py
+└── examples/world_demo/
 ```
 
 ---
@@ -200,13 +228,26 @@ python -m storyloom.main_controlled     # 控制论增强版
 | GET | `/api/health` | 健康检查 + 可用模型 |
 | GET/POST/DELETE | `/api/projects/` | 项目列表 / 新建 / 删除（demo 不可删） |
 | GET | `/api/projects/{id}` | 项目详情 |
-| GET/POST/PUT/DELETE | `/api/agents/?project_id=` | Agent 配置 CRUD + 排序 |
-| GET/POST/PUT/DELETE | `/api/tasks/?project_id=` | Task 配置 CRUD + 排序 |
-| GET/POST/DELETE | `/api/assets/characters?project_id=` | 角色（内存） |
-| GET/POST | `/api/assets/locations?project_id=` | 场景（内存） |
-| GET/POST | `/api/assets/foreshadowings?project_id=` | 伏笔（内存） |
-| POST | `/api/generation/scene` | 同步生成场景 |
-| POST | `/api/generation/scene/stream` | 流式生成（SSE） |
+| GET/POST/PUT/DELETE | `/api/agents` | Agent 配置 CRUD + 排序（按 `project_id`） |
+| GET/POST/PUT/DELETE | `/api/tasks` | Task 配置 CRUD + 排序（按 `project_id`） |
+| GET/POST/DELETE | `/api/projects/{id}/assets/characters` | 角色资产 |
+| GET/POST/DELETE | `/api/projects/{id}/assets/locations` | 地点资产 |
+| GET/POST/DELETE | `/api/projects/{id}/assets/foreshadowings` | 伏笔资产 |
+| POST | `/api/generate/scene` | 同步生成场景 |
+| POST | `/api/generate/scene/stream` | 流式生成（SSE） |
+| GET/PUT/DELETE | `/api/projects/{id}/scenes` | 场景列表 / 编辑 / 删除 |
+| GET | `/api/projects/{id}/scenes/{scene_id}` | 场景详情 |
+| PATCH | `/api/projects/{id}/scenes/{scene_id}/chapter` | 场景归属章节 |
+| POST | `/api/projects/{id}/scenes/{scene_id}/regenerate` | 单场景重跑 |
+| GET/POST/PUT/DELETE | `/api/projects/{id}/chapters` | 章节 CRUD |
+
+下一阶段（M0）将新增：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/projects/{id}/game/turn` | 提交一次玩家行动，返回演出指令 |
+| GET | `/api/projects/{id}/game/state` | 当前世界状态（玩家视图） |
+| POST/GET | `/api/projects/{id}/game/saves` | 存档 / 读档 |
 
 ---
 
@@ -216,25 +257,20 @@ python -m storyloom.main_controlled     # 控制论增强版
 uv run pytest -q
 ```
 
-覆盖：项目落库与外键、Agent/Task API、迁移与幂等回归、资产模型、记忆、控制论模块、Flow。
+覆盖：项目落库与外键、Agent/Task API、迁移与幂等回归、资产模型、场景与章节持久化、
+记忆、控制论模块、Flow。
 
 ---
 
-## 🎯 MVP 缺口（按优先级）
+## 🎯 下一步
 
-> 以下为尚未实现、要成为"可用小说生成器"所需的功能。
+当前作者模式的 P0 数据闭环已经完成。下一阶段不是继续堆作者功能，而是
+构建「动态文字世界基座」：
 
-### P0 — 数据闭环
-- **场景正文与生成历史落库**：建 `scenes` 表存 brief / prose / 质量分 / 耗时
-- **章节/大纲结构**：书→卷→章→场景的层级组织与串联生成
-- **资产落库**：角色/场景/伏笔写入数据库，解决重启丢失
+- `WorldState` / `Fact` / `GameMaster`；
+- `PlayerIntent` / `StageDirective` 双总线；
+- `TurnLoop`；
+- 统一 manifest + `ExtensionHost`；
+- 存档 / 读档 / 回放。
 
-### P1 — 创作体验
-- 生成结果**人工编辑**与**单场景重跑**
-- 小说**导出**（Markdown / TXT）
-- 多场景**上下文衔接**（历史场景进 RAG）
-
-### P2 — 完善
-- 伏笔**状态流转** API（激活/回收/颠覆）
-- 成本与质量指标**前端展示**
-- Agent·Task 配置**导入导出/跨项目复制**
+详细范围、验收与差距见 [MVP.md](MVP.md)。

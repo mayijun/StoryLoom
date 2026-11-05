@@ -92,3 +92,28 @@ primary 不可用 → fallback 可用 → 用 fallback 并打印降级日志
 - 推理模型的推理过程通过独立 `reasoning_content` 字段返回。
 - 推理模型生成规范工具调用格式不够稳定，因此一致性检测等场景
   统一采用"输出 JSON + 容错解析 + 失败放行"的策略。
+
+---
+
+## 6. 下一阶段（游戏模式基座）的角色与模型
+
+以下角色尚未实现，模型分配先按职责预留：
+
+| 新角色 | 职责 | 是否需要 LLM | 建议模型 |
+|---|---|---|---|
+| NarrativeDirector | 节奏、张力、信息预算、命运预兆 | 是 | DeepSeek V4 Pro（结构化 JSON） |
+| PlayerInterpreter | 玩家自由输入 → 结构化 ActionProposal | 是 | Claude Sonnet / GPT-4o |
+| GameMaster | 行动合法性、状态迁移、时间推进 | **否**（规则引擎） | — |
+| ModerationReviewer | 只审被标记的文本片段 | 是 | 便宜模型 + 结构化输出 |
+| MediaResolver | 意图 → 资源匹配 | **否**（标签检索） | — |
+| CastingAdjudicator | 配额、重名、必要性检查 | 部分 | 规则优先，LLM 只做必要性判断 |
+| FateManager | 压力计算、倒数器、收束触发 | **否** | 确定性算法 + seed |
+
+原则不变：**能用代码确定性完成的，不交给 LLM**。GM、时间、随机、算术、
+配额都属于代码层；LLM 只负责理解、提案、叙述与判断。
+
+成本控制沿用 `detail_level`：
+
+- `L0 / L1`：强模型（主角、关键抉择、收束场景）；
+- `L2`：中档模型；
+- `L3 / L4`：便宜模型或模板，群演不单独调用。
