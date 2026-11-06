@@ -4,7 +4,7 @@ CrewAI引擎桥接：连接FastAPI和已有的CrewAI多Agent后端
 
 import json
 import asyncio
-from typing import List
+from typing import List, Optional
 from pathlib import Path
 
 from dotenv import load_dotenv
