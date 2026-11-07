@@ -17,6 +17,7 @@
 | 大纲 | 长上下文 + 结构规划 | Gemini / DeepSeek |
 | 意外 | 发散思维、跳跃联想 | Claude（温度 0.95） |
 | 伏笔 | 严密状态追踪 | DeepSeek-V4-Pro（温度 0.5） |
+| 记忆压缩 | 稳定摘要 + 结构化输出 + 成本敏感 | DeepSeek-Flash / 本地小模型 |
 
 ### 实际收益
 
@@ -44,6 +45,10 @@ agent_model_mapping:  # Agent → 模型
     primary: "deepseek.v4pro"
     fallback: "deepseek.flash"
     temperature: 0.7
+  memory:
+    primary: "deepseek.flash"
+    fallback: "ollama.qwen3_8b"
+    temperature: 0.3
 
 strategy:
   mode: "balanced"        # cost_optimized / quality_first / balanced
@@ -109,6 +114,7 @@ primary 不可用 → fallback 可用 → 用 fallback 并打印降级日志
 | CastingAdjudicator | 配额、重名、必要性检查 | 部分 | 规则优先，LLM 只做必要性判断 |
 | FateManager | 压力计算、倒数器、收束触发 | **否** | 确定性算法 + seed |
 | AutonomousAgent | NPC 记忆 → 反思 → 计划 → 提案 | 是 | 按 `importance_tier`：关键角色用中档模型，群演合并一次调用 |
+| MemoryCompressor | 批量压缩短期记忆 → 长期摘要 | 是 | DeepSeek-Flash / Ollama（低温、JSON） |
 | FactOverrideParser | 导演改写事实 → 结构化 `FactOverride` | 是 | DeepSeek V4 Pro（结构化 JSON） |
 | Mod v1 | YAML 规则与钩子注册 | **否** | — |
 

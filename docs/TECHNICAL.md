@@ -57,13 +57,17 @@ PLANTED ──→ REINFORCED ──→ ACTIVATED ──→ RESOLVED
 - 伏笔 × 意外联动；
 - 状态推进在 `scene_flow.py` 内完成。
 
-### 🧠 分层记忆
+### 🧠 记忆（当前：基础版）
 
 - **CoreMemory**（直接拼入 prompt）：当前场景状态、最近 2~3 场景摘要、导演指令包；
 - **SimpleRAGMemory**（按需检索）：世界观设定 / 角色背景 / 历史章节，ChromaDB 按项目隔离，
-  未安装时退化为关键词检索。
+  未安装时退化为关键词检索；
+- 当前 `CoreMemory` 是平铺列表，不分层、不压缩、不落库；历史场景正文尚未批量回填。
 
-> 当前记忆只覆盖单次生成过程；历史场景正文尚未批量回填 RAG（见 MVP P1）。
+> 记忆 v2 是 M0 的设计目标（见 [MVP.md](MVP.md) M0-14），当前尚未实现：
+> 分层核心记忆（`working / short_term / long_term / canon`）、压缩 / 降级 / 回温、
+> `core_memory_items` / `memory_docs` 两张表、`fts / vector / hybrid` 三后端。
+> 架构见 [ARCHITECTURE.md §5](ARCHITECTURE.md#5-世界状态与记忆)。
 
 ### 🎲 可控随机性
 
@@ -95,10 +99,13 @@ M0 将新增（尚未实现）：
 
 | 表 | 作用 |
 |---|---|
+| `core_memory_items` | 分层核心记忆（层 / 重要性 / 访问计数 / 状态 / 来源） |
+| `memory_docs` | L4 检索库文档（背景 / 历史场景 / 被降级记忆 / 可见性） |
 | `world_states` | 回合世界状态快照（checkpoint / 回滚） |
 | `turn_logs` | 输入、裁决、模型用量、耗时审计 |
 
-`projects` 表将增加 `mode`（游戏 / 导演）与 `enabled_mods` 字段。
+`projects` 表将增加 `mode`（游戏 / 导演）、`enabled_mods` 与
+`memory_backend`（`fts` / `vector` / `hybrid`，默认 `fts`）。
 
 ### 🌐 Web 界面（Vue 3 单页）
 
@@ -130,7 +137,9 @@ uv run storyloom-config seed --overwrite
 | 后端 | Python 3.10+ · FastAPI · SQLAlchemy 2 · Pydantic 2 |
 | Agent 编排 | CrewAI（`@CrewBase` + Flow） |
 | LLM | LiteLLM 统一适配 · DeepSeek / OpenAI / Anthropic / Ollama |
-| 向量库 | ChromaDB |
+| 检索 | SQLite FTS5（M0 规划；默认，trigram + LIKE 兜底） |
+| 向量库 | ChromaDB（当前基础版；M0 作为可选派生索引） |
+| Embedding | OpenAI / Ollama（M0 规划，可选，显式配置） |
 | 数据库 | SQLite（默认）/ PostgreSQL / MySQL |
 | 前端 | Vue 3 · Vite · Pinia · PrimeVue |
 | 测试 | pytest |
@@ -155,7 +164,7 @@ StoryLoom/
 │   │       ├── scenes.py        # /api/projects/{id}/scenes
 │   │       └── chapters.py      # /api/projects/{id}/chapters
 │   ├── db/
-│   │   ├── models.py            # 8 张表的 ORM 模型
+│   │   ├── models.py            # 当前 8 张表的 ORM 模型
 │   │   ├── base.py              # 引擎 + SQLite PRAGMA foreign_keys
 │   │   ├── repository.py        # CRUD + 旧库迁移
 │   │   ├── config_source.py     # CrewAI 配置描述符（从 DB 加载）
@@ -166,7 +175,7 @@ StoryLoom/
 │   ├── llm/                     # providers.py + router.py
 │   ├── flows/                   # scene_flow.py（导演模式单场景）
 │   ├── control/                 # feedback_loop · robustness · hierarchy
-│   ├── memory.py                # CoreMemory + SimpleRAGMemory
+│   ├── memory.py                # 当前：CoreMemory + SimpleRAGMemory
 │   ├── models.py                # 资产模型 / 伏笔 / 意外 / NovelProject
 │   ├── media/                   # render_adapter.py（表现层雏形）
 │   └── config/model_config.yaml
@@ -183,6 +192,9 @@ StoryLoom/
 下一阶段将新增：
 
 ```
+├── memory/       # 分层记忆 v2：base / tiers / scoring / core / consolidation
+│                 #              lexical / embeddings / vector / hybrid / indexer
+├── config/memory_config.yaml    # 与 model_config.yaml 同目录；记忆层数 / 压缩 / 降级策略
 ├── world/        # state.py / rules.py / game_master.py / authority.py / autonomous_agent.py
 ├── runtime/      # intent.py / directive.py / renderer.py
 ├── extensions/   # manifest.py / host.py
@@ -211,6 +223,18 @@ DEEPSEEK_API_KEY=sk-xxx
 # 可选
 OPENAI_API_KEY=sk-xxx
 ANTHROPIC_API_KEY=sk-ant-xxx
+
+# 以下为 M0 记忆 v2 预留，当前版本尚未读取
+
+# 可选：记忆检索后端（fts / vector / hybrid）
+# STORYLOOM_MEMORY_BACKEND=fts
+# 可选：向量后端 embedding（不配置则 vector 不可用，hybrid 自动退化为 fts）
+# STORYLOOM_EMBEDDING_PROVIDER=openai
+# STORYLOOM_EMBEDDING_MODEL=text-embedding-3-small
+# 或 Ollama：
+# STORYLOOM_EMBEDDING_PROVIDER=ollama
+# STORYLOOM_EMBEDDING_MODEL=bge-m3
+# OLLAMA_BASE_URL=http://localhost:11434
 ```
 
 ### 3. 启动后端
@@ -263,6 +287,8 @@ python -m storyloom.main                # 基础版
 | GET | `/game/{pid}/state` | 当前世界状态（玩家视图） |
 | POST/GET | `/game/{pid}/saves` | 存档 / 读档 |
 | POST | `/extensions/resolve` | 解析并加载扩展包 manifest |
+| PATCH | `/api/projects/{id}/memory` | 切换记忆检索后端（`fts` / `vector` / `hybrid`） |
+| GET | `/api/projects/{id}/memory` | 记忆层级与后端状态（只读调试） |
 
 M0 验收通过后再重组为 `/runtime/v1/*`，原端点保留并标记 deprecation。
 
@@ -275,7 +301,10 @@ uv run pytest -q
 ```
 
 覆盖：项目落库与外键、Agent/Task API、迁移与幂等回归、资产模型、场景与章节持久化、
-记忆、控制论模块、Flow。
+记忆基础版、控制论模块、Flow。
+
+M0 将补：记忆分层 / 压缩 / 降级回温 / 三后端检索、GM 裁决、存档回放、
+模式切换、扩展包加载与隔离。
 
 ---
 
@@ -289,6 +318,7 @@ uv run pytest -q
 - 双模式 `TurnLoop` + `AuthorityPolicy` + 模式切换 checkpoint；
 - `FactOverride` 审计与回滚；
 - NPC 自主（`AutonomousAgent`）与叙事节拍（`ArcState`）；
+- 分层记忆 v2（短期压缩 / 长期 / 常驻 / 降级回温、`fts` / `vector` / `hybrid` 三后端、历史回填）；
 - 统一 manifest + `ExtensionHost`（Mod v1 YAML）；
 - 存档 / 读档 / 回放。
 

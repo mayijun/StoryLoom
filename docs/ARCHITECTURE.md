@@ -42,8 +42,9 @@
 │ Layer 1  基座层        IntentRouter + ExtensionHost + Save     │
 │          PlayerIntent / StageDirective / manifest / 快照       │
 ├──────────────────────────────────────────────────────────────┤
-│ Layer 0  模型与存储    llm/router + db/repository             │
+│ Layer 0  模型与存储    llm/router + db/repository + memory/   │
 │          DeepSeek / OpenAI / Anthropic / Ollama + SQLite       │
+│          分层核心记忆 / FTS / 可选向量索引                       │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -92,6 +93,9 @@ class Fact(BaseModel):
 
 第一阶段只启用 `known_by` 过滤（`known_only + scoped`）；欺骗 / 误解
 （`belief_full`）在 M2 开放。
+
+> 这里的 `Memory` 是**每个 Agent 的经历视图**；项目级的叙事记忆由 §5 的分层记忆系统维护。
+> 两者在 M0 通过 `visibility` / `known_by` 对接：叙事记忆的私有条目只有对应角色可见。
 
 ### 3.3 裁决：`GameMaster`
 
@@ -240,6 +244,8 @@ boot
 
 ## 5. 世界状态与记忆
 
+### 5.1 运行时状态
+
 ```
 WorldState
 ├── time_minutes / precision
@@ -249,20 +255,61 @@ WorldState
 ├── flags / relationships
 ├── arc: ArcState（phase / tension_target / beats_remaining / info_budget）
 └── pending_promises（伏笔 / 命运承诺）
-
-CoreMemory（直接拼入 prompt）
-├── 当前场景状态
-├── 最近 2~3 个场景摘要
-└── 导演当前参数
-
-SimpleRAGMemory（按需检索）
-├── 世界观 / 角色背景 / 场景细节
-├── ChromaDB，按项目隔离
-└── 未安装时退化为关键词检索
 ```
 
-原则：**关键记忆直接给，背景记忆按需取**；Agent 只拿自己的 `view`。
 `WorldEvent` 记录已发生事件，`Promise` 记录承诺与期限。
+
+### 5.2 叙事记忆分层
+
+项目级叙事记忆分为 5 层：核心层常驻 prompt，检索层按需召回。
+
+| 层 | 内容 | 进入 prompt | 持久化 |
+|---|---|---|---|
+| L0 `working` | 当前场景 brief / 地点 / 在场角色 / 本轮意图 | 总是 | 否 |
+| L1 `short_term` | 最近 K 个场景的详细摘要 | 是 | 是 |
+| L2 `long_term` | 压缩后的章节 / 桥段摘要 | 是 | 是 |
+| L3 `canon` | 稳定身份、世界规则、活跃伏笔、核心设定 | 是（pinned） | 是 |
+| L4 `archive` | 环境、世界观、角色背景、已解决伏笔、被降级旧记忆 | 按需检索 | 是（索引可重建） |
+
+层数不写死：`memory_config.yaml` 用有序列表定义 L1~L3，可在短期与长期之间继续加层。
+`working` 与 `archive` 是固定端点。
+
+生命周期：
+
+```
+场景提交
+  → 生成 short_term 摘要（截断正文 + 人物 / 地点 / 伏笔 / importance）
+  → short_term 超过 max_items → 取最旧 batch 压缩为 long_term
+  → long_term 超过 max_items → 压缩为 canon / arc
+  → 每次提交后评估降级：
+      importance 低 + 连续 N 场景未命中 + 无活跃伏笔 + 非 pinned
+      → 写入 L4 检索库（tier=demoted），核心标记 demoted
+  → 检索命中 demoted 且被采用 N 次 → 回温为 long_term
+```
+
+原则：**近期高保真、远期高压缩、冷记忆可召回、再命中可回温**。
+关键记忆直接给，背景记忆按需取；降级不是删除。
+
+### 5.3 检索后端
+
+| 后端 | 实现 | 适用 |
+|---|---|---|
+| `fts` | SQLite FTS5 `trigram` + `LIKE` 兜底 | 默认；专名、伏笔、场景回溯 |
+| `vector` | Chroma + 可配置 embedding（OpenAI / Ollama） | 主题、情绪、相似桥段 |
+| `hybrid` | FTS + 向量，RRF 融合 | 配好 embedding 后的推荐值 |
+
+- 三种后端同级，按项目 `memory_backend` 切换；
+- 作品数据（`scenes` / 资产）是事实来源，记忆索引与向量库可重建；
+- 不使用 Chroma 默认英文 embedding；中文叙事需显式配置多语言模型；
+- embedding / Chroma 不可用时，`vector` 返回空，`hybrid` 自动退化为 `fts`，不阻断生成。
+
+### 5.4 与角色视图的关系
+
+- 叙事记忆是**项目级**的，供导演、渲染与一致性检查使用；
+- `Fact / Belief / Memory` 是**角色级**的，Agent 只拿 `view(agent_id)`；
+- 叙事记忆中的 `secrets` 等私有条目带 `visibility = private:<name>`，
+  只有对应角色在场时才进入其 prompt；
+- M2 接入完整 `Belief` 后，`known_by` 直接映射为 `visibility` 过滤，不改检索后端协议。
 
 ---
 
@@ -274,10 +321,10 @@ SimpleRAGMemory（按需检索）
 | `crews/scene_crew/` | 导演模式渲染管道 | 保留 |
 | `flows/scene_flow.py` | 导演模式的单场景子流程 | 保留 |
 | `control/` | 全层质量控制 | 保留 |
-| `memory.py` | Layer 3 记忆 | 复用 |
+| `memory.py` | Layer 0 记忆基础版 | 重构为 `memory/` 分层记忆 |
 | `llm/router.py` | Layer 0 模型路由 | 复用 |
 | `models.py` | 资产模型 | 复用 |
-| `db/repository.py` | Layer 0 持久化 | 复用 + 新增 `saves` |
+| `db/repository.py` | Layer 0 持久化 | 复用 + 新增记忆表 / `saves` |
 | `media/render_adapter.py` | Layer 5 表现层雏形 | 重构为 `PresentationAdapter` |
 
 新增模块：
@@ -290,6 +337,9 @@ src/storyloom/
 ├── narrative/    # arc.py
 ├── flows/        # turn_flow.py
 ├── saves/        # service.py
+├── memory/       # base.py / tiers.py / scoring.py / core.py / consolidation.py
+│                 # lexical.py / embeddings.py / vector.py / hybrid.py / indexer.py
+├── config/memory_config.yaml    # 记忆层数 / 压缩 / 降级策略
 └── examples/world_demo/
 ```
 
@@ -328,7 +378,7 @@ M0 只解析 `asset` manifest，不做媒体渲染。
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | 作者模式 MVP | 场景生成 / 资产与场景落库 / 章节 / Web 工作台 | ✅ |
-| M0 | 双模式纵切：世界状态、GM、双总线、TurnLoop、authority + 模式切换、NPC 自主、Mod v1、存档、游戏前端 | 🔲 |
+| M0 | 双模式纵切：世界状态、GM、双总线、TurnLoop、authority + 模式切换、NPC 自主、分层记忆 v2、Mod v1、存档、游戏前端 | 🔲 |
 | M1 | 游戏前端、TFC、审核、媒体、Flag/Choice | 🔲 |
 | M2 | 命运、Casting、路线图、POV、Belief 全量 | 🔲 |
 | M3 | 视频、生成式媒体、TTS | 🔲 |
