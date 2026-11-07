@@ -200,20 +200,27 @@
 | 审核 | `policy` pack + 规则 / 分类器 | M1 |
 | 媒体 | 图片 / 音频资源调度 | M1 |
 | Flag / Choice / Affection | 数值 + 选项效果 | M1 |
+| 章节化 | 章节边界与自动收束 | M1 |
 | 命运 | `FateThread` + 预兆 + 收束 | M2 |
 | Casting | `extra / supporting / principal` + 配额 | M2 |
 | 路线 | `RouteGraph` + 锁线 + 多结局 | M2 |
+| 日程 | `Schedule`：日期 / 时段 / 期间限定事件 | M2 |
 | 视角 | `POVController` + `Belief` 全量 | M2 |
+| 演出 | ADV / NVL 适配器与文本特效 | M2 |
+| 元事件 | `MetaEventBus`：图鉴 / 成就 / 演出切换 | M2 |
 | 多模态 | 视频 / 生成式媒体 / TTS | M3 |
 
-### 3.3 文档与实现对齐（本次更新）
+### 3.3 文档同步口径
 
-- `MVP.md`：M0 增补 M0-14 分层记忆 v2、A11–A15 与记忆纪律；P0 把「分层记忆」修正为「记忆基础版」；
-- `ARCHITECTURE.md`：§5 改为「世界状态 + 分层记忆 + 检索库」，补记忆生命周期、三后端与角色视图边界；
-- `TECHNICAL.md`：区分「已实现记忆」与「记忆 v2 设计目标」，补 2 张记忆表、配置与 API；
-- `MODEL_SELECTION.md`：新增 `memory` 记忆压缩角色；
-- `CONTROL_THEORY.md`：补记忆生命周期的分层控制 / 滞回说明；
-- `README.md`：核心原理新增记忆分层，状态更新为「基础记忆已可用，v2 在 M0」。
+各文档职责：冲突时以本文档为进度唯一口径，以 [ARCHITECTURE.md](ARCHITECTURE.md) 为设计唯一口径。
+
+| 文档 | 职责 | M0 口径同步 |
+|---|---|---|
+| `README.md` | 项目门面：理念、两种模式、核心原理、当前状态 | ✅ |
+| `ARCHITECTURE.md` | 分层、核心抽象、TurnLoop、世界状态与记忆、演进阶段 | ✅ |
+| `TECHNICAL.md` | **已实现**的技术细节；M0 内容一律标注为设计目标 | ✅ |
+| `CONTROL_THEORY.md` | 控制论原理映射与 M0 最小闭环边界 | ✅ |
+| `MODEL_SELECTION.md` | 模型分配策略，含 `memory` 压缩角色与 M0 新角色预留 | ✅ |
 
 ---
 

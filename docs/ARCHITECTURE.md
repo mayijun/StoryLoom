@@ -379,6 +379,6 @@ M0 只解析 `asset` manifest，不做媒体渲染。
 |---|---|---|
 | 作者模式 MVP | 场景生成 / 资产与场景落库 / 章节 / Web 工作台 | ✅ |
 | M0 | 双模式纵切：世界状态、GM、双总线、TurnLoop、authority + 模式切换、NPC 自主、分层记忆 v2、Mod v1、存档、游戏前端 | 🔲 |
-| M1 | 游戏前端、TFC、审核、媒体、Flag/Choice | 🔲 |
-| M2 | 命运、Casting、路线图、POV、Belief 全量 | 🔲 |
+| M1 | TFC 五档、审核 Gate 实装、图片/音频媒体、Flag/Choice/好感度、章节化收束 | 🔲 |
+| M2 | 命运、Casting、路线图、日程、POV、Belief 全量、ADV/NVL | 🔲 |
 | M3 | 视频、生成式媒体、TTS | 🔲 |
