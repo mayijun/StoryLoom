@@ -1,8 +1,7 @@
 # 织章 StoryLoom 架构
 
 > 本文档描述「双模式 + 基座 + 扩展」的总体架构。
-> 进度与差距见 [MVP.md](MVP.md)，完整演进计划见
-> [architecture_evolution_plan.md](../.trae/documents/architecture_evolution_plan.md)。
+> 进度与差距见 [MVP.md](MVP.md)。
 
 ---
 
@@ -18,6 +17,9 @@
 
 两种模式共用同一套世界状态、裁决、渲染与扩展机制。导演模式保留现有的
 `scene_brief → 场景正文` 入口；游戏模式走 `PlayerIntent → TurnLoop`。
+
+模式切换是**存档级运行时状态**，不是项目创建属性：任意回合边界可切换，世界状态与
+记忆不重置；切换前自动打 checkpoint，切换当回合强制重走一次 `director_frame`。
 
 ---
 
@@ -144,6 +146,9 @@ contributes:
     - { id: map.route, access: llm_tool, read_only: true, handler: builtin.map.route }
 ```
 
+mod 纪律：状态变更必须走 builtin handler；暴露给 LLM 的工具一律 `read_only`；
+v1 为 YAML + 白名单 handler，v2 的 Python 包与 `capabilities` 声明只预留接口。
+
 ### 3.6 能力分级
 
 | 能力 | 谁触发 | LLM 可 function call |
@@ -155,17 +160,65 @@ contributes:
 
 LLM 的工具结果只作提案依据，GM 裁决时用 `WorldState` 复核。
 
+### 3.7 双模式权限策略
+
+```python
+class AuthorityPolicy(Protocol):
+    def adjudicate(self, proposal, world, frame) -> Adjudication: ...
+    def may_write_state_directly(self, actor: str) -> bool: ...
+    def apply_override(self, override, world, snapshot_id) -> WorldState: ...
+```
+
+- `GameAuthority`：GM 全权裁决；玩家与 NPC 同权，玩家提案来自外部输入；
+- `DirectorAuthority`：导演指令优先级最高，GM 降级为事实检查器；允许带审计的改写。
+
+模式只影响 `interpret_*`、`adjudicate`、`plan_next` 三处策略，其余阶段完全共用。
+
+导演改写事实必须结构化留痕：
+
+```python
+class FactOverride(BaseModel):
+    override_id: str
+    target: str                 # 角色 / 地点 / 事件 / 伏笔
+    field: str
+    before: Any                 # 自动从当前 WorldState 取值
+    after: Any
+    reason: str
+    base_snapshot_id: str
+```
+
+执行前写快照，执行后写审计日志（含 before / after）；触发连带一致性扫描，受影响的
+伏笔 / 关系 / 事件标记为 `needs_review`；`rollback(override_id)` 回到
+`base_snapshot_id`；只允许改事实层，不允许绕过 `WorldState` 直接改渲染文本。
+
+### 3.8 稳定钩子点
+
+| 钩子 | 时机 | 可做 |
+|---|---|---|
+| `after_perceive` | 输入解析后 | 改写 / 补充提案 |
+| `before_adjudicate` | 裁决前 | 注入规则、增删校验项 |
+| `after_adjudicate` | 裁决后 | 修正 `state_delta` |
+| `before_render` | 渲染前 | 注入文风 / 格式 |
+| `after_render` | 渲染后 | 追加状态栏、插图指令 |
+| `after_commit` | 写回后 | 触发副作用（成就、日志） |
+
+mod 抛异常只降级跳过并打质量标记，不阻断回合。
+
 ---
 
 ## 4. TurnLoop
 
 ```
 boot
- → perceive → classify → interpret
- → director_frame      （TFC / 导演参数 / 命运预兆）
+ → perceive
+ → classify_input
+      ├─ player_action → interpret_player_action
+      ├─ directive     → interpret_director_command
+      └─ idle          → autonomous_tick
+ → director_frame      （节拍 / 张力 / 信息预算 / 命运预兆）
  → actor_round         （按 detail_plan 决定实例化谁）
  → adjudicate          （GM 规则、随机、时间推进）
- → consistency         （冲突 → retry ≤ N）
+ → consistency_check   （冲突 → retry ≤ N）
  → moderation_gate     （暂存态审核）
  → render_scene        （产出 StageDirective）
  → commit              （事务转正）
@@ -173,13 +226,15 @@ boot
       ├─ next_turn → perceive
       ├─ end_arc
       ├─ stop
+      ├─ idle_stop
       └─ human_review
 ```
 
-- 循环用 `@router` 回到上游；
-- 出口条件：`max_turns`、`arc_complete`、`player_quit`、`quality_gate_failed`、
-  `human_review_required`；
-- 硬上限：`max_turns_per_session`、`max_retries_per_turn`、`max_cost_per_turn`。
+- 循环用 `@router` 回到上游；`@listen` 不能指向自身，回环统一经 `plan_next` 标签；
+- 出口条件：`max_turns`、`arc_complete`、`player_quit`、`idle_stop`、
+  连续 3 回合质量下降、`human_review_required`；
+- 硬上限：`max_turns_per_session`、`max_retries_per_turn`、`max_cost_per_turn`；
+- Flow 的 `max_method_calls` 兜底，防止逻辑遗漏导致死循环。
 
 ---
 
@@ -192,6 +247,7 @@ WorldState
 ├── locations: LocationState（出口 / 旅行耗时 / 在场角色）
 ├── facts: Fact（truth / known_by / asserted_by）
 ├── flags / relationships
+├── arc: ArcState（phase / tension_target / beats_remaining / info_budget）
 └── pending_promises（伏笔 / 命运承诺）
 
 CoreMemory（直接拼入 prompt）
@@ -206,6 +262,7 @@ SimpleRAGMemory（按需检索）
 ```
 
 原则：**关键记忆直接给，背景记忆按需取**；Agent 只拿自己的 `view`。
+`WorldEvent` 记录已发生事件，`Promise` 记录承诺与期限。
 
 ---
 
@@ -228,10 +285,12 @@ SimpleRAGMemory（按需检索）
 
 ```
 src/storyloom/
-├── world/        # state.py / game_master.py / rules.py
+├── world/        # state.py / rules.py / game_master.py / authority.py / autonomous_agent.py
 ├── runtime/      # intent.py / directive.py / renderer.py
-├── extensions/   # manifest.py / host.py / registry.py
-├── flows/turn_flow.py
+├── extensions/   # manifest.py / host.py
+├── narrative/    # arc.py
+├── flows/        # turn_flow.py
+├── saves/        # service.py
 └── examples/world_demo/
 ```
 
@@ -244,7 +303,7 @@ src/storyloom/
 | 原理 | 新位置 |
 |---|---|
 | 反馈闭环 | GM 裁决 + 一致性 + 审核三重闭环 |
-| 统计滤波 | 关键裁决多次采样 / 投票 |
+| 统计滤波 | 关键裁决多次采样 / 投票（M0 后） |
 | 灵敏度分析 | 按 `importance_tier` 决定 tick 频率与审核强度 |
 | 解耦控制 | `PlayerIntent` / `StageDirective` / `Fact` 三层解耦 |
 | 分层管控 | 基座 / 扩展 / 导演 / 表现四层 |
@@ -261,6 +320,7 @@ src/storyloom/
 Flow 逻辑不变。
 
 第一阶段媒体范围：`image + audio`；`video` 在类型系统预留、默认关闭。
+M0 只解析 `asset` manifest，不做媒体渲染。
 
 ---
 
@@ -269,7 +329,7 @@ Flow 逻辑不变。
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | 作者模式 MVP | 场景生成 / 资产与场景落库 / 章节 / Web 工作台 | ✅ |
-| M0 | 世界状态、GM、双总线、TurnLoop、扩展宿主、存档 | 🔲 |
+| M0 | 双模式纵切：世界状态、GM、双总线、TurnLoop、authority + 模式切换、NPC 自主、Mod v1、存档、游戏前端 | 🔲 |
 | M1 | 游戏前端、TFC、审核、媒体、Flag/Choice | 🔲 |
 | M2 | 命运、Casting、路线图、POV、Belief 全量 | 🔲 |
 | M3 | 视频、生成式媒体、TTS | 🔲 |

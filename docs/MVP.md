@@ -39,31 +39,35 @@
 
 ---
 
-## 2. 下一阶段 M0：动态文字世界基座
+## 2. 下一阶段 M0：双模式动态世界纵切
 
 ### 2.1 目标
 
-一个**纯文本、单世界、游戏模式**的最小纵切，证明：
+一次交付**游戏 / 扮演模式 + 导演模式共用同一 TurnLoop** 的纵切，证明五件事：
 
 1. 玩家自由输入能被 GM 裁决并改变世界状态；
-2. 世界状态可存档、读档、回放且一致；
-3. 扩展包能改变世界行为（至少一个 `skill` + 一个 `mod`）；
-4. 前端可玩，真实人能做测试评价。
+2. 导演指令能驱动同一个世界，改写事实带审计、快照与回滚；
+3. 世界状态可存档、读档、回放且一致；
+4. 扩展包能改变世界行为（至少一个 `skill` + 一个 `mod`）；
+5. 前端可玩，真实人能做测试评价。
 
 ### 2.2 范围
 
 | # | 模块 | 必须交付 |
 |---|---|---|
-| M0-1 | `world/state.py` | `WorldState` + `Fact` + `CharState` + `LocationState` · 可序列化 · 支持 `state_delta` 合并 · 世界时间 |
-| M0-2 | `world/game_master.py` | 在场校验 / 移动 + 旅行耗时 / 简单行动判定 · 输出结构化结果 |
+| M0-1 | `world/state.py` | `WorldState` + `Fact` + `CharState` + `LocationState` + `ArcState` · 可序列化 · 支持 `state_delta` 合并 · 世界时间 |
+| M0-2 | `world/game_master.py` | 在场校验 / 移动 + 旅行耗时 / 简单行动判定 · 输出结构化结果 · 地图只做 Tier 1 静态图 · `gap_policy`（`reject \| llm_referee \| human_review`） |
 | M0-3 | `runtime/` | `PlayerIntent` · `IntentRouter` · `StageDirective` · `TextAdapter` · 全部可 JSON 序列化 |
-| M0-4 | `flows/turn_flow.py` | TurnLoop 七阶段 · **async** · retry ≤ N · 四个出口 · **超时控制** |
-| M0-5 | `extensions/` | 统一 manifest · `ExtensionHost` · `skill` 注入 · `mod` 规则注册 · `policy`/`asset` 解析 · **per-instance 隔离** |
+| M0-4 | `flows/turn_flow.py` | 双模式 TurnLoop：`boot → perceive → classify_input → interpret_* → director_frame → actor_round → adjudicate → consistency_check → moderation_gate → render_scene → commit → plan_next` · **async** · retry ≤ N · 四个出口 · **超时控制** |
+| M0-5 | `extensions/` | 统一 manifest · `ExtensionHost` · `skill` 注入 · `mod` 规则注册 · `policy`/`asset` 解析 · **per-instance 隔离** · 状态变更必须走 builtin handler，LLM 工具一律 `read_only` |
 | M0-6 | `saves` | `SaveService` · 本地快照 + 回放（先文件，M0 后接 DB） |
 | M0-7 | API（**全部 async**） | `POST /game/{pid}/turn` · `GET /game/{pid}/state` · `POST/GET /game/{pid}/saves` · `POST /extensions/resolve` |
 | M0-8 | 前端扩展 | 游戏模式：对话框 / 选项 / backlog / 存档读取 |
 | M0-9 | Demo | `examples/world_demo/`：1 skill + 1 map mod + 2 角色 / 2 地点 |
 | M0-10 | 测试 | GM 裁决、`Fact` 过滤、存档回放、manifest 校验、导演模式回归 |
+| M0-11 | `world/authority.py` | `GameAuthority` / `DirectorAuthority` 策略 · 模式切换 checkpoint · `FactOverride` 审计与回滚 |
+| M0-12 | `narrative/arc.py` | 起承转合节拍 · 张力目标 · 信息预算 |
+| M0-13 | `world/autonomous_agent.py` | NPC 记忆 → 反思 → 计划 → 提案 |
 
 ### 2.3 运行时架构预留（M0 就留对，不大手术）
 
@@ -81,7 +85,7 @@
 | 8 | API 版本化 | 端点路径带 `/v1/`，将来 v2 并行 |
 
 > M0 验收通过后再加 `/runtime/v1/bootstrap` / `/runtime/v1/{instance_id}/turn` 等接口，
-> 把 Step A 的 `/game/...` 端点重命名加 deprecation 标记即可，不重构架构。
+> 把 M0 的 `/game/...` 端点重命名并加 deprecation 标记即可，不重构架构。
 
 ### 2.4 明确不做（M0 期间）
 
@@ -90,20 +94,27 @@
 - Belief 欺骗与误解（只做 `known_by` 过滤）；
 - 审核策略执行（只留 `ModerationGate` 接口，默认 passthrough）；
 - 图片 / 音频渲染（只解析 `asset` manifest）；
+- Mod v2（Python 包 + `capabilities`，只预留接口）；
+- 高级控制形式（多采样投票 / 趋势自适应）；
+- 地图 Tier 2 / Tier 3（只做 Tier 1 静态图）；
 - 实时多人；
-- 多模态。
+- 多模态；
+- 账号体系与部署运维（由独立项目承接）。
 
 ### 2.5 验收
 
 | # | 场景 | 预期 |
 |---|---|---|
 | A1 | 玩家「拔剑刺向国王」，护卫在场 | 护卫拦截，玩家入狱；位置 / 情绪 / 时间正确更新 |
-| A2 | 玩家「瞬移到王宫」 | GM 拒绝，给出可行替代 |
+| A2 | 玩家「瞬移到王宫」 | GM 拒绝，返回 `not_found` + 可去地点，给出叙事化替代 |
 | A3 | 玩家不在场的密室事实 | 不出现在玩家视图；狱卒不知道玩家早期经历 |
 | A4 | 存档 → 读档 → 回放 | 文本与状态完全一致，不重新生成 |
 | A5 | 关闭 style skill / 启用 map mod | 文风变化 / 旅行耗时生效；坏 manifest 被拒绝 |
 | A6 | 导演模式生成场景 | 原 `scene_brief` 流程不回归，现有数据不受影响 |
 | A7 | 前端游戏模式 | 对话框展示 StageDirective，玩家可输入行动，存档/读档可用 |
+| A8 | 导演改写已发生事实 | `FactOverride` 写入快照与审计；`rollback` 后世界状态一致 |
+| A9 | 玩家静止 3 回合 | NPC 自发事件出现，且不越权改状态 |
+| A10 | 游戏模式切导演模式（及反向） | 切换前落 checkpoint；切换后世界状态与记忆一致 |
 
 ### 2.6 性能指标（M0 后压测）
 
@@ -113,6 +124,14 @@
 | 冷启动 | ≤ 3s |
 | 单实例并发 turn 数 | ≥ 100 |
 | 性能扩展 | 增加实例 ≈ 线性增加吞吐 |
+
+### 2.7 设计纪律
+
+- **确定性优先**：能用代码确定性完成的不交给 LLM；GM、时间、随机、算术、配额都在代码层。
+- **写状态只走一条路**：状态变更必须走 builtin handler；暴露给 LLM 的工具一律 `read_only`。
+- **游戏模式零交互**：质量下降走兜底叙事并打质量标记，不阻塞玩家。
+- **内化 vs 扩展**：可选的是玩法，不可选的是秩序；玩法进 `mod`，秩序留内核。
+- **地图分级**：M0 只做 Tier 1 静态图，Tier 2/3 留到后续阶段。
 
 ---
 
@@ -130,8 +149,11 @@
 | 扩展 | Agent/Task YAML 种子 | 统一 manifest + `ExtensionHost` + 四类扩展加载 · per-instance | P0 |
 | 存档 | 无 | `SaveService`（快照 + 回放） | P0 |
 | 信息隔离 | prompt 直接拼项目资产 | `view(agent_id)` 按 `known_by` 过滤 | P0 |
-| API | 项目 / 资产 / 场景 / 章节 | `/game/...` 三个端点 + `/extensions/resolve` · 全部 async | P0 |
+| API | 项目 / 资产 / 场景 / 章节 | `/game/...` 端点 + `/extensions/resolve` · 全部 async | P0 |
 | 前端 | 只有作者工作台 | 游戏模式：对话框 / 选项 / backlog / 存档 | P0 |
+| 双模式策略 | 无 | `AuthorityPolicy` / 模式切换 checkpoint / `FactOverride` 回滚 | P0 |
+| 叙事节拍 | 导演 prompt 内隐式 | `ArcState`：起承转合 + 张力目标 + 信息预算 | P0 |
+| NPC 自主 | 群演被动响应 | `AutonomousAgent`：记忆 → 反思 → 计划 → 提案 | P0 |
 | Demo | 无 | `examples/world_demo` | P1 |
 
 ### 3.2 游戏模式玩法（M1 / M2）
@@ -148,34 +170,39 @@
 | 视角 | `POVController` + `Belief` 全量 | M2 |
 | 多模态 | 视频 / 生成式媒体 / TTS | M3 |
 
-### 3.3 文档与实现对齐（已完成）
+### 3.3 文档与实现对齐（本次已完成）
 
-- `TECHNICAL.md`：修正过时描述；
-- `ARCHITECTURE.md`：补充双模式与基座抽象；
-- `README.md`：更新定位与当前状态；
-- `CONTROL_THEORY.md` / `MODEL_SELECTION.md`：补充新架构下的角色定位。
+- `MVP.md`：M0 改为双模式纵切，补 authority / arc / autonomous_agent、设计纪律与 A8–A10；
+- `ARCHITECTURE.md`：补双模式权限策略、`FactOverride`、钩子点、完整 TurnLoop 与模块清单；
+- `TECHNICAL.md`：补 M0 表、模块、async API 与游戏前端规划；
+- `CONTROL_THEORY.md` / `MODEL_SELECTION.md`：补 M0 控制论边界与新角色模型分配；
+- `README.md`：更新状态与文档索引。
 
 ---
 
 ## 4. 实施顺序
 
 ```
-W1  world/ + saves          状态、裁决、快照
-W2  runtime/ + TurnLoop     意图、指令、async 循环
-W3  extensions + API        扩展宿主 + 端点（全部 async）
-W4  前端游戏模式 + demo     可玩界面 + 示例世界
-W5  tests + 压测 + docs     验收
+W1  步骤 1–2    Flow 骨架 + WorldState / GM / saves
+W2  步骤 3–5    双模式策略 + FactOverride 回滚 + 导演帧 / 节拍
+W3  步骤 6–7    NPC 自主 + Mod v1（YAML）
+W4  API + 前端   /game/* async 端点 + 游戏模式界面
+W5  测试 + 压测 + 文档   验收
 ```
 
-W3 / W4 可并行。M0 完成的判定以 §2.5 七条验收全部通过 + §2.6 压测指标达标为准。
+依赖顺序为 W1 → W2 → W3 → W4 → W5；W3 / W4 可并行。
+M0 完成的判定以 §2.5 十项验收全部通过 + §2.6 压测指标达标为准。
 
 ---
 
 ## 5. 非目标（M0 期间不做）
 
-- 不做完整 mod 市场与沙箱；
+- 不做完整的 mod 生态与沙箱；
 - 不做实时多人；
 - 不做视频生成；
 - 不做特定 galgame 的全套演出；
 - 不重构作者模式的 8 个 Agent；
-- 不做云部署脚本（先本地 Docker Compose 跑通）。
+- 不做云部署脚本（先本地 Docker Compose 跑通）；
+- 不做高级控制形式（多采样投票 / 趋势自适应）；
+- 不做地图 Tier 2 / Tier 3；
+- 账号体系与部署运维不在本仓库范围，由独立项目承接。

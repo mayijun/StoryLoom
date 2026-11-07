@@ -3,6 +3,7 @@
 > 本文档描述**当前已经实现**的技术细节。
 > 架构与演进方向见 [ARCHITECTURE.md](ARCHITECTURE.md)，
 > 下一阶段 MVP 与差距见 [MVP.md](MVP.md)。
+> M0 相关模块为设计目标，尚未实现；范围与验收以 MVP.md 为准。
 
 ---
 
@@ -90,6 +91,15 @@ SQLite 默认（`data/storyloom.db`），设 `STORYLOOM_DATABASE_URL` 可切 Pos
 - SQLite 连接自动 `PRAGMA foreign_keys = ON`；
 - 旧库自动迁移（缺 `project_id` 列或缺外键 → 重建补全，数据不丢）。
 
+M0 将新增（尚未实现）：
+
+| 表 | 作用 |
+|---|---|
+| `world_states` | 回合世界状态快照（checkpoint / 回滚） |
+| `turn_logs` | 输入、裁决、模型用量、耗时审计 |
+
+`projects` 表将增加 `mode`（游戏 / 导演）与 `enabled_mods` 字段。
+
 ### 🌐 Web 界面（Vue 3 单页）
 
 - 顶栏：项目选择 / 新建项目 / API 在线状态；
@@ -97,6 +107,9 @@ SQLite 默认（`data/storyloom.db`），设 `STORYLOOM_DATABASE_URL` 可切 Pos
 - 主区：场景剧场（场景描述 + 在场角色 → 流式生成 → Agent 消息流 → 正文）；
 - 右栏：资产（角色 / 地点 / 伏笔）；
 - 场景历史与章节管理。
+
+M0 将新增游戏模式视图：对话框 / 选项 / backlog / 存档读档，代码位于
+`frontend/src/views/game/`。
 
 ### ⚙️ 配置 CLI
 
@@ -170,10 +183,12 @@ StoryLoom/
 下一阶段将新增：
 
 ```
-├── world/        # state.py / game_master.py / rules.py
+├── world/        # state.py / rules.py / game_master.py / authority.py / autonomous_agent.py
 ├── runtime/      # intent.py / directive.py / renderer.py
-├── extensions/   # manifest.py / host.py / registry.py
-├── flows/turn_flow.py
+├── extensions/   # manifest.py / host.py
+├── narrative/    # arc.py
+├── flows/        # turn_flow.py
+├── saves/        # service.py
 └── examples/world_demo/
 ```
 
@@ -241,13 +256,16 @@ python -m storyloom.main_controlled     # 控制论增强版
 | POST | `/api/projects/{id}/scenes/{scene_id}/regenerate` | 单场景重跑 |
 | GET/POST/PUT/DELETE | `/api/projects/{id}/chapters` | 章节 CRUD |
 
-下一阶段（M0）将新增：
+下一阶段（M0）将新增（**全部 async**）：
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/api/projects/{id}/game/turn` | 提交一次玩家行动，返回演出指令 |
-| GET | `/api/projects/{id}/game/state` | 当前世界状态（玩家视图） |
-| POST/GET | `/api/projects/{id}/game/saves` | 存档 / 读档 |
+| POST | `/game/{pid}/turn` | 提交一次玩家行动，返回演出指令 |
+| GET | `/game/{pid}/state` | 当前世界状态（玩家视图） |
+| POST/GET | `/game/{pid}/saves` | 存档 / 读档 |
+| POST | `/extensions/resolve` | 解析并加载扩展包 manifest |
+
+M0 验收通过后再重组为 `/runtime/v1/*`，原端点保留并标记 deprecation。
 
 ---
 
@@ -269,8 +287,10 @@ uv run pytest -q
 
 - `WorldState` / `Fact` / `GameMaster`；
 - `PlayerIntent` / `StageDirective` 双总线；
-- `TurnLoop`；
-- 统一 manifest + `ExtensionHost`；
+- 双模式 `TurnLoop` + `AuthorityPolicy` + 模式切换 checkpoint；
+- `FactOverride` 审计与回滚；
+- NPC 自主（`AutonomousAgent`）与叙事节拍（`ArcState`）；
+- 统一 manifest + `ExtensionHost`（Mod v1 YAML）；
 - 存档 / 读档 / 回放。
 
 详细范围、验收与差距见 [MVP.md](MVP.md)。

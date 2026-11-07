@@ -108,6 +108,9 @@ primary 不可用 → fallback 可用 → 用 fallback 并打印降级日志
 | MediaResolver | 意图 → 资源匹配 | **否**（标签检索） | — |
 | CastingAdjudicator | 配额、重名、必要性检查 | 部分 | 规则优先，LLM 只做必要性判断 |
 | FateManager | 压力计算、倒数器、收束触发 | **否** | 确定性算法 + seed |
+| AutonomousAgent | NPC 记忆 → 反思 → 计划 → 提案 | 是 | 按 `importance_tier`：关键角色用中档模型，群演合并一次调用 |
+| FactOverrideParser | 导演改写事实 → 结构化 `FactOverride` | 是 | DeepSeek V4 Pro（结构化 JSON） |
+| Mod v1 | YAML 规则与钩子注册 | **否** | — |
 
 原则不变：**能用代码确定性完成的，不交给 LLM**。GM、时间、随机、算术、
 配额都属于代码层；LLM 只负责理解、提案、叙述与判断。
@@ -117,3 +120,6 @@ primary 不可用 → fallback 可用 → 用 fallback 并打印降级日志
 - `L0 / L1`：强模型（主角、关键抉择、收束场景）；
 - `L2`：中档模型；
 - `L3 / L4`：便宜模型或模板，群演不单独调用。
+
+M0 的实际调用链为 `interpret_* → director_frame → actor_round → render_scene`；
+GM、时间、随机、配额全部确定性执行，非在场角色不 tick。

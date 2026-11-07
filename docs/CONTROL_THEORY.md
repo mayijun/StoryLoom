@@ -102,3 +102,9 @@
 3. **节奏闭环**：TFC 根据 `drift` / `tension` 调节时间步长，避免主线发散或长期平淡。
 
 对应架构见 [ARCHITECTURE.md](ARCHITECTURE.md)，实施范围见 [MVP.md](MVP.md)。
+
+### M0 的控制论边界
+
+M0 只做**最小闭环**：`retry ≤ N`、schema 校验、超时、硬上限
+（`max_turns / max_retries / max_cost`），内化在 TurnLoop 与 GM 里。
+多采样投票、趋势自适应等高级控制形式不进 M0，只保留接口。
