@@ -74,8 +74,7 @@ _LOCATIONS: List[Dict[str, str]] = [
     {"name": "杂役院", "description": "低矮石屋，晾着洗不净的灰布衣，墙角堆着劈好的柴。"},
     {"name": "藏经阁", "description": "七层木塔，每层檐角挂着一枚锈铃，越往上铃声越轻。"},
     {"name": "丹房", "description": "药气熏人，三尊铜炉昼夜不熄，地上落满黑色药渣。"},
-    # 资产名用精确的「地牢」：护卫拦截按 PRISON_LOCATION 精确命中，
-    # 同时避免与 world_demo 的同名地点产生歧义。
+    # 资产名用精确的「地牢」：护卫拦截按 PRISON_LOCATION 精确命中。
     {"name": "地牢", "description": "戒律堂地牢，山腹深处的石牢，铁门上刻着「戒律」二字。"},
     {"name": "后山禁地", "description": "断崖与古碑，雾气从地缝里往上涌，鸟兽绝迹。"},
 ]

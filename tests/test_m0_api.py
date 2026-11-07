@@ -115,7 +115,7 @@ def test_extensions_resolve_endpoint(apis):
         )
     )
     assert resolved["instance_id"] == "i1"
-    assert any(item["id"] == "map_demo" for item in resolved["mods"])
+    assert any(item["id"] == "map_xianxia" for item in resolved["mods"])
 
 
 def test_provider_api_keys_injected_in_memory(apis):

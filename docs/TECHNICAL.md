@@ -211,7 +211,7 @@ M0 已新增（均已实现）：
 ├── flows/        # scene_flow.py（导演模式） + turn_flow.py（双模式 TurnLoop）
 ├── saves/        # service.py（文件快照 + 回放）
 ├── config/memory_config.yaml    # 记忆层数 / 压缩 / 降级 / 检索后端
-├── examples/world_demo/         # skill_noir.yaml · map_demo.yaml · world_demo.yaml
+├── examples/xianxia_demo/       # map_xianxia.yaml（地图 mod） · skill_xianxia.yaml（文风 skill）
 └── frontend/src/components/GamePanel.vue   # 游戏模式面板
 ```
 

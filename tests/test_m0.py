@@ -31,7 +31,7 @@ from storyloom.world.authority import (
 from storyloom.world.game_master import ActionProposal, GameMaster
 from storyloom.world.state import Fact, WorldState
 
-DEMO = Path(__file__).resolve().parents[1] / "src/storyloom/examples/world_demo"
+DEMO = Path(__file__).resolve().parents[1] / "src/storyloom/examples/xianxia_demo"
 
 
 @pytest.fixture
@@ -184,21 +184,21 @@ def test_a5_demo_manifests_resolve_and_travel_override(world):
     registry = ExtensionRegistry(root=str(DEMO))
     host = registry.for_instance("inst-1")
     resolved = host.resolve()
-    assert any(item["id"] == "skill_noir" for item in resolved["skills"])
-    assert any(item["id"] == "map_demo" for item in resolved["mods"])
-    assert resolved["travel_overrides"]["雾港旅店->码头"] == 10
+    assert any(item["id"] == "skill_xianxia" for item in resolved["skills"])
+    assert any(item["id"] == "map_xianxia" for item in resolved["mods"])
+    assert resolved["travel_overrides"]["演武场->杂役院"] == 8
     assert all(tool["read_only"] for tool in resolved["tools"])
 
     mapped = host.apply_map(world)
-    assert "雾港旅店" in mapped.locations
-    assert mapped.locations["码头"].exits["王宫"] == 20
+    assert "演武场" in mapped.locations
+    assert mapped.locations["演武场"].exits["杂役院"] == 8
 
     gm = GameMaster(travel_overrides=host.travel_overrides())
-    world.characters["玩家"].location = "雾港旅店"
+    mapped.characters["玩家"].location = "演武场"
     result = gm.adjudicate(
-        ActionProposal(actor="玩家", kind="move", target="码头"), world
+        ActionProposal(actor="玩家", kind="move", target="杂役院"), mapped
     )
-    assert result.state_delta.time_delta == 10
+    assert result.state_delta.time_delta == 8
 
 
 def test_a5_bad_manifest_rejected():

@@ -64,7 +64,7 @@
 | 6 | 后山禁地 | 断崖与古碑，雾气从地缝里往上涌，鸟兽绝迹。 |
 
 > `WorldState.from_project()` 会把所有角色放在**第一个地点**，所以第一地点设为「演武场」：大比当日全宗聚集，天然解释所有角色同场。
-> 资产名必须精确叫「地牢」：护卫拦截按 `PRISON_LOCATION="地牢"` 匹配，这样也不会和 `world_demo` 的同名地点产生歧义。
+> 资产名必须精确叫「地牢」：护卫拦截按 `PRISON_LOCATION="地牢"` 匹配。
 
 ### 2.3 伏笔（3 条，建议固定 ID 方便状态流转）
 
@@ -152,11 +152,10 @@ contributes:
     不替玩家做决定，不新增未经裁决的事实；每场结尾留一个具体钩子。
 ```
 
-> **关于同名地点**：`examples/world_demo/map_demo.yaml` 里也有一个叫「地牢」的地点，
-> 但试用项目自身就有一个精确同名的「地牢」，`resolve_location` 会先命中项目自己的地点，
-> 所以 UI 不传 `enabled_extensions` 也能正确押进青云宗地牢（已实测）。
-> 只有在**自建项目**里没有「地牢」资产时，才会落到雾港地牢；那种情况再传
-> `enabled_extensions: ["map_xianxia", "skill_xianxia"]` 隔离。
+> **关于同名地点**：仓库里已不再保留 `world_demo` 演示包，`xianxia_demo` 是唯一内置扩展，
+> 因此「地牢」不会出现歧义。自建项目若也要用「地牢」，只要项目资产里存在精确同名地点，
+> `resolve_location` 会优先命中项目自己的地点。
+> 如需隔离，可显式传 `enabled_extensions: ["map_xianxia", "skill_xianxia"]`。
 > 另外，地图 mod 在**首回合**的 `apply_map` 才注入出口，所以 `GET /state` 的初始出口要在 G1 后再断言。
 > 扩展目录在首次访问时缓存，新增 YAML 后需**重启后端**（或清空 extension registry 缓存）。
 
@@ -313,14 +312,14 @@ contributes:
 | `state.characters` | 5 人，全部在「演武场」 |
 | `state.facts` | 5 条「身份」事实 |
 | `view.facts` | 只看到「玩家」自己的 1 条（A3） |
-| `state.locations` | 至少 6 个本剧本地点（若 world_demo 仍启用则更多）；「演武场」出口在 G1 应用地图 mod 后为 杂役院 / 藏经阁 / 后山禁地 |
+| `state.locations` | 本项目 6 个地点；「演武场」出口在 G1 应用地图 mod 后为 杂役院 / 藏经阁 / 后山禁地 |
 | 默认选项 | 8 条（`GameMaster.allowed_actions` 截断上限），自由输入不受限 |
 
 ### 4.2 回合脚本（确定性）
 
 G1~G14 的请求统一为
 `POST /runtime/v1/<PID>/turn`，`instance_id = "xianxia_demo_001"`，`mode = "game"`，`actor = "玩家"`，
-并且**每一回合**都带 `enabled_extensions: ["map_xianxia", "skill_xianxia"]`（隔离 world_demo 的「地牢」）。
+并且**每一回合**都带 `enabled_extensions: ["map_xianxia", "skill_xianxia"]`（显式锁定期望的扩展组合）。
 文本输入用 `{"intent": {"kind": "text", "payload": {"text": "..."}}}`；跳过用 `{"kind": "skip"}`。
 G15 起切换为导演模式，按对应行传 `mode` 与 `overrides`。
 

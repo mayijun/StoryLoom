@@ -340,7 +340,7 @@ src/storyloom/
 ├── memory/       # base.py / tiers.py / scoring.py / core.py / consolidation.py
 │                 # lexical.py / embeddings.py / vector.py / hybrid.py / indexer.py
 ├── config/memory_config.yaml    # 记忆层数 / 压缩 / 降级策略
-└── examples/world_demo/
+└── examples/xianxia_demo/
 ```
 
 ---
