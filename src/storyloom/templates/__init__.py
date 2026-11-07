@@ -13,6 +13,7 @@
 启动时从这里读取并注册。
 """
 
+import hashlib
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -64,6 +65,19 @@ def list_templates() -> List[Dict[str, str]]:
         }
         for t in TEMPLATES.values()
     ]
+
+
+def _chapter_id_for(repo: Any, project_id: str, raw_id: str) -> str:
+    """章节 ID 在库内全局唯一；同一模板多次应用时追加短后缀避免冲突。"""
+    if repo.get_chapter(raw_id) is None:
+        return raw_id
+    suffix = hashlib.sha1(project_id.encode("utf-8")).hexdigest()[:6]
+    candidate = f"{raw_id}_{suffix}"
+    index = 1
+    while repo.get_chapter(candidate) is not None:
+        candidate = f"{raw_id}_{suffix}{index}"
+        index += 1
+    return candidate
 
 
 def apply_template(
@@ -125,7 +139,12 @@ def apply_template(
                 project_id=project_id,
                 position=position,
                 status="draft",
-                **chapter,
+                **{
+                    **chapter,
+                    "chapter_id": _chapter_id_for(
+                        repo, project_id, chapter["chapter_id"]
+                    ),
+                },
             )
 
     _sync_stats()

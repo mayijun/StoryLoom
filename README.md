@@ -106,13 +106,15 @@
 模式切换 checkpoint、NPC 自主、分层记忆 v2（短期压缩 / 长期 / 常驻 / 降级回温、
 `fts / vector / hybrid` 三后端）、Mod v1（YAML）与可玩的游戏前端；
 接口按运行时架构预留（async + 超时 + 扩展包隔离），为后续性能扩展留对结构。
-验收 A1 ~ A15 由 `tests/test_m0*.py` 覆盖，详见 [MVP.md](docs/MVP.md)。
+验收 A1 ~ A15 由 `tests/test_m0*.py` 覆盖，后端共 **176 个用例全部通过**
+（完整清单见 [TESTS.md](docs/TESTS.md)），详见 [MVP.md](docs/MVP.md)。
 
 ## 文档
 
 - [架构总览](docs/ARCHITECTURE.md)
 - [最小 MVP 与差距清单](docs/MVP.md)
 - [技术细节 / 安装 / API](docs/TECHNICAL.md)
+- [后端测试用例清单](docs/TESTS.md)
 - [系统控制论](docs/CONTROL_THEORY.md)
 - [模型选择](docs/MODEL_SELECTION.md)
 

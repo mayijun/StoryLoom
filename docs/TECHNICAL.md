@@ -337,7 +337,7 @@ uv run pytest -q
 ```
 
 覆盖：项目落库与外键、Agent/Task API、迁移与幂等回归、资产模型、场景与章节持久化、
-记忆基础版、控制论模块、Flow。
+记忆基础版、控制论模块、Flow。共 **176 个用例**，逐条清单见 [TESTS.md](TESTS.md)。
 
 M0 覆盖（`tests/test_m0*.py`）：GM 裁决与守卫拦截、移动可达性、`Fact` 可见性、
 存档回放、manifest 校验与 map mod 旅行覆盖、导演改写审计回滚、idle NPC 事件、
