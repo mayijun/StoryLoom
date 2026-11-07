@@ -13,7 +13,7 @@
 | 项目标题 | 系统逼我当仙尊 |
 | 文风 `style` | `爽文仙侠 · 系统流` |
 | 项目描述 | 青云宗外门杂役林凡绑定「诸天签到系统」，在大比之日被迫营业，一路签到开挂、当众打脸、惊动全宗。 |
-| `project_id` | 后端启动时已自动写入，固定为 `xianxia_system_demo`；游戏模式实例用 `xianxia_demo_001` |
+| `project_id` | 由「试用模板」应用时生成，形如 `tpl_xianxia_system_<8位hex>`（普通项目，可删除）；游戏模式实例用 `xianxia_demo_001` |
 | 主角命名 | **必须叫「玩家」**。前端状态栏与 `WorldState.present_characters()` 以「玩家」为视角锚点，真实姓名「林凡」写进 `persona`。 |
 | 篇幅 | 3 章 / 6 个场景；游戏模式 17 个回合（18 个操作步骤） |
 
@@ -84,80 +84,22 @@
 | 2 | 大比之日，全宗都在看我 | 演武场外门大比，秦无咎当众羞辱林凡；苏清雪出手试探；林凡签到「一剑破万法」，一剑惊宗。 |
 | 3 | 师姐，我真不是隐藏大佬 | 林凡被押进地牢又莫名其妙被放出；苏清雪夜访，黑纹暴露；秦无咎掏出噬灵钉反被直播回放打脸，第九格亮起，债主就位。 |
 
-### 2.5 扩展包（游戏模式必装）
+### 2.5 扩展包（游戏模式必装，已内嵌在模板里）
 
 地图必须由 `mod` 注入，否则 `WorldState` 没有任何出口，所有移动都会返回 `not_found`。
-试用版已随仓库提供 `src/storyloom/examples/xianxia_demo/map_xianxia.yaml`，内容如下：
+本 Demo 的地图 `map_xianxia` 与文风 `skill_xianxia` 已作为 Python 字典内嵌在
+`src/storyloom/templates/xianxia_system.py` 的 `EXTENSIONS` 中，不再以独立 YAML
+存放在 `examples/` 下。`ExtensionRegistry` 在首次解析时会自动把模板内嵌扩展注册进来，
+因此无需手动放置文件。
 
-```yaml
-id: map_xianxia
-kind: mod
-api_version: 1
-name: 青云宗地图
-description: 提供青云宗的地点与路线；旅行时间统一按分钟。
-requires:
-  time_resolution: minute
-contributes:
-  state:
-    namespace: map
-    fields: [locations, routes]
-  map:
-    locations:
-      - { name: 演武场, description: 青云宗外门大比的主场。 }
-      - { name: 杂役院, description: 低矮石屋，墙角堆着劈好的柴。 }
-      - { name: 藏经阁, description: 七层木塔，檐角挂着锈铃。 }
-      - { name: 丹房, description: 药气熏人，三尊铜炉昼夜不熄。 }
-      - { name: 地牢, description: 山腹深处的石牢，铁门上刻着「戒律」。 }
-      - { name: 后山禁地, description: 断崖与古碑，雾气从地缝里往上涌。 }
-    routes:
-      - { from: 演武场, to: 杂役院, minutes: 8 }
-      - { from: 杂役院, to: 演武场, minutes: 8 }
-      - { from: 演武场, to: 藏经阁, minutes: 10 }
-      - { from: 藏经阁, to: 演武场, minutes: 10 }
-      - { from: 演武场, to: 后山禁地, minutes: 30 }
-      - { from: 后山禁地, to: 演武场, minutes: 30 }
-      - { from: 藏经阁, to: 杂役院, minutes: 12 }
-      - { from: 杂役院, to: 藏经阁, minutes: 12 }
-      - { from: 杂役院, to: 丹房, minutes: 12 }
-      - { from: 丹房, to: 杂役院, minutes: 12 }
-      - { from: 藏经阁, to: 丹房, minutes: 15 }
-      - { from: 丹房, to: 藏经阁, minutes: 15 }
-      - { from: 丹房, to: 后山禁地, minutes: 20 }
-      - { from: 后山禁地, to: 丹房, minutes: 20 }
-      # 地牢只留出口，不走回头路：被押进去后可以走回演武场
-      - { from: 地牢, to: 演武场, minutes: 6 }
-  rules:
-    - id: map.move
-      access: gm_only
-      handler: builtin.map.move
-  tools:
-    - id: map.route
-      access: llm_tool
-      read_only: true
-      handler: builtin.map.route
-```
+- `map_xianxia`（mod）：提供青云宗 6 个地点与 15 条双向路线，地牢只留「→演武场」单向出口。
+- `skill_xianxia`（skill）：爽文短句文风，系统提示用【】，每场结尾留钩子。
 
-文风 skill 可选；只有 LLM 渲染时才生效。试用版已提供 `src/storyloom/examples/xianxia_demo/skill_xianxia.yaml`：
-
-```yaml
-id: skill_xianxia
-kind: skill
-api_version: 1
-name: 爽文仙侠系统流
-description: 短句、强节奏、打脸及时；系统提示用【】标出，每场结尾留钩子。
-contributes:
-  prompt: >-
-    用中文第三人称叙事，主角是林凡（资产名为「玩家」）。短句为主，段落不超过四句；
-    爽点要落在动作和结果上，不解释系统原理；系统提示统一用【】包裹；
-    不替玩家做决定，不新增未经裁决的事实；每场结尾留一个具体钩子。
-```
-
-> **关于同名地点**：仓库里已不再保留 `world_demo` 演示包，`xianxia_demo` 是唯一内置扩展，
-> 因此「地牢」不会出现歧义。自建项目若也要用「地牢」，只要项目资产里存在精确同名地点，
+> **关于同名地点**：模板内嵌扩展是当前唯一的内置扩展，因此「地牢」不会出现歧义。
+> 自建项目若也要用「地牢」，只要项目资产里存在精确同名地点，
 > `resolve_location` 会优先命中项目自己的地点。
 > 如需隔离，可显式传 `enabled_extensions: ["map_xianxia", "skill_xianxia"]`。
 > 另外，地图 mod 在**首回合**的 `apply_map` 才注入出口，所以 `GET /state` 的初始出口要在 G1 后再断言。
-> 扩展目录在首次访问时缓存，新增 YAML 后需**重启后端**（或清空 extension registry 缓存）。
 
 ---
 
@@ -165,8 +107,11 @@ contributes:
 
 ### 3.1 准备
 
-试用项目已由后端启动时自动写入，`project_id` 固定为 `xianxia_system_demo`，
-角色、地点、伏笔、章节均已就绪，不需要再手工创建。打开项目即可从场景 1 开始生成。
+试用项目不再开机自动播种，需在 Web 界面「新建项目」对话框里选择「试用模板 → 系统逼我当仙尊」，
+或调用 `POST /api/templates/xianxia_system/apply`。返回的 `project_id` 形如
+`tpl_xianxia_system_<8位hex>`，是普通项目，试用后可直接删除清理。
+
+应用模板后，角色、地点、伏笔、章节均已就绪，打开项目即可从场景 1 开始生成。
 
 如需从零复现，也可以手工执行：
 
@@ -300,7 +245,7 @@ contributes:
 
 ### 4.1 准备与初始状态
 
-1. 确保 §2.1 / §2.2 资产已落库，且 §2.5 地图 mod 已放到 `src/storyloom/examples/xianxia_demo/`。
+1. 通过 Web 界面「试用模板」或 `POST /api/templates/xianxia_system/apply` 生成项目，资产与 §2.5 内嵌扩展自动就绪。
 2. 实例：`instance_id = "xianxia_demo_001"`；行动者：`actor = "玩家"`。
 3. 初始 `GET /runtime/v1/<PID>/state?instance_id=xianxia_demo_001` 断言：
 
@@ -421,7 +366,7 @@ G17 请求体示例：
 - **导演指令默认不改状态**：要改状态必须走 `overrides`（FactOverride）；纯文本指令只产出叙述。
 - **默认选项上限 8 条**：由 `allowed_actions(...)[:8]` 截断；自由输入不受限制。
 - **回滚没有 HTTP 端点**：`DirectorAuthority.rollback` 在库层与 `tests/test_m0.py` 中验证。
-- **扩展自动合并**：`examples/` 下所有 manifest 默认启用；需要隔离时用 `enabled_extensions`。
+- **扩展来源**：内置扩展由试用模板内嵌提供（`src/storyloom/templates/`），`ExtensionRegistry` 启动时自动注册；需要隔离时用 `enabled_extensions`。
 - **作者模式依赖模型 Key**：无 Key 时场景生成会失败；游戏模式链路是确定性的，可无 Key 跑通。
 
 ---

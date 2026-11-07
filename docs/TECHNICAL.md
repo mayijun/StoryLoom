@@ -211,7 +211,8 @@ M0 已新增（均已实现）：
 ├── flows/        # scene_flow.py（导演模式） + turn_flow.py（双模式 TurnLoop）
 ├── saves/        # service.py（文件快照 + 回放）
 ├── config/memory_config.yaml    # 记忆层数 / 压缩 / 降级 / 检索后端
-├── examples/xianxia_demo/       # map_xianxia.yaml（地图 mod） · skill_xianxia.yaml（文风 skill）
+├── examples/                    # 扩展 manifest 扫描目录（可空）
+├── templates/xianxia_system.py  # 试用模板：资产 + 内嵌 map/skill 扩展
 └── frontend/src/components/GamePanel.vue   # 游戏模式面板
 ```
 

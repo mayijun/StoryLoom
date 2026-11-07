@@ -1,25 +1,24 @@
 """
-预加载试用项目：爽文仙侠系统流 Demo。
+试用模板：爽文仙侠系统流 ·《系统逼我当仙尊》。
 
-系统启动时调用 :func:`seed_trial_project`，把《系统逼我当仙尊》的角色、地点、
-伏笔和章节写入数据库。重复启动不会覆盖已有内容；只在该项目还没有角色时补齐。
-
-地图与文风扩展在 ``storyloom/examples/xianxia_demo/`` 下，由扩展注册表自动发现。
+角色、地点、伏笔、章节大纲来自原 ``db/demo_seed.py``；
+地图 mod 与文风 skill 由原 ``examples/xianxia_demo/*.yaml`` 合并内嵌，
+不再以独立文本文件存在。试用结束后用户可直接删除项目清理。
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-from storyloom.db.repository import CrewConfigRepository, get_repository
+from storyloom.templates import Template, register
 
-TRIAL_PROJECT_ID = "xianxia_system_demo"
-TRIAL_PROJECT_TITLE = "系统逼我当仙尊"
-TRIAL_PROJECT_STYLE = "爽文仙侠 · 系统流"
-TRIAL_PROJECT_DESCRIPTION = (
+TEMPLATE_ID = "xianxia_system"
+TITLE = "系统逼我当仙尊"
+STYLE = "爽文仙侠 · 系统流"
+DESCRIPTION = (
     "外门杂役林凡绑定「诸天签到系统」，在大比之日被迫营业，"
     "一路签到开挂、当众打脸、惊动全宗。"
 )
 
-_CHARACTERS: List[Dict[str, str]] = [
+CHARACTERS: List[Dict[str, str]] = [
     {
         "name": "玩家",
         "importance_tier": "primary",
@@ -69,7 +68,7 @@ _CHARACTERS: List[Dict[str, str]] = [
     },
 ]
 
-_LOCATIONS: List[Dict[str, str]] = [
+LOCATIONS: List[Dict[str, str]] = [
     {"name": "演武场", "description": "青云宗外门大比的主场，青石擂台高九丈，四周幡旗猎猎。"},
     {"name": "杂役院", "description": "低矮石屋，晾着洗不净的灰布衣，墙角堆着劈好的柴。"},
     {"name": "藏经阁", "description": "七层木塔，每层檐角挂着一枚锈铃，越往上铃声越轻。"},
@@ -79,7 +78,7 @@ _LOCATIONS: List[Dict[str, str]] = [
     {"name": "后山禁地", "description": "断崖与古碑，雾气从地缝里往上涌，鸟兽绝迹。"},
 ]
 
-_FORESHADOWINGS: List[Dict[str, Any]] = [
+FORESHADOWINGS: List[Dict[str, Any]] = [
     {
         "foreshadow_id": "fs_ninth_slot",
         "description": (
@@ -120,7 +119,7 @@ _FORESHADOWINGS: List[Dict[str, Any]] = [
     },
 ]
 
-_CHAPTERS: List[Dict[str, str]] = [
+CHAPTERS: List[Dict[str, str]] = [
     {
         "chapter_id": "xianxia_ch_01",
         "title": "签到荒古圣体",
@@ -147,61 +146,98 @@ _CHAPTERS: List[Dict[str, str]] = [
     },
 ]
 
-
-def seed_trial_project(
-    repo: Optional[CrewConfigRepository] = None,
-) -> bool:
-    """确保试用项目存在并补齐内容。
-
-    返回 ``True`` 表示本次执行了内容写入，``False`` 表示项目已存在且跳过。
-    只在该项目没有任何角色时写入资产，避免覆盖用户的试玩修改。
-    """
-    repo = repo or get_repository()
-    # 全新库（如临时 SQLite）可能还未建表，先保证 schema 存在
-    repo.create_all()
-
-    if repo.get_project(TRIAL_PROJECT_ID) is None:
-        repo.create_project(
-            TRIAL_PROJECT_ID,
-            TRIAL_PROJECT_TITLE,
-            TRIAL_PROJECT_STYLE,
-            TRIAL_PROJECT_DESCRIPTION,
-        )
-    else:
-        repo.ensure_seeded(TRIAL_PROJECT_ID)
-
-    # 列表页直接读 projects 表的统计字段，写入后同步一次，避免显示 0 角色
-    def _sync_stats() -> None:
-        repo.update_project_stats(
-            TRIAL_PROJECT_ID,
-            character_count=len(repo.list_characters(TRIAL_PROJECT_ID)),
-            foreshadowing_count=len(repo.list_foreshadowings(TRIAL_PROJECT_ID)),
-        )
-
-    if repo.list_characters(TRIAL_PROJECT_ID):
-        _sync_stats()
-        return False
-
-    for character in _CHARACTERS:
-        repo.upsert_character(TRIAL_PROJECT_ID, **character)
-
-    for location in _LOCATIONS:
-        repo.upsert_location(TRIAL_PROJECT_ID, **location)
-
-    for foreshadowing in _FORESHADOWINGS:
-        repo.upsert_foreshadowing(TRIAL_PROJECT_ID, **foreshadowing)
-
-    if not repo.list_chapters(TRIAL_PROJECT_ID):
-        for position, chapter in enumerate(_CHAPTERS):
-            repo.create_chapter(
-                project_id=TRIAL_PROJECT_ID,
-                position=position,
-                status="draft",
-                **chapter,
+# 扩展：原 examples/xianxia_demo/map_xianxia.yaml + skill_xianxia.yaml 合并内嵌
+EXTENSIONS: List[Dict[str, Any]] = [
+    {
+        "id": "map_xianxia",
+        "kind": "mod",
+        "api_version": 1,
+        "name": "青云宗地图",
+        "description": "试用项目《系统逼我当仙尊》的地点与路线；旅行时间统一按分钟。",
+        "requires": {"time_resolution": "minute"},
+        "contributes": {
+            "state": {"namespace": "map", "fields": ["locations", "routes"]},
+            "map": {
+                "locations": [
+                    {"name": "演武场", "description": "青云宗外门大比的主场。"},
+                    {"name": "杂役院", "description": "低矮石屋，墙角堆着劈好的柴。"},
+                    {"name": "藏经阁", "description": "七层木塔，檐角挂着锈铃。"},
+                    {"name": "丹房", "description": "药气熏人，三尊铜炉昼夜不熄。"},
+                    {"name": "地牢", "description": "戒律堂地牢，山腹深处的石牢。"},
+                    {"name": "后山禁地", "description": "断崖与古碑，雾气从地缝里往上涌。"},
+                ],
+                "routes": [
+                    {"from": "演武场", "to": "杂役院", "minutes": 8},
+                    {"from": "杂役院", "to": "演武场", "minutes": 8},
+                    {"from": "演武场", "to": "藏经阁", "minutes": 10},
+                    {"from": "藏经阁", "to": "演武场", "minutes": 10},
+                    {"from": "演武场", "to": "后山禁地", "minutes": 30},
+                    {"from": "后山禁地", "to": "演武场", "minutes": 30},
+                    {"from": "藏经阁", "to": "杂役院", "minutes": 12},
+                    {"from": "杂役院", "to": "藏经阁", "minutes": 12},
+                    {"from": "杂役院", "to": "丹房", "minutes": 12},
+                    {"from": "丹房", "to": "杂役院", "minutes": 12},
+                    {"from": "藏经阁", "to": "丹房", "minutes": 15},
+                    {"from": "丹房", "to": "藏经阁", "minutes": 15},
+                    {"from": "丹房", "to": "后山禁地", "minutes": 20},
+                    {"from": "后山禁地", "to": "丹房", "minutes": 20},
+                    # 地牢只留出口：被押进去后可以走回演武场
+                    {"from": "地牢", "to": "演武场", "minutes": 6},
+                ],
+            },
+            "rules": [
+                {"id": "map.move", "access": "gm_only", "handler": "builtin.map.move"}
+            ],
+            "tools": [
+                {
+                    "id": "map.route",
+                    "access": "llm_tool",
+                    "read_only": True,
+                    "handler": "builtin.map.route",
+                }
+            ],
+        },
+    },
+    {
+        "id": "skill_xianxia",
+        "kind": "skill",
+        "api_version": 1,
+        "name": "爽文仙侠系统流",
+        "description": "短句、强节奏、打脸及时；系统提示用【】标出，每场结尾留钩子。",
+        "contributes": {
+            "prompt": (
+                "用中文第三人称叙事，主角是林凡（资产名为「玩家」）。短句为主，段落不超过四句；"
+                "爽点要落在动作和结果上，不解释系统原理；系统提示统一用【】包裹；"
+                "不替玩家做决定，不新增未经裁决的事实；每场结尾留一个具体钩子。"
             )
+        },
+    },
+]
 
-    _sync_stats()
-    return True
+
+register(
+    Template(
+        template_id=TEMPLATE_ID,
+        title=TITLE,
+        style=STYLE,
+        description=DESCRIPTION,
+        characters=CHARACTERS,
+        locations=LOCATIONS,
+        foreshadowings=FORESHADOWINGS,
+        chapters=CHAPTERS,
+        extensions=EXTENSIONS,
+    )
+)
 
 
-__all__ = ["TRIAL_PROJECT_ID", "seed_trial_project"]
+__all__ = [
+    "CHARACTERS",
+    "CHAPTERS",
+    "DESCRIPTION",
+    "EXTENSIONS",
+    "FORESHADOWINGS",
+    "LOCATIONS",
+    "STYLE",
+    "TEMPLATE_ID",
+    "TITLE",
+]

@@ -1,11 +1,12 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import type { ProjectView } from '@/types/project'
+import type { ProjectView, TemplateView } from '@/types/project'
 import { useApi } from '@/composables/useApi'
 
 export const useProjectStore = defineStore('project', () => {
   const api = useApi()
   const projects = ref<ProjectView[]>([])
+  const templates = ref<TemplateView[]>([])
   const currentProjectId = ref<string | null>(null)
   const currentProject = ref<any>(null)
   const loading = ref(false)
@@ -20,8 +21,20 @@ export const useProjectStore = defineStore('project', () => {
     }
   }
 
+  async function fetchTemplates() {
+    const res = await api.listTemplates()
+    templates.value = res.data.templates
+  }
+
   async function createProject(title: string, style: string) {
     const res = await api.createProject({ title, style, description: '' })
+    projects.value.push(res.data)
+    currentProjectId.value = res.data.project_id
+    await fetchCurrentProject()
+  }
+
+  async function applyTemplate(templateId: string, title?: string) {
+    const res = await api.applyTemplate(templateId, title)
     projects.value.push(res.data)
     currentProjectId.value = res.data.project_id
     await fetchCurrentProject()
@@ -39,7 +52,8 @@ export const useProjectStore = defineStore('project', () => {
   }
 
   return {
-    projects, currentProjectId, currentProject, loading,
-    fetchProjects, createProject, selectProject, fetchCurrentProject,
+    projects, templates, currentProjectId, currentProject, loading,
+    fetchProjects, fetchTemplates, createProject, applyTemplate,
+    selectProject, fetchCurrentProject,
   }
 })

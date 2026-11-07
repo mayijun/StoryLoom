@@ -17,3 +17,10 @@ export interface ProjectCreate {
   style: string
   description: string
 }
+
+export interface TemplateView {
+  template_id: string
+  title: string
+  style: string
+  description: string
+}

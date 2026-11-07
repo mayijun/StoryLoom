@@ -126,10 +126,9 @@ class NovelEngine:
         for proj in repo.list_projects():
             repo.ensure_seeded(proj["project_id"])
 
-        # 预加载试用项目：开机即可在项目列表里直接试玩
-        from storyloom.db.demo_seed import seed_trial_project
-
-        seed_trial_project(repo)
+        # 试用模板改为用户在 Web 界面主动选择「试用模板」时应用，
+        # 不再开机自动播种，避免占用数据库且便于试用后清理。
+        # 模板内嵌的扩展（map / skill）由 ExtensionRegistry 在首次解析时加载。
 
     # ---------------- 项目管理 ----------------
 
@@ -244,6 +243,41 @@ class NovelEngine:
     def list_projects(self) -> list[dict]:
         """返回 projects 表的元数据（用于 API 列表）"""
         return get_repository().list_projects()
+
+    # ---------------- 试用模板 ----------------
+
+    def list_templates(self) -> list[dict]:
+        """列出所有可用的试用模板摘要。"""
+        from storyloom.templates import list_templates
+
+        return list_templates()
+
+    def apply_template(self, template_id: str, title: str | None = None) -> dict:
+        """应用一个试用模板，生成一个新项目并返回其元数据。
+
+        项目 id 形如 ``tpl_<template_id>_<8hex>``，是普通项目，
+        用户试用后可直接删除以清理。模板内嵌的扩展会注册到全局
+        ExtensionRegistry（若尚未注册）。
+        """
+        import uuid
+
+        from storyloom.templates import apply_template as _apply
+
+        repo = get_repository()
+        project_id = f"tpl_{template_id}_{uuid.uuid4().hex[:8]}"
+        _apply(
+            template_id,
+            project_id,
+            repo,
+            title=title,
+            extension_registry=self.extension_registry,
+        )
+        # 同步运行时缓存
+        meta = repo.get_project(project_id)
+        self._project_runtime[project_id] = self._build_project(meta)
+        self.memories[project_id] = CoreMemory()
+        self.rags[project_id] = SimpleRAGMemory(project_id)
+        return meta
 
     def add_character(self, project_id, char: CharacterAsset):
         project = self._get_or_load_project(project_id)

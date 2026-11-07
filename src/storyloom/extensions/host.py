@@ -161,11 +161,29 @@ class ExtensionRegistry:
     def __init__(self, root: Optional[str] = None):
         self.root = root
         self._manifests: Optional[List[ExtensionManifest]] = None
+        # 模板内嵌扩展：以 (template_id, manifest_id) 去重，避免重复 add
+        self._template_keys: set[tuple[str, str]] = set()
 
     def manifests(self) -> List[ExtensionManifest]:
         if self._manifests is None:
-            self._manifests = discover(self.root)
+            manifests = discover(self.root)
+            self._manifests = manifests
+            self._load_template_extensions()
         return self._manifests
+
+    def _load_template_extensions(self) -> None:
+        """把内置模板内嵌的扩展注册进来（不再依赖 examples/ 下的 YAML）。"""
+        try:
+            from storyloom.templates import TEMPLATES
+        except Exception:
+            return
+        for template_id, template in TEMPLATES.items():
+            for manifest in template.extension_manifests():
+                key = (template_id, manifest.id)
+                if key in self._template_keys:
+                    continue
+                self._template_keys.add(key)
+                self._manifests.append(manifest)
 
     def add(self, manifest: ExtensionManifest) -> None:
         self.manifests().append(manifest)
@@ -181,6 +199,7 @@ class ExtensionRegistry:
 
     def clear_cache(self) -> None:
         self._manifests = None
+        self._template_keys = set()
 
 
 def host_from_paths(

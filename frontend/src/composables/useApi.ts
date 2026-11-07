@@ -3,7 +3,7 @@
  */
 
 import axios from 'axios'
-import type { ProjectView, ProjectCreate } from '@/types/project'
+import type { ProjectView, ProjectCreate, TemplateView } from '@/types/project'
 import type { CharacterAsset, LocationAsset, Foreshadowing } from '@/types/asset'
 import type { AgentConfig, AgentConfigInput } from '@/types/agent'
 import type { TaskConfig, TaskConfigInput } from '@/types/task'
@@ -19,6 +19,11 @@ export function useApi() {
   const listProjects = () => api.get<{ projects: ProjectView[] }>('/projects/')
   const createProject = (data: ProjectCreate) => api.post<ProjectView>('/projects/', data)
   const getProject = (id: string) => api.get(`/projects/${id}`)
+
+  // ---- Templates (试用模板) ----
+  const listTemplates = () => api.get<{ templates: TemplateView[] }>('/templates/')
+  const applyTemplate = (templateId: string, title?: string) =>
+    api.post<ProjectView>(`/templates/${templateId}/apply`, { title })
 
   // ---- Assets ----
   const listCharacters = (pid: string) => api.get<CharacterAsset[]>(`/projects/${pid}/assets/characters`)
@@ -141,6 +146,7 @@ export function useApi() {
 
   return {
     listProjects, createProject, getProject,
+    listTemplates, applyTemplate,
     listCharacters, addCharacter, deleteCharacter,
     listLocations, addLocation,
     listForeshadowings, addForeshadowing, transitionForeshadowing,

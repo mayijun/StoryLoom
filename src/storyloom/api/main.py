@@ -23,6 +23,7 @@ from storyloom.api.routers import (
     runtime_v1,
     scenes,
     tasks,
+    templates,
 )
 from storyloom.api.engine import engine
 
@@ -52,6 +53,7 @@ app.include_router(game.router)
 app.include_router(extensions.router)
 app.include_router(memory.router)
 app.include_router(runtime_v1.router)
+app.include_router(templates.router)
 
 
 @app.get("/api/health")

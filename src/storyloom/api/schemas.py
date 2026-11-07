@@ -459,3 +459,20 @@ class MemoryPatchRequest(BaseModel):
 class ExtensionResolveRequest(BaseModel):
     instance_id: str = "default"
     enabled: Optional[List[str]] = None
+
+
+# ---------------- 试用模板 ----------------
+
+class TemplateView(BaseModel):
+    template_id: str
+    title: str
+    style: str
+    description: str = ""
+
+
+class TemplateListResponse(BaseModel):
+    templates: List[TemplateView]
+
+
+class TemplateApplyRequest(BaseModel):
+    title: Optional[str] = None  # 不传则使用模板默认标题

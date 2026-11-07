@@ -42,6 +42,8 @@ const showTaskDialog = ref(false)
 
 // 表单数据
 const newProject = ref({ title: '', style: '' })
+// 新建项目对话框里选中的试用模板：'' 表示空白项目
+const selectedTemplateId = ref('')
 const agentForm = ref<AgentConfigInput>({
   key: '',
   role: '',
@@ -71,6 +73,7 @@ onMounted(async () => {
     await api.checkHealth()
     serverOnline.value = true
     await projectStore.fetchProjects()
+    await projectStore.fetchTemplates()
     await agentStore.fetchAgents(currentProjectId.value)
     await taskStore.fetchTasks(currentProjectId.value)
   } catch {
@@ -80,11 +83,35 @@ onMounted(async () => {
 
 // ---- 方法 ----
 async function handleCreateProject() {
-  await projectStore.createProject(newProject.value.title, newProject.value.style)
+  if (selectedTemplateId.value) {
+    await projectStore.applyTemplate(selectedTemplateId.value, newProject.value.title || undefined)
+  } else {
+    await projectStore.createProject(newProject.value.title, newProject.value.style)
+  }
   showCreateProject.value = false
   newProject.value = { title: '', style: '' }
+  selectedTemplateId.value = ''
   if (projectStore.currentProjectId) {
     await assetStore.fetchAll(projectStore.currentProjectId)
+  }
+}
+
+function openCreateProject() {
+  newProject.value = { title: '', style: '' }
+  selectedTemplateId.value = ''
+  showCreateProject.value = true
+}
+
+function onSelectTemplate(tid: string) {
+  selectedTemplateId.value = tid
+  if (tid) {
+    const tpl = projectStore.templates.find(t => t.template_id === tid)
+    if (tpl) {
+      newProject.value.title = tpl.title
+      newProject.value.style = tpl.style
+    }
+  } else {
+    newProject.value = { title: '', style: '' }
   }
 }
 
@@ -350,7 +377,7 @@ async function handleCopyConfig() {
         </option>
       </select>
 
-      <button class="btn btn-secondary btn-sm" @click="showCreateProject = true">
+      <button class="btn btn-secondary btn-sm" @click="openCreateProject">
         ＋ 新建项目
       </button>
 
@@ -626,7 +653,7 @@ async function handleCopyConfig() {
         <div style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:16px;">
           <div style="font-size:64px;">📚</div>
           <div style="font-size:18px;">请先选择或创建一个小说项目</div>
-          <button class="btn btn-primary" @click="showCreateProject = true">
+          <button class="btn btn-primary" @click="openCreateProject">
             ＋ 新建项目
           </button>
         </div>
@@ -817,6 +844,18 @@ async function handleCopyConfig() {
       <div class="dialog">
         <h3>📚 新建小说项目</h3>
         <div class="form-group">
+          <label>试用模板（可选：一键生成可直接试玩的示例项目，结束后可删除）</label>
+          <select v-model="selectedTemplateId" @change="onSelectTemplate(selectedTemplateId)">
+            <option value="">— 空白项目 —</option>
+            <option v-for="t in projectStore.templates" :key="t.template_id" :value="t.template_id">
+              {{ t.title }}（{{ t.style }}）
+            </option>
+          </select>
+          <div v-if="selectedTemplateId" style="font-size:12px;color:#888;margin-top:4px;">
+            {{ projectStore.templates.find(t => t.template_id === selectedTemplateId)?.description }}
+          </div>
+        </div>
+        <div class="form-group">
           <label>标题</label>
           <input v-model="newProject.title" placeholder="例：雾中旅人" />
         </div>
@@ -826,7 +865,9 @@ async function handleCopyConfig() {
         </div>
         <div class="form-actions">
           <button class="btn btn-secondary" @click="showCreateProject = false">取消</button>
-          <button class="btn btn-primary" @click="handleCreateProject" :disabled="!newProject.title">创建</button>
+          <button class="btn btn-primary" @click="handleCreateProject" :disabled="!newProject.title">
+            {{ selectedTemplateId ? '试用模板' : '创建' }}
+          </button>
         </div>
       </div>
     </div>

@@ -69,7 +69,7 @@
 | M0-6 | `saves` | `SaveService` · 本地快照 + 回放（先文件，M0 后接 DB） | ✅ `saves/service.py`（`data/saves/*.json`） |
 | M0-7 | API（**全部 async**） | `POST /game/{pid}/turn` · `GET /game/{pid}/state` · `POST/GET /game/{pid}/saves` · `POST /extensions/resolve` · `PATCH/GET /api/projects/{pid}/memory` | ✅ `api/routers/game.py` · `extensions.py` · `memory.py` |
 | M0-8 | 前端扩展 | 游戏模式：对话框 / 选项 / backlog / 存档读取 | ✅ `frontend/src/components/GamePanel.vue` |
-| M0-9 | Demo | `src/storyloom/examples/xianxia_demo/`：1 map mod + 1 skill（试用项目资产由 `db/demo_seed.py` 启动时写入） | ✅ `src/storyloom/examples/xianxia_demo/` |
+| M0-9 | Demo | `src/storyloom/templates/xianxia_system.py`：角色/地点/伏笔/章节 + 内嵌 map mod 与 skill；Web 界面「试用模板」一键生成可删除项目 | ✅ `src/storyloom/templates/` |
 | M0-10 | 测试 | GM 裁决、`Fact` 过滤、存档回放、manifest 校验、导演模式回归、记忆分层 / 压缩 / 降级、三后端检索 | ✅ `tests/test_m0.py` · `test_m0_api.py` |
 | M0-11 | `world/authority.py` | `GameAuthority` / `DirectorAuthority` 策略 · 模式切换 checkpoint · `FactOverride` 审计与回滚 | ✅ `world/authority.py` |
 | M0-12 | `narrative/arc.py` | 起承转合节拍 · 张力目标 · 信息预算 | ✅ `narrative/arc.py` |
@@ -196,7 +196,7 @@
 | 双模式策略 | `AuthorityPolicy` / 模式切换 checkpoint / `FactOverride` 回滚 | `world/authority.py` | P0 ✅ |
 | 叙事节拍 | `ArcState`：起承转合 + 张力目标 + 信息预算 | `narrative/arc.py` | P0 ✅ |
 | NPC 自主 | `AutonomousAgent`：记忆 → 反思 → 计划 → 提案 | `world/autonomous_agent.py` | P0 ✅ |
-| Demo | `examples/xianxia_demo` | `src/storyloom/examples/xianxia_demo/` | P1 ✅ |
+| Demo | 试用模板 | `src/storyloom/templates/xianxia_system.py` | P1 ✅ |
 
 ### 3.2 游戏模式玩法（M1 / M2）
 

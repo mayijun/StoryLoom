@@ -340,7 +340,8 @@ src/storyloom/
 ├── memory/       # base.py / tiers.py / scoring.py / core.py / consolidation.py
 │                 # lexical.py / embeddings.py / vector.py / hybrid.py / indexer.py
 ├── config/memory_config.yaml    # 记忆层数 / 压缩 / 降级策略
-└── examples/xianxia_demo/
+├── examples/                    # 扩展 manifest 扫描目录（可空，内置扩展由 templates 内嵌）
+└── templates/                   # 试用模板（角色/地点/伏笔/章节 + 内嵌扩展）
 ```
 
 ---

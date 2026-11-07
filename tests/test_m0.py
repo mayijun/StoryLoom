@@ -4,7 +4,6 @@
 """
 
 import asyncio
-from pathlib import Path
 
 import pytest
 
@@ -30,8 +29,6 @@ from storyloom.world.authority import (
 )
 from storyloom.world.game_master import ActionProposal, GameMaster
 from storyloom.world.state import Fact, WorldState
-
-DEMO = Path(__file__).resolve().parents[1] / "src/storyloom/examples/xianxia_demo"
 
 
 @pytest.fixture
@@ -181,7 +178,8 @@ def test_a4_save_load_replay_is_identical(tmp_path, world):
 
 
 def test_a5_demo_manifests_resolve_and_travel_override(world):
-    registry = ExtensionRegistry(root=str(DEMO))
+    # 模板内嵌的扩展由 ExtensionRegistry 启动时自动加载，不再依赖 examples/ YAML
+    registry = ExtensionRegistry()
     host = registry.for_instance("inst-1")
     resolved = host.resolve()
     assert any(item["id"] == "skill_xianxia" for item in resolved["skills"])
