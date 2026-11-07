@@ -126,6 +126,11 @@ class NovelEngine:
         for proj in repo.list_projects():
             repo.ensure_seeded(proj["project_id"])
 
+        # 预加载试用项目：开机即可在项目列表里直接试玩
+        from storyloom.db.demo_seed import seed_trial_project
+
+        seed_trial_project(repo)
+
     # ---------------- 项目管理 ----------------
 
     def _build_project(self, meta: dict) -> NovelProject:

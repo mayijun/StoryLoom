@@ -1,0 +1,45 @@
+id: map_xianxia
+kind: mod
+api_version: 1
+name: 青云宗地图
+description: 试用项目《系统逼我当仙尊》的地点与路线；旅行时间统一按分钟。
+requires:
+  time_resolution: minute
+contributes:
+  state:
+    namespace: map
+    fields: [locations, routes]
+  map:
+    locations:
+      - { name: 演武场, description: 青云宗外门大比的主场。 }
+      - { name: 杂役院, description: 低矮石屋，墙角堆着劈好的柴。 }
+      - { name: 藏经阁, description: 七层木塔，檐角挂着锈铃。 }
+      - { name: 丹房, description: 药气熏人，三尊铜炉昼夜不熄。 }
+      - { name: 地牢, description: 戒律堂地牢，山腹深处的石牢。 }
+      - { name: 后山禁地, description: 断崖与古碑，雾气从地缝里往上涌。 }
+    routes:
+      - { from: 演武场, to: 杂役院, minutes: 8 }
+      - { from: 杂役院, to: 演武场, minutes: 8 }
+      - { from: 演武场, to: 藏经阁, minutes: 10 }
+      - { from: 藏经阁, to: 演武场, minutes: 10 }
+      - { from: 演武场, to: 后山禁地, minutes: 30 }
+      - { from: 后山禁地, to: 演武场, minutes: 30 }
+      - { from: 藏经阁, to: 杂役院, minutes: 12 }
+      - { from: 杂役院, to: 藏经阁, minutes: 12 }
+      - { from: 杂役院, to: 丹房, minutes: 12 }
+      - { from: 丹房, to: 杂役院, minutes: 12 }
+      - { from: 藏经阁, to: 丹房, minutes: 15 }
+      - { from: 丹房, to: 藏经阁, minutes: 15 }
+      - { from: 丹房, to: 后山禁地, minutes: 20 }
+      - { from: 后山禁地, to: 丹房, minutes: 20 }
+      # 地牢只留出口：被押进去后可以走回演武场
+      - { from: 地牢, to: 演武场, minutes: 6 }
+  rules:
+    - id: map.move
+      access: gm_only
+      handler: builtin.map.move
+  tools:
+    - id: map.route
+      access: llm_tool
+      read_only: true
+      handler: builtin.map.route
