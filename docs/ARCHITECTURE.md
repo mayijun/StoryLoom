@@ -273,7 +273,6 @@ SimpleRAGMemory（按需检索）
 | `api/engine.py` | 项目 / 资产运行时，新增 game 方法 | 复用 + 扩展 |
 | `crews/scene_crew/` | 导演模式渲染管道 | 保留 |
 | `flows/scene_flow.py` | 导演模式的单场景子流程 | 保留 |
-| `flows/controlled_scene_flow.py` | 控制论增强版 | 保留 |
 | `control/` | 全层质量控制 | 保留 |
 | `memory.py` | Layer 3 记忆 | 复用 |
 | `llm/router.py` | Layer 0 模型路由 | 复用 |

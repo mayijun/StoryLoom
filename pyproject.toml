@@ -28,7 +28,6 @@ dev = ["pytest"]
 
 [project.scripts]
 storyloom = "storyloom.main:run_demo"
-storyloom-controlled = "storyloom.main_controlled:run_demo"
 storyloom-config = "storyloom.db.cli:main"
 
 [tool.hatch.build.targets.wheel]

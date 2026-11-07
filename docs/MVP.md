@@ -20,7 +20,7 @@
 | 4 | 场景正文落库（brief / prose / 质量分 / 耗时） | ✅ | `scenes` 表 |
 | 5 | 章节结构 + 场景归属 | ✅ | `chapters` 表 + `/chapters` `/scenes/{id}/chapter` |
 | 6 | 场景编辑 / 删除 / 单场景重跑 | ✅ | `/scenes` 路由 |
-| 7 | 一致性校验失败回退重试 | ✅ | `scene_flow.py` / `controlled_scene_flow.py` |
+| 7 | 一致性校验失败回退重试 | ✅ | `scene_flow.py` |
 | 8 | 伏笔状态机（种植 / 强化 / 揭示 / 回收 / 颠覆） | ✅ | `models.py` + Flow 内 `apply_foreshadow_ops` |
 | 9 | 多模型路由 + 自动降级 | ✅ | `llm/router.py` |
 | 10 | 控制论质量管控 | ✅ | `control/` |

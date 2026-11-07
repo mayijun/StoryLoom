@@ -55,7 +55,7 @@ PLANTED ──→ REINFORCED ──→ ACTIVATED ──→ RESOLVED
 - 超时预警（超过 N 场景未提及）；
 - 密度控制（同时活跃伏笔上限）；
 - 伏笔 × 意外联动；
-- 状态推进在 `scene_flow.py` / `controlled_scene_flow.py` 内完成。
+- 状态推进在 `scene_flow.py` 内完成。
 
 ### 🧠 分层记忆
 
@@ -164,7 +164,7 @@ StoryLoom/
 │   │   ├── crew.py              # @CrewBase SceneCrew
 │   │   └── config/              # agents.yaml / tasks.yaml（种子）
 │   ├── llm/                     # providers.py + router.py
-│   ├── flows/                   # scene_flow.py / controlled_scene_flow.py
+│   ├── flows/                   # scene_flow.py（导演模式单场景）
 │   ├── control/                 # feedback_loop · robustness · hierarchy
 │   ├── memory.py                # CoreMemory + SimpleRAGMemory
 │   ├── models.py                # 资产模型 / 伏笔 / 意外 / NovelProject
@@ -231,7 +231,6 @@ npm run dev     # http://localhost:5173
 
 ```bash
 python -m storyloom.main                # 基础版
-python -m storyloom.main_controlled     # 控制论增强版
 ```
 
 ---

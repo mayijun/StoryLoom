@@ -76,8 +76,9 @@
 
 ### 成本与质量的权衡
 
-控制论增强版用约 3 倍 API 调用换取约 37% 的质量提升。
-可通过 `config/model_config.yaml` 的 `strategy.mode` 在
+控制论增强的实验实现曾验证：用约 3 倍 API 调用可以换取明显的质量提升。
+该实验实现已移除，相关能力将在 M0 的 TurnLoop 中按阶段重新接入；
+当前可通过 `config/model_config.yaml` 的 `strategy.mode` 在
 `cost_optimized` / `balanced` / `quality_first` 之间切换。
 
 ---
