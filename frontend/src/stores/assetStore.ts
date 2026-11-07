@@ -40,8 +40,17 @@ export const useAssetStore = defineStore('asset', () => {
     foreshadowings.value.push(fs)
   }
 
+  /** 伏笔状态显式流转（激活/回收/颠覆等），失败时抛出后端错误信息 */
+  async function transitionForeshadowing(projectId: string, fid: string, action: string) {
+    const res = await api.transitionForeshadowing(projectId, fid, action)
+    const updated = res.data as Foreshadowing
+    const idx = foreshadowings.value.findIndex(f => f.foreshadow_id === fid)
+    if (idx >= 0) foreshadowings.value[idx] = updated
+  }
+
   return {
     characters, locations, foreshadowings,
     fetchAll, addCharacter, removeCharacter, addLocation, addForeshadowing,
+    transitionForeshadowing,
   }
 })

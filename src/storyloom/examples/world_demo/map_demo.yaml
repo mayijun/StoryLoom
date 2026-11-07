@@ -1,0 +1,37 @@
+# 示例 mod：雾港地图（v1 YAML + 白名单 builtin handler）
+id: map_demo
+kind: mod
+api_version: 1
+name: 雾港地图
+description: 提供雾港的地点、路线与旅行耗时。
+requires:
+  time_resolution: minute
+contributes:
+  state:
+    namespace: map
+    fields: [locations, routes]
+  map:
+    locations:
+      - name: 雾港旅店
+        description: 潮湿的木楼，墙上挂着一张被海雾打湿的航海图。
+      - name: 码头
+        description: 缆绳与鱼腥味，远处有雾笛。
+      - name: 王宫
+        description: 白色石阶一路铺到海崖之上。
+      - name: 地牢
+        description: 石壁渗水，只有一盏油灯。
+    routes:
+      - { from: 雾港旅店, to: 码头, minutes: 10 }
+      - { from: 码头, to: 雾港旅店, minutes: 10 }
+      - { from: 码头, to: 王宫, minutes: 20 }
+      - { from: 王宫, to: 码头, minutes: 20 }
+      - { from: 王宫, to: 地牢, minutes: 5 }
+  rules:
+    - id: map.move
+      access: gm_only
+      handler: builtin.map.move
+  tools:
+    - id: map.route
+      access: llm_tool
+      read_only: true
+      handler: builtin.map.route

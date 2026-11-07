@@ -4,6 +4,7 @@ CrewAI引擎桥接：连接FastAPI和已有的CrewAI多Agent后端
 
 import json
 import asyncio
+import time
 from typing import List, Optional
 from pathlib import Path
 
@@ -17,9 +18,62 @@ from storyloom.llm.providers import ModelRegistry
 from storyloom.llm.router import AgentModelRouter
 from storyloom.crews.scene_crew.crew import SceneCrew
 from storyloom.db import DEFAULT_PROJECT_ID, get_repository
-from storyloom.models import CharacterAsset, LocationAsset, NovelProject, Foreshadowing
-from storyloom.memory import CoreMemory, SimpleRAGMemory
+from storyloom.models import (
+    CharacterAsset,
+    ForeshadowStatus,
+    LocationAsset,
+    NovelProject,
+    Foreshadowing,
+)
+
+# 伏笔显式状态机：action → (允许的前置状态, 目标状态)
+_FORESHADOW_TRANSITIONS: dict[str, tuple[set[ForeshadowStatus], ForeshadowStatus]] = {
+    "reinforce": (
+        {ForeshadowStatus.PLANTED, ForeshadowStatus.REINFORCED},
+        ForeshadowStatus.REINFORCED,
+    ),
+    "activate": (
+        {ForeshadowStatus.PLANTED, ForeshadowStatus.REINFORCED},
+        ForeshadowStatus.ACTIVATED,
+    ),
+    "resolve": (
+        {ForeshadowStatus.ACTIVATED},
+        ForeshadowStatus.RESOLVED,
+    ),
+    "subvert": (
+        {
+            ForeshadowStatus.PLANTED,
+            ForeshadowStatus.REINFORCED,
+            ForeshadowStatus.ACTIVATED,
+        },
+        ForeshadowStatus.SUBVERTED,
+    ),
+    "abandon": (
+        {
+            ForeshadowStatus.PLANTED,
+            ForeshadowStatus.REINFORCED,
+            ForeshadowStatus.ACTIVATED,
+        },
+        ForeshadowStatus.ABANDONED,
+    ),
+    "replant": (
+        {
+            ForeshadowStatus.RESOLVED,
+            ForeshadowStatus.SUBVERTED,
+            ForeshadowStatus.ABANDONED,
+        },
+        ForeshadowStatus.PLANTED,
+    ),
+}
+from storyloom.memory import CoreMemory, LayeredMemory, MemoryIndexer, SimpleRAGMemory
 from storyloom.flows.scene_flow import SceneGenerationFlow
+from storyloom.flows.turn_flow import TurnBoot, TurnLoop, TurnResult
+from storyloom.extensions.host import ExtensionRegistry
+from storyloom.runtime.directive import StageScene
+from storyloom.runtime.intent import PlayerIntent
+from storyloom.saves.service import SaveService, state_from_save
+from storyloom.world.authority import AuthorityController
+from storyloom.world.state import WorldState
 from storyloom.api.schemas import (
     GenerateSceneRequest, GenerationStepUpdate,
     GenerateSceneResponse, ForeshadowingView,
@@ -47,6 +101,13 @@ class NovelEngine:
         self.rags: dict[str, SimpleRAGMemory] = {}
         # 运行时 NovelProject 对象缓存（元数据落库，运行时状态暂存内存）
         self._project_runtime: dict[str, NovelProject] = {}
+
+        # 双模式运行时（M0）：WorldState 不落 DB，仅按实例暂存
+        self.game_states: dict[tuple[str, str], WorldState] = {}
+        self.game_memories: dict[str, LayeredMemory] = {}
+        self.last_turns: dict[tuple[str, str], TurnResult] = {}
+        self.save_service = SaveService()
+        self.extension_registry = ExtensionRegistry()
 
         repo = get_repository()
         # 确保所有旧库数据、默认项目都已在 projects 表里
@@ -240,6 +301,58 @@ class NovelEngine:
             project_id, foreshadowing_count=len(project.foreshadowings)
         )
 
+    def transition_foreshadowing(
+        self, project_id: str, foreshadow_id: str, action: str
+    ) -> Foreshadowing:
+        """伏笔状态显式流转（作者在 UI 上手动推进状态机）。
+
+        校验前置状态合法性后更新内存对象并落库。
+        非法流转抛 ValueError，未找到伏笔抛 KeyError。
+        """
+        project = self._get_or_load_project(project_id)
+        fs = next(
+            (f for f in project.foreshadowings
+             if f.foreshadow_id == foreshadow_id),
+            None,
+        )
+        if fs is None:
+            raise KeyError(f"伏笔不存在: {foreshadow_id}")
+        if action not in _FORESHADOW_TRANSITIONS:
+            raise ValueError(f"未知的伏笔操作: {action}")
+
+        allowed_from, target = _FORESHADOW_TRANSITIONS[action]
+        if fs.status not in allowed_from:
+            raise ValueError(
+                f"伏笔当前状态为 {fs.status.value}，"
+                f"不允许执行 {action}（允许的前置状态: "
+                f"{sorted(s.value for s in allowed_from)}）"
+            )
+
+        fs.status = target
+        fs.scenes_since_last_mention = 0
+        if action == "reinforce":
+            fs.reinforcement_count += 1
+        elif action == "replant":
+            fs.reinforcement_count = 0
+
+        self._persist_foreshadowing(project_id, fs)
+        return fs
+
+    def _persist_foreshadowing(self, project_id: str, fs: Foreshadowing):
+        get_repository().upsert_foreshadowing(
+            project_id,
+            foreshadow_id=fs.foreshadow_id,
+            description=fs.description,
+            planted_in_scene=fs.planted_in_scene,
+            target_revelation=fs.target_revelation,
+            status=fs.status.value,
+            reinforcement_count=fs.reinforcement_count,
+            max_dormant_scenes=fs.max_dormant_scenes,
+            scenes_since_last_mention=fs.scenes_since_last_mention,
+            linked_characters=fs.linked_characters,
+            linked_surprise_ids=fs.linked_surprise_ids,
+        )
+
     def delete_foreshadowing(self, project_id, foreshadow_id: str) -> bool:
         project = self._get_or_load_project(project_id)
         ok = get_repository().delete_foreshadowing(foreshadow_id, project_id)
@@ -285,9 +398,26 @@ class NovelEngine:
 
         # 在线程池中执行（CrewAI kickoff 是同步的）
         loop = asyncio.get_event_loop()
+        started = time.perf_counter()
         final_text = await loop.run_in_executor(None, flow.kickoff)
+        duration_ms = int((time.perf_counter() - started) * 1000)
+
+        # 质量分：由一致性报告与重试次数确定性推导（0~1）
+        report = flow.state.consistency_report
+        quality_score = 1.0
+        if report is not None:
+            if not report.passed:
+                quality_score = {"minor": 0.7, "major": 0.4}.get(
+                    report.severity, 0.5
+                )
+            elif report.severity == "minor":
+                quality_score = 0.85
+        quality_score = max(
+            0.0, round(quality_score - 0.1 * flow.state.retry_count, 2)
+        )
 
         repo = get_repository()
+        model_usage = dict(crew._summary) if hasattr(crew, "_summary") else {}
 
         # 重跑：用原 scene_id 覆盖；新建：用 scene_count 生成新编号
         if scene_id is not None:
@@ -298,6 +428,9 @@ class NovelEngine:
                 brief=request.scene_brief,
                 present_characters=request.present_character_names,
                 prose=str(final_text),
+                quality_score=quality_score,
+                duration_ms=duration_ms,
+                model_usage=model_usage,
             )
         else:
             # scene_flow 在 kickoff 内部已经 project.scene_count += 1；
@@ -310,7 +443,9 @@ class NovelEngine:
                     brief=request.scene_brief,
                     present_characters=request.present_character_names,
                     prose=str(final_text),
-                    model_usage=dict(crew._summary) if hasattr(crew, "_summary") else {},
+                    quality_score=quality_score,
+                    duration_ms=duration_ms,
+                    model_usage=model_usage,
                 )
             except ValueError:
                 # scene_id 已存在（极端情况）→ 覆盖
@@ -320,23 +455,14 @@ class NovelEngine:
                     brief=request.scene_brief,
                     present_characters=request.present_character_names,
                     prose=str(final_text),
+                    quality_score=quality_score,
+                    duration_ms=duration_ms,
+                    model_usage=model_usage,
                 )
 
         # 同步生成过程中可能变更的伏笔状态到 DB
         for fs in project.foreshadowings:
-            repo.upsert_foreshadowing(
-                request.project_id,
-                foreshadow_id=fs.foreshadow_id,
-                description=fs.description,
-                planted_in_scene=fs.planted_in_scene,
-                target_revelation=fs.target_revelation,
-                status=fs.status.value,
-                reinforcement_count=fs.reinforcement_count,
-                max_dormant_scenes=fs.max_dormant_scenes,
-                scenes_since_last_mention=fs.scenes_since_last_mention,
-                linked_characters=fs.linked_characters,
-                linked_surprise_ids=fs.linked_surprise_ids,
-            )
+            self._persist_foreshadowing(request.project_id, fs)
 
         # 把更新后的统计写回数据库，保证下次重启仍能看到最新值
         repo.update_project_stats(
@@ -380,6 +506,170 @@ class NovelEngine:
             steps=steps,
             foreshadowing_updates=fs_views,
         )
+
+
+    # ================================================================
+    # 双模式运行时（M0）
+    # ================================================================
+
+    def memory_for(
+        self,
+        project_id: str,
+        backend: str | None = None,
+    ) -> LayeredMemory:
+        """项目级分层记忆：首次访问自动从历史场景与资产回填"""
+        cached = self.game_memories.get(project_id)
+        if cached is not None and (
+            backend is None or cached.backend_name == backend
+        ):
+            return cached
+
+        project = self._get_or_load_project(project_id)
+        repo = get_repository()
+        memory = LayeredMemory(
+            project_id,
+            repo=repo,
+            backend=backend,
+        )
+        MemoryIndexer(memory).backfill(
+            repo.list_scenes(project_id),
+            project.characters,
+            project.locations,
+        )
+        if cached is not None:
+            memory.configure_working(
+                location=cached.working.location,
+                present_characters=cached.working.present_characters,
+                scene_brief=cached.working.scene_brief,
+                intent=cached.working.intent,
+                time=cached.working.time,
+            )
+        self.game_memories[project_id] = memory
+        return memory
+
+    def get_game_state(
+        self, project_id: str, instance_id: str = "default"
+    ) -> WorldState:
+        """按实例取运行时世界状态；无缓存时从项目资产构建"""
+        key = (project_id, instance_id)
+        state = self.game_states.get(key)
+        if state is None:
+            project = self._get_or_load_project(project_id)
+            state = WorldState.from_project(project)
+            self.game_states[key] = state
+        return state
+
+    async def play_turn(
+        self, project_id: str, boot: TurnBoot
+    ) -> TurnResult:
+        """执行一个双模式回合"""
+        project = self._get_or_load_project(project_id)
+        if boot.world_state is None:
+            boot = boot.model_copy(
+                update={
+                    "world_state": self.get_game_state(
+                        project_id, boot.instance_id
+                    )
+                }
+            )
+        boot = boot.model_copy(update={"project_id": project_id})
+        if boot.provider_api_keys:
+            # 只在运行时内存注册，供后续 LLM 调用使用
+            self.registry.apply_provider_keys(boot.provider_api_keys)
+
+        memory = self.memory_for(project_id, backend=boot.memory_backend)
+        loop = TurnLoop(
+            project,
+            instance_id=boot.instance_id,
+            memory=memory,
+            extensions=self.extension_registry,
+            save_service=self.save_service,
+        )
+        result = await loop.run(boot)
+        key = (project_id, boot.instance_id)
+        self.game_states[key] = result.state
+        self.last_turns[key] = result
+        return result
+
+    def switch_game_mode(
+        self, project_id: str, target_mode: str, instance_id: str = "default"
+    ) -> tuple[WorldState, str]:
+        """模式切换：先落 checkpoint，再更新模式"""
+        state = self.get_game_state(project_id, instance_id)
+        controller = AuthorityController()
+
+        def checkpoint(world: WorldState, label: str) -> str:
+            record = self.save_service.save(
+                project_id, world, StageScene(), label=label
+            )
+            return record.save_id
+
+        new_state, checkpoint_id = controller.switch_mode(
+            state, target_mode, checkpoint_fn=checkpoint
+        )
+        self.game_states[(project_id, instance_id)] = new_state
+        return new_state, checkpoint_id
+
+    def create_save(
+        self, project_id: str, instance_id: str = "default", label: str = ""
+    ):
+        state = self.get_game_state(project_id, instance_id)
+        last = self.last_turns.get((project_id, instance_id))
+        scene = last.scene if last is not None else StageScene()
+        memory = self.game_memories.get(project_id)
+        return self.save_service.save(
+            project_id,
+            state,
+            scene,
+            label=label,
+            memory_snapshot=memory.snapshot() if memory else {},
+        )
+
+    def list_saves(self, project_id: str):
+        return self.save_service.list(project_id)
+
+    def load_save(
+        self, project_id: str, save_id: str, instance_id: str = "default"
+    ):
+        record = self.save_service.load(project_id, save_id)
+        state = state_from_save(record)
+        self.game_states[(project_id, instance_id)] = state
+        if record.memory_snapshot:
+            self.game_memories[project_id] = LayeredMemory.restore(
+                project_id,
+                record.memory_snapshot,
+                repo=get_repository(),
+            )
+        return record
+
+    def memory_overview(self, project_id: str) -> dict:
+        memory = self.memory_for(project_id)
+        items = [
+            item.model_dump(mode="json")
+            for item in memory.items.values()
+        ]
+        return {
+            "project_id": project_id,
+            "backend": memory.backend_name,
+            "counts": memory.counts(),
+            "tiers": [spec.model_dump(mode="json") for spec in memory.settings.tiers],
+            "items": items,
+            "prompt_block": memory.prompt_block(),
+        }
+
+    def set_memory_backend(self, project_id: str, backend: str) -> dict:
+        if backend not in ("fts", "vector", "hybrid"):
+            raise ValueError(f"不支持的检索后端: {backend}")
+        self.memory_for(project_id, backend=backend)
+        return self.memory_overview(project_id)
+
+    def resolve_extensions(
+        self, instance_id: str, enabled: list[str] | None = None
+    ) -> dict:
+        host = self.extension_registry.for_instance(
+            instance_id, enabled=enabled
+        )
+        return host.resolve()
 
 
 # 全局引擎实例

@@ -1,0 +1,25 @@
+# 分层记忆 v2 配置
+# L0 working / L4 archive 是固定端点；以下有序列表定义 L1~L3，
+# 可在短期与长期之间继续插入新层（例如 episode）。
+tiers:
+  - name: short_term
+    max_items: 6
+    compress_batch: 3
+    compress_into: long_term
+  - name: long_term
+    max_items: 8
+    compress_batch: 4
+    compress_into: canon
+
+canon:
+  max_items: 20
+  compress_into: archive
+
+demotion:
+  importance_threshold: 0.35
+  miss_scenes: 10
+  reheat_hits: 2
+
+retrieval:
+  backend: fts        # fts | vector | hybrid
+  top_k: 5

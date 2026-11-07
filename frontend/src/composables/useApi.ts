@@ -28,6 +28,19 @@ export function useApi() {
   const addLocation = (pid: string, data: any) => api.post(`/projects/${pid}/assets/locations`, data)
   const listForeshadowings = (pid: string) => api.get<Foreshadowing[]>(`/projects/${pid}/assets/foreshadowings`)
   const addForeshadowing = (pid: string, data: any) => api.post(`/projects/${pid}/assets/foreshadowings`, data)
+  const transitionForeshadowing = (pid: string, fid: string, action: string) =>
+    api.post<Foreshadowing>(`/projects/${pid}/assets/foreshadowings/${fid}/transition`, { action })
+
+  // ---- 导出 / 指标 ----
+  const exportNovelUrl = (pid: string, format: 'md' | 'txt') =>
+    `/api/projects/${pid}/export?format=${format}`
+  const getMetrics = (pid: string) => api.get(`/projects/${pid}/metrics`)
+
+  // ---- 配置导入导出 / 跨项目复制 ----
+  const exportConfig = (pid: string) => api.get(`/projects/${pid}/config/export`)
+  const importConfig = (pid: string, data: any) => api.post(`/projects/${pid}/config/import`, data)
+  const copyConfigFrom = (pid: string, sourcePid: string, mode: 'merge' | 'overwrite' = 'overwrite') =>
+    api.post(`/projects/${pid}/config/copy_from`, { source_project_id: sourcePid, mode })
 
   // ---- Agents ----
   // Agent / Task 从属于小说项目，通过 project_id 查询参数隔离
@@ -69,6 +82,24 @@ export function useApi() {
 
   // ---- Generation ----
   const generateScene = (data: any) => api.post('/generate/scene', data)
+
+  // ---- 双模式运行时（M0） ----
+  const playTurn = (pid: string, data: any) => api.post(`/game/${pid}/turn`, data)
+  const getGameState = (pid: string, instanceId = 'ui') =>
+    api.get(`/game/${pid}/state`, { params: { instance_id: instanceId } })
+  const createGameSave = (pid: string, data: any) => api.post(`/game/${pid}/saves`, data)
+  const listGameSaves = (pid: string) => api.get(`/game/${pid}/saves`)
+  const loadGameSave = (pid: string, saveId: string, instanceId = 'ui') =>
+    api.post(`/game/${pid}/saves/${saveId}/load`, null, {
+      params: { instance_id: instanceId },
+    })
+  const switchGameMode = (pid: string, mode: 'game' | 'director', instanceId = 'ui') =>
+    api.post(`/game/${pid}/mode`, { mode, instance_id: instanceId })
+  const getMemory = (pid: string) => api.get(`/projects/${pid}/memory`)
+  const patchMemory = (pid: string, backend: string) =>
+    api.patch(`/projects/${pid}/memory`, { backend })
+  const resolveExtensions = (instanceId = 'ui') =>
+    api.post('/extensions/resolve', { instance_id: instanceId })
 
   // ---- SSE流式生成 ----
   const generateSceneStream = (data: any, onMessage: (event: any) => void) => {
@@ -112,10 +143,14 @@ export function useApi() {
     listProjects, createProject, getProject,
     listCharacters, addCharacter, deleteCharacter,
     listLocations, addLocation,
-    listForeshadowings, addForeshadowing,
+    listForeshadowings, addForeshadowing, transitionForeshadowing,
+    exportNovelUrl, getMetrics,
+    exportConfig, importConfig, copyConfigFrom,
     listAgents, createAgent, updateAgent, deleteAgent, getAgentTypes,
     listTasks, createTask, updateTask, deleteTask,
     generateScene, generateSceneStream,
+    playTurn, getGameState, createGameSave, listGameSaves, loadGameSave,
+    switchGameMode, getMemory, patchMemory, resolveExtensions,
     checkHealth,
   }
 }

@@ -2,8 +2,8 @@
 
 > 本文档描述**当前已经实现**的技术细节。
 > 架构与演进方向见 [ARCHITECTURE.md](ARCHITECTURE.md)，
-> 下一阶段 MVP 与差距见 [MVP.md](MVP.md)。
-> M0 相关模块为设计目标，尚未实现；范围与验收以 MVP.md 为准。
+> M0（双模式动态世界纵切 + 分层记忆 v2）已实现，验收见 `tests/test_m0*.py`。
+> 后续阶段与差距见 [MVP.md](MVP.md)。
 
 ---
 
@@ -57,17 +57,20 @@ PLANTED ──→ REINFORCED ──→ ACTIVATED ──→ RESOLVED
 - 伏笔 × 意外联动；
 - 状态推进在 `scene_flow.py` 内完成。
 
-### 🧠 记忆（当前：基础版）
+### 🧠 记忆（分层 v2）
 
-- **CoreMemory**（直接拼入 prompt）：当前场景状态、最近 2~3 场景摘要、导演指令包；
-- **SimpleRAGMemory**（按需检索）：世界观设定 / 角色背景 / 历史章节，ChromaDB 按项目隔离，
-  未安装时退化为关键词检索；
-- 当前 `CoreMemory` 是平铺列表，不分层、不压缩、不落库；历史场景正文尚未批量回填。
-
-> 记忆 v2 是 M0 的设计目标（见 [MVP.md](MVP.md) M0-14），当前尚未实现：
-> 分层核心记忆（`working / short_term / long_term / canon`）、压缩 / 降级 / 回温、
-> `core_memory_items` / `memory_docs` 两张表、`fts / vector / hybrid` 三后端。
-> 架构见 [ARCHITECTURE.md §5](ARCHITECTURE.md#5-世界状态与记忆)。
+- **分层核心记忆**（`memory/core.py`）：`working → short_term → long_term → canon`，
+  `archive` 作为按需检索库；层数由 `config/memory_config.yaml` 的有序列表定义；
+- **生命周期**：短期超 `max_items` 取最旧 batch 压缩进长期；长期超限压缩进 canon；
+  低重要性 + 连续未命中 + 无活跃伏笔 + 非 pinned → 降级到 archive；
+  archive 命中 2 次 → 回温为 long_term；
+- **持久化**：SQLite `memory_items` 表（`db/models.py`），按 `project_id + id` 隔离；
+  重启后自动恢复；作品数据是事实来源，索引可重建；
+- **检索后端**：`fts`（默认，SQLite LIKE + 中文二元组打分）/ `vector`（需显式注入
+  embedding，否则不可用）/ `hybrid`（RRF 融合，向量不可用时自动退化为 fts）；
+- **历史回填**：`MemoryIndexer` 把旧项目场景与资产写入 archive，支持中文专名检索；
+- **隐私**：`secrets` 以 `visibility=private:<角色>` 写入检索库，只对本人可见；
+- 旧的平铺 `CoreMemory` / `SimpleRAGMemory` 保留在 `memory/legacy.py`，作者模式继续使用。
 
 ### 🎲 可控随机性
 
@@ -95,17 +98,16 @@ SQLite 默认（`data/storyloom.db`），设 `STORYLOOM_DATABASE_URL` 可切 Pos
 - SQLite 连接自动 `PRAGMA foreign_keys = ON`；
 - 旧库自动迁移（缺 `project_id` 列或缺外键 → 重建补全，数据不丢）。
 
-M0 将新增（尚未实现）：
+M0 新增：
 
-| 表 | 作用 |
+| 表 / 存储 | 作用 |
 |---|---|
-| `core_memory_items` | 分层核心记忆（层 / 重要性 / 访问计数 / 状态 / 来源） |
-| `memory_docs` | L4 检索库文档（背景 / 历史场景 / 被降级记忆 / 可见性） |
-| `world_states` | 回合世界状态快照（checkpoint / 回滚） |
-| `turn_logs` | 输入、裁决、模型用量、耗时审计 |
+| `memory_items` | 分层记忆条目（层 / 重要性 / 命中 / 可见性 / 来源） |
+| `data/saves/*.json` | 存档快照（世界状态 + 已渲染指令 + 文本，不走 DB） |
 
-`projects` 表将增加 `mode`（游戏 / 导演）、`enabled_mods` 与
-`memory_backend`（`fts` / `vector` / `hybrid`，默认 `fts`）。
+> `WorldState` 不落库：每回合由请求传入、返回 `state_delta`；
+> 导演改写审计写在 `WorldState.overrides` 中，回滚只恢复被改字段。
+> `turn_logs` 与 `world_states` 表留到 M0 之后按需引入。
 
 ### 🌐 Web 界面（Vue 3 单页）
 
@@ -115,8 +117,8 @@ M0 将新增（尚未实现）：
 - 右栏：资产（角色 / 地点 / 伏笔）；
 - 场景历史与章节管理。
 
-M0 将新增游戏模式视图：对话框 / 选项 / backlog / 存档读档，代码位于
-`frontend/src/views/game/`。
+M0 新增游戏模式视图：对话框 / 选项 / backlog / 舞台指令 / 存读档 / 记忆后端切换，
+位于 `frontend/src/components/GamePanel.vue`，由顶栏「🎮 游戏模式」打开。
 
 ### ⚙️ 配置 CLI
 
@@ -137,9 +139,9 @@ uv run storyloom-config seed --overwrite
 | 后端 | Python 3.10+ · FastAPI · SQLAlchemy 2 · Pydantic 2 |
 | Agent 编排 | CrewAI（`@CrewBase` + Flow） |
 | LLM | LiteLLM 统一适配 · DeepSeek / OpenAI / Anthropic / Ollama |
-| 检索 | SQLite FTS5（M0 规划；默认，trigram + LIKE 兜底） |
-| 向量库 | ChromaDB（当前基础版；M0 作为可选派生索引） |
-| Embedding | OpenAI / Ollama（M0 规划，可选，显式配置） |
+| 检索 | SQLite `memory_items` + LIKE / 中文二元组打分（`fts` 默认）；`hybrid` 做 RRF 融合 |
+| 向量库 | 可插拔派生索引（`vector` 后端需显式注入 embedding；不可用时自动退化） |
+| Embedding | 通过 `embedding_fn` 注入（OpenAI / Ollama 均可），未配置则 `vector` 不可用 |
 | 数据库 | SQLite（默认）/ PostgreSQL / MySQL |
 | 前端 | Vue 3 · Vite · Pinia · PrimeVue |
 | 测试 | pytest |
@@ -162,7 +164,9 @@ StoryLoom/
 │   │       ├── assets.py        # /api/projects/{id}/assets
 │   │       ├── generation.py    # /api/generate
 │   │       ├── scenes.py        # /api/projects/{id}/scenes
-│   │       └── chapters.py      # /api/projects/{id}/chapters
+│   │       ├── chapters.py      # /api/projects/{id}/chapters
+│   │       ├── config.py        # /api/projects/{id}/config（导入导出 / 跨项目复制）
+│   │       └── runtime_v1.py    # /runtime/v1 版本化入口（复用 game/extensions/memory）
 │   ├── db/
 │   │   ├── models.py            # 当前 8 张表的 ORM 模型
 │   │   ├── base.py              # 引擎 + SQLite PRAGMA foreign_keys
@@ -175,7 +179,13 @@ StoryLoom/
 │   ├── llm/                     # providers.py + router.py
 │   ├── flows/                   # scene_flow.py（导演模式单场景）
 │   ├── control/                 # feedback_loop · robustness · hierarchy
-│   ├── memory.py                # 当前：CoreMemory + SimpleRAGMemory
+│   ├── memory/                  # 分层记忆 v2 + 旧版兼容
+│   │   ├── core.py              # LayeredMemory：分层 / 压缩 / 降级 / 回温
+│   │   ├── lexical.py           # fts 后端（SQLite LIKE + 中文二元组）
+│   │   ├── vector.py            # vector 后端（需显式注入 embedding）
+│   │   ├── hybrid.py            # hybrid 后端（RRF 融合，向量不可用退化为 fts）
+│   │   ├── indexer.py           # 历史场景 / 资产回填
+│   │   └── legacy.py            # CoreMemory + SimpleRAGMemory（作者模式）
 │   ├── models.py                # 资产模型 / 伏笔 / 意外 / NovelProject
 │   ├── media/                   # render_adapter.py（表现层雏形）
 │   └── config/model_config.yaml
@@ -184,24 +194,25 @@ StoryLoom/
 │       ├── App.vue
 │       ├── stores/              # project / agent / task / asset / generation
 │       └── composables/useApi.ts
+├── scripts/
+│   └── bench_m0.py              # M0 性能基线压测
 ├── tests/
 ├── data/                        # SQLite（已 git 忽略）
 └── app.py                       # 启动器
 ```
 
-下一阶段将新增：
+M0 已新增（均已实现）：
 
 ```
-├── memory/       # 分层记忆 v2：base / tiers / scoring / core / consolidation
-│                 #              lexical / embeddings / vector / hybrid / indexer
-├── config/memory_config.yaml    # 与 model_config.yaml 同目录；记忆层数 / 压缩 / 降级策略
-├── world/        # state.py / rules.py / game_master.py / authority.py / autonomous_agent.py
-├── runtime/      # intent.py / directive.py / renderer.py
-├── extensions/   # manifest.py / host.py
+├── world/        # state.py · game_master.py · authority.py · autonomous_agent.py
+├── runtime/      # intent.py · directive.py · renderer.py
+├── extensions/   # manifest.py · host.py
 ├── narrative/    # arc.py
-├── flows/        # turn_flow.py
-├── saves/        # service.py
-└── examples/world_demo/
+├── flows/        # scene_flow.py（导演模式） + turn_flow.py（双模式 TurnLoop）
+├── saves/        # service.py（文件快照 + 回放）
+├── config/memory_config.yaml    # 记忆层数 / 压缩 / 降级 / 检索后端
+├── examples/world_demo/         # skill_noir.yaml · map_demo.yaml · world_demo.yaml
+└── frontend/src/components/GamePanel.vue   # 游戏模式面板
 ```
 
 ---
@@ -224,9 +235,10 @@ DEEPSEEK_API_KEY=sk-xxx
 OPENAI_API_KEY=sk-xxx
 ANTHROPIC_API_KEY=sk-ant-xxx
 
-# 以下为 M0 记忆 v2 预留，当前版本尚未读取
+# 以下记忆 v2 选项通过 config/memory_config.yaml 与
+# PATCH /api/projects/{id}/memory 配置；环境变量暂不读取
 
-# 可选：记忆检索后端（fts / vector / hybrid）
+# 可选：记忆检索后端（fts / vector / hybrid），默认 fts
 # STORYLOOM_MEMORY_BACKEND=fts
 # 可选：向量后端 embedding（不配置则 vector 不可用，hybrid 自动退化为 fts）
 # STORYLOOM_EMBEDDING_PROVIDER=openai
@@ -271,6 +283,7 @@ python -m storyloom.main                # 基础版
 | GET/POST/DELETE | `/api/projects/{id}/assets/characters` | 角色资产 |
 | GET/POST/DELETE | `/api/projects/{id}/assets/locations` | 地点资产 |
 | GET/POST/DELETE | `/api/projects/{id}/assets/foreshadowings` | 伏笔资产 |
+| POST | `/api/projects/{id}/assets/foreshadowings/{fid}/transition` | 伏笔状态显式流转（`reinforce / activate / resolve / subvert / abandon / replant`，非法流转 409） |
 | POST | `/api/generate/scene` | 同步生成场景 |
 | POST | `/api/generate/scene/stream` | 流式生成（SSE） |
 | GET/PUT/DELETE | `/api/projects/{id}/scenes` | 场景列表 / 编辑 / 删除 |
@@ -278,19 +291,41 @@ python -m storyloom.main                # 基础版
 | PATCH | `/api/projects/{id}/scenes/{scene_id}/chapter` | 场景归属章节 |
 | POST | `/api/projects/{id}/scenes/{scene_id}/regenerate` | 单场景重跑 |
 | GET/POST/PUT/DELETE | `/api/projects/{id}/chapters` | 章节 CRUD |
+| GET | `/api/projects/{id}/export?format=md\|txt` | 导出整本小说（按章节组织，附未归属场景），文件下载 |
+| GET | `/api/projects/{id}/metrics` | 成本与质量指标：场景数 / 平均质量分 / 总与平均耗时 / 模型与 Agent 调用量 / 场景明细 |
+| GET | `/api/projects/{id}/config/export` | 导出 Agent / Task 配置快照（JSON，不含库内字段） |
+| POST | `/api/projects/{id}/config/import` | 导入配置（`merge` 逐条 upsert / `overwrite` 先清后写；overwrite 不允许空 Agent 列表） |
+| POST | `/api/projects/{id}/config/copy_from` | 从同库另一项目复制配置（默认 overwrite） |
 
-下一阶段（M0）将新增（**全部 async**）：
+M0 已交付（**全部 async**）：
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/game/{pid}/turn` | 提交一次玩家行动，返回演出指令 |
+| POST | `/game/{pid}/turn` | 提交一次玩家行动，返回演出指令 / 状态增量 |
 | GET | `/game/{pid}/state` | 当前世界状态（玩家视图） |
-| POST/GET | `/game/{pid}/saves` | 存档 / 读档 |
+| POST/GET | `/game/{pid}/saves` | 创建存档 / 列出存档 |
+| POST | `/game/{pid}/saves/{save_id}/load` | 读档并回放（不重新生成） |
+| POST | `/game/{pid}/mode` | 切换游戏 / 导演模式（切换前落 checkpoint） |
 | POST | `/extensions/resolve` | 解析并加载扩展包 manifest |
-| PATCH | `/api/projects/{id}/memory` | 切换记忆检索后端（`fts` / `vector` / `hybrid`） |
 | GET | `/api/projects/{id}/memory` | 记忆层级与后端状态（只读调试） |
+| PATCH | `/api/projects/{id}/memory` | 切换记忆检索后端（`fts` / `vector` / `hybrid`） |
 
-M0 验收通过后再重组为 `/runtime/v1/*`，原端点保留并标记 deprecation。
+**版本化入口**：以上运行端点同时挂在 `/runtime/v1/*`（推荐新接入使用）：
+
+| 方法 | 路径 |
+|---|---|
+| POST | `/runtime/v1/{pid}/turn` |
+| GET | `/runtime/v1/{pid}/state` |
+| POST/GET | `/runtime/v1/{pid}/saves` |
+| POST | `/runtime/v1/{pid}/saves/{save_id}/load` |
+| POST | `/runtime/v1/{pid}/mode` |
+| POST | `/runtime/v1/extensions/resolve` |
+| GET/PATCH | `/runtime/v1/projects/{pid}/memory` |
+
+旧 `/game/*` 与 `/extensions/resolve` 保留并标记 deprecated，M1 起逐步迁移。
+
+**Key 注入**：回合请求体可带 `provider_api_keys`（如 `{"deepseek": "sk-..."}`），
+仅注入运行时内存注册表，不写环境变量、不落盘、不回显。
 
 ---
 
@@ -303,23 +338,33 @@ uv run pytest -q
 覆盖：项目落库与外键、Agent/Task API、迁移与幂等回归、资产模型、场景与章节持久化、
 记忆基础版、控制论模块、Flow。
 
-M0 将补：记忆分层 / 压缩 / 降级回温 / 三后端检索、GM 裁决、存档回放、
-模式切换、扩展包加载与隔离。
+M0 覆盖（`tests/test_m0*.py`）：GM 裁决与守卫拦截、移动可达性、`Fact` 可见性、
+存档回放、manifest 校验与 map mod 旅行覆盖、导演改写审计回滚、idle NPC 事件、
+模式切换 checkpoint、记忆分层 / 压缩 / 降级回温 / 三后端检索 / 历史回填 / secrets、
+意图路由、超时与配额、`/game/*` 与 `/memory` `/extensions` API、版本化入口与 Key 注入。
+
+性能基线：
+
+```bash
+uv run python scripts/bench_m0.py
+```
+
+覆盖冷启动、确定性单 turn P95、并发 100 turn、1k 文档 fts 检索 P95；
+不含真实 LLM 调用。
 
 ---
 
 ## 🎯 下一步
 
-当前作者模式的 P0 数据闭环已经完成。下一阶段不是继续堆作者功能，而是
-构建「动态文字世界基座」：
+M0 双模式动态世界纵切已完成：`WorldState` / `GameMaster`、`PlayerIntent` /
+`StageDirective` 双总线、双模式 `TurnLoop`、`FactOverride` 审计回滚、NPC 自主、
+叙事节拍、分层记忆 v2、Mod v1 与存档回放均已落地，作者模式 `scene_brief → prose`
+流程保持不回归。
 
-- `WorldState` / `Fact` / `GameMaster`；
-- `PlayerIntent` / `StageDirective` 双总线；
-- 双模式 `TurnLoop` + `AuthorityPolicy` + 模式切换 checkpoint；
-- `FactOverride` 审计与回滚；
-- NPC 自主（`AutonomousAgent`）与叙事节拍（`ArcState`）；
-- 分层记忆 v2（短期压缩 / 长期 / 常驻 / 降级回温、`fts` / `vector` / `hybrid` 三后端、历史回填）；
-- 统一 manifest + `ExtensionHost`（Mod v1 YAML）；
-- 存档 / 读档 / 回放。
+下一阶段 M1 面向玩法与审核（详见 [MVP.md](MVP.md) §3.2）：
 
-详细范围、验收与差距见 [MVP.md](MVP.md)。
+- TFC 五档动态计算与信号；
+- `policy` pack：规则 / 分类器审核；
+- 图片 / 音频资源调度；
+- Flag / Choice / Affection 数值与选项效果；
+- 章节边界与自动收束。

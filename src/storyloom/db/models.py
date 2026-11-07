@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import (
     Boolean,
     DateTime,
+    Float,
     ForeignKeyConstraint,
     Integer,
     JSON,
@@ -310,4 +311,41 @@ class ForeshadowRow(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
+# ================================================================
+# 分层记忆 v2
+# ================================================================
+
+class MemoryRow(Base):
+    """叙事记忆条目（分层核心记忆 + 降级检索库）
+
+    作品数据（scenes / 资产）是事实来源；本表是可重建的索引与分层缓存。
+    """
+
+    __tablename__ = "memory_items"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(64), index=True)
+
+    tier: Mapped[str] = mapped_column(String(32), index=True)  # short/long/canon/archive
+    text: Mapped[str] = mapped_column(Text)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    importance: Mapped[float] = mapped_column(Float, default=0.5)
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    scene_index: Mapped[int] = mapped_column(Integer, default=0)
+    hits: Mapped[int] = mapped_column(Integer, default=0)
+    adoptions: Mapped[int] = mapped_column(Integer, default=0)
+    last_hit_scene: Mapped[int] = mapped_column(Integer, default=0)
+
+    # public / private:<角色名>
+    visibility: Mapped[str] = mapped_column(String(128), default="public")
+    tags: Mapped[List[str]] = mapped_column(JSON, default=list)
+    source: Mapped[str] = mapped_column(String(32), default="scene")
+    active_foreshadow: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now()
     )

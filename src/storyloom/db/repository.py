@@ -25,6 +25,7 @@ from storyloom.db.models import (
     CharacterRow,
     ForeshadowRow,
     LocationRow,
+    MemoryRow,
     ProjectRow,
     SceneRow,
     TaskConfigRow,
@@ -1164,6 +1165,65 @@ class CrewConfigRepository:
             session.delete(row)
             return True
 
+    # ---------------- 分层记忆（MemoryRow） ----------------
+
+    def upsert_memory_item(
+        self, project_id: str, **fields: Any
+    ) -> Dict[str, Any]:
+        """写入 / 更新一条记忆（索引可重建，不强制外键）"""
+        self.create_all()
+        item_id = fields.get("id")
+        if not item_id:
+            raise ValueError("记忆条目缺少 id")
+        allowed = {
+            "tier", "text", "summary", "importance", "pinned",
+            "scene_index", "hits", "adoptions", "last_hit_scene",
+            "visibility", "tags", "source", "active_foreshadow",
+        }
+        with self.session() as session:
+            row = session.get(MemoryRow, item_id)
+            if row is None:
+                row = MemoryRow(id=item_id, project_id=project_id)
+                session.add(row)
+            for key, value in fields.items():
+                if key in allowed:
+                    setattr(row, key, value)
+            session.flush()
+            return _memory_record(row)
+
+    def list_memory_items(
+        self, project_id: str, tier: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        self.create_all()
+        with self.session() as session:
+            stmt = select(MemoryRow).where(
+                MemoryRow.project_id == project_id
+            )
+            if tier is not None:
+                stmt = stmt.where(MemoryRow.tier == tier)
+            rows = session.scalars(
+                stmt.order_by(MemoryRow.scene_index, MemoryRow.id)
+            ).all()
+            return [_memory_record(row) for row in rows]
+
+    def delete_memory_item(self, item_id: str) -> bool:
+        with self.session() as session:
+            row = session.get(MemoryRow, item_id)
+            if row is None:
+                return False
+            session.delete(row)
+            return True
+
+    def clear_memory_items(self, project_id: str) -> int:
+        """清空项目记忆（用于回填 / 测试）"""
+        with self.session() as session:
+            rows = session.scalars(
+                select(MemoryRow).where(MemoryRow.project_id == project_id)
+            ).all()
+            for row in rows:
+                session.delete(row)
+            return len(rows)
+
     # ---------------- 种子导入 ----------------
 
     @staticmethod
@@ -1431,4 +1491,25 @@ def _foreshadow_record(row: ForeshadowRow) -> Dict[str, Any]:
         "scenes_since_last_mention": row.scenes_since_last_mention,
         "linked_characters": list(row.linked_characters or []),
         "linked_surprise_ids": list(row.linked_surprise_ids or []),
+    }
+
+
+def _memory_record(row: MemoryRow) -> Dict[str, Any]:
+    return {
+        "id": row.id,
+        "project_id": row.project_id,
+        "tier": row.tier,
+        "text": row.text or "",
+        "summary": row.summary or "",
+        "importance": row.importance,
+        "pinned": row.pinned,
+        "scene_index": row.scene_index,
+        "hits": row.hits,
+        "adoptions": row.adoptions,
+        "last_hit_scene": row.last_hit_scene,
+        "visibility": row.visibility,
+        "tags": list(row.tags or []),
+        "source": row.source,
+        "active_foreshadow": row.active_foreshadow,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
     }

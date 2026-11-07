@@ -95,15 +95,18 @@
 ## 状态
 
 **作者模式已可用**：项目管理、Agent/Task 可视化配置、资产与场景落库、
-章节结构、单场景生成与重跑。记忆目前是基础版（平铺 `CoreMemory` + Chroma）。
+章节结构、单场景生成与重跑，以及伏笔状态流转、小说导出（Markdown / TXT）、
+成本与质量指标面板、Agent/Task 配置导入导出与跨项目复制。
+作者模式使用平铺 `CoreMemory` + Chroma；动态世界使用分层记忆 v2
+（`working → short_term → long_term → canon` + archive 按需检索）。
 
-**下一阶段 M0 — 双模式动态世界纵切（含分层记忆 v2）**：
+**M0 已交付 — 双模式动态世界纵切（含分层记忆 v2）**：
 游戏模式与导演模式共用一条 TurnLoop，跑通「玩家输入 / 导演指令 → GM 裁决 →
 演出指令 → 状态更新 → 存档回放」的最小纵切。包含 `FactOverride` 审计回滚、
 模式切换 checkpoint、NPC 自主、分层记忆 v2（短期压缩 / 长期 / 常驻 / 降级回温、
 `fts / vector / hybrid` 三后端）、Mod v1（YAML）与可玩的游戏前端；
 接口按运行时架构预留（async + 超时 + 扩展包隔离），为后续性能扩展留对结构。
-详见 [MVP.md](docs/MVP.md)。
+验收 A1 ~ A15 由 `tests/test_m0*.py` 覆盖，详见 [MVP.md](docs/MVP.md)。
 
 ## 文档
 

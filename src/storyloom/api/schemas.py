@@ -160,6 +160,24 @@ class ForeshadowingView(BaseModel):
     linked_characters: List[str]
 
 
+class ForeshadowTransition(BaseModel):
+    """伏笔状态显式流转请求
+
+    action 与状态机对应：
+    - reinforce: planted/reinforced → reinforced（强化计数 +1，沉睡清零）
+    - activate:  planted/reinforced → activated
+    - resolve:   activated → resolved
+    - subvert:   planted/reinforced/activated → subverted
+    - abandon:   planted/reinforced/activated → abandoned
+    - replant:   resolved/subverted/abandoned → planted（计数重置）
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal[
+        "reinforce", "activate", "resolve", "subvert", "abandon", "replant"
+    ]
+
+
 # ================================================================
 # Project 相关
 # ================================================================
@@ -183,6 +201,59 @@ class ProjectView(BaseModel):
 class ProjectListResponse(BaseModel):
     projects: List[ProjectView]
     current_project_id: Optional[str]
+
+
+# ================================================================
+# 项目指标（成本与质量）
+# ================================================================
+
+class SceneMetric(BaseModel):
+    scene_id: str
+    chapter_id: Optional[str] = None
+    quality_score: Optional[float] = None
+    duration_ms: Optional[int] = None
+    created_at: Optional[str] = None
+
+
+class ProjectMetrics(BaseModel):
+    project_id: str
+    scene_count: int
+    avg_quality_score: Optional[float] = None
+    total_duration_ms: int = 0
+    avg_duration_ms: Optional[float] = None
+    model_calls: Dict[str, int] = Field(default_factory=dict)
+    agent_calls: Dict[str, int] = Field(default_factory=dict)
+    scenes: List[SceneMetric] = Field(default_factory=list)
+
+
+# ================================================================
+# Agent / Task 配置导入导出
+# ================================================================
+
+class ConfigExport(BaseModel):
+    """项目 Agent / Task 配置的可移植快照"""
+    version: int = 1
+    project_id: str
+    agents: List[Dict[str, Any]] = Field(default_factory=list)
+    tasks: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class ConfigImport(BaseModel):
+    """导入配置；mode=merge 逐条 upsert，overwrite 先清空再写入"""
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = 1
+    agents: List[Dict[str, Any]] = Field(default_factory=list)
+    tasks: List[Dict[str, Any]] = Field(default_factory=list)
+    mode: Literal["merge", "overwrite"] = "merge"
+
+
+class ConfigCopyRequest(BaseModel):
+    """从同库另一个项目复制配置"""
+    model_config = ConfigDict(extra="forbid")
+
+    source_project_id: str
+    mode: Literal["merge", "overwrite"] = "overwrite"
 
 
 # ================================================================
@@ -340,3 +411,51 @@ class FlowDefinition(BaseModel):
     viewport: Dict[str, float] = Field(
         default_factory=lambda: {"x": 0, "y": 0, "zoom": 1}
     )
+
+
+# ================================================================
+# 双模式运行时（M0）
+# ================================================================
+
+class TurnRequest(BaseModel):
+    """游戏 / 导演模式的一次回合请求"""
+
+    instance_id: str = "default"
+    actor: str = "玩家"
+    mode: Literal["game", "director"] = "game"
+    text: str = ""
+    intent: Optional[Dict[str, Any]] = None
+    world_state: Optional[Dict[str, Any]] = None
+
+    max_turns: int = 1
+    max_retries: int = 1
+    max_cost: float = 1.0
+    max_duration_ms: int = 30000
+
+    enabled_extensions: Optional[List[str]] = None
+    memory_backend: Optional[Literal["fts", "vector", "hybrid"]] = None
+    idle_turns: int = 0
+    switch_mode_to: Optional[Literal["game", "director"]] = None
+    overrides: List[Dict[str, Any]] = Field(default_factory=list)
+    goal: str = ""
+    # 仅在本次运行时内存中生效，不回显、不落盘
+    provider_api_keys: Dict[str, str] = Field(default_factory=dict, exclude=True)
+
+
+class SaveCreateRequest(BaseModel):
+    instance_id: str = "default"
+    label: str = ""
+
+
+class ModeSwitchRequest(BaseModel):
+    instance_id: str = "default"
+    mode: Literal["game", "director"]
+
+
+class MemoryPatchRequest(BaseModel):
+    backend: Literal["fts", "vector", "hybrid"]
+
+
+class ExtensionResolveRequest(BaseModel):
+    instance_id: str = "default"
+    enabled: Optional[List[str]] = None

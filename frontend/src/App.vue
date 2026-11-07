@@ -6,6 +6,7 @@ import { useAssetStore } from './stores/assetStore'
 import { useGenerationStore } from './stores/generationStore'
 import { useTaskStore } from './stores/taskStore'
 import { useApi } from './composables/useApi'
+import GamePanel from './components/GamePanel.vue'
 
 import type { AgentConfig, AgentConfigInput, AgentMessage, AgentType } from './types/agent'
 import type { TaskConfig, TaskConfigInput } from './types/task'
@@ -23,7 +24,7 @@ const taskStore = useTaskStore()
 // ---- 状态 ----
 const serverOnline = ref(false)
 const activeTab = ref<'agents' | 'flow'>('agents')
-const rightTab = ref<'characters' | 'locations' | 'foreshadowings'>('characters')
+const rightTab = ref<'characters' | 'locations' | 'foreshadowings' | 'metrics'>('characters')
 const sceneBrief = ref('')
 const selectedChars = ref<string[]>([])
 
@@ -32,6 +33,7 @@ const showCreateProject = ref(false)
 const showCreateAgent = ref(false)
 const showCreateCharacter = ref(false)
 const showCreateLocation = ref(false)
+const showGame = ref(false)
 
 // 配置编辑：null 表示新建
 const editingAgentKey = ref<string | null>(null)
@@ -211,6 +213,122 @@ async function handleGenerate() {
     selectedChars.value,
   )
 }
+
+// ---- 小说导出（Markdown / TXT）----
+function handleExportNovel(format: 'md' | 'txt') {
+  if (!projectStore.currentProjectId) return
+  window.open(api.exportNovelUrl(projectStore.currentProjectId, format), '_blank')
+}
+
+// ---- 成本与质量指标 ----
+const metrics = ref<any | null>(null)
+const metricsLoading = ref(false)
+
+async function loadMetrics() {
+  if (!projectStore.currentProjectId) return
+  metricsLoading.value = true
+  try {
+    const res = await api.getMetrics(projectStore.currentProjectId)
+    metrics.value = res.data
+  } finally {
+    metricsLoading.value = false
+  }
+}
+
+function switchRightTab(tab: 'characters' | 'locations' | 'foreshadowings' | 'metrics') {
+  rightTab.value = tab
+  if (tab === 'metrics') loadMetrics()
+}
+
+function formatDuration(ms: number | null | undefined) {
+  if (ms == null) return '—'
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
+}
+
+// ---- 伏笔状态流转 ----
+const fsTransitionError = ref('')
+const FS_ACTIONS: Record<string, { action: string; label: string }[]> = {
+  planted: [
+    { action: 'reinforce', label: '强化' },
+    { action: 'activate', label: '激活' },
+    { action: 'subvert', label: '颠覆' },
+    { action: 'abandon', label: '废弃' },
+  ],
+  reinforced: [
+    { action: 'activate', label: '激活' },
+    { action: 'subvert', label: '颠覆' },
+    { action: 'abandon', label: '废弃' },
+  ],
+  activated: [
+    { action: 'resolve', label: '回收' },
+    { action: 'subvert', label: '颠覆' },
+  ],
+  resolved: [{ action: 'replant', label: '重埋' }],
+  subverted: [{ action: 'replant', label: '重埋' }],
+  abandoned: [{ action: 'replant', label: '重埋' }],
+}
+
+async function handleFsTransition(fid: string, action: string) {
+  if (!projectStore.currentProjectId) return
+  fsTransitionError.value = ''
+  try {
+    await assetStore.transitionForeshadowing(projectStore.currentProjectId, fid, action)
+  } catch (e: any) {
+    fsTransitionError.value = e?.response?.data?.detail || '流转失败'
+  }
+}
+
+// ---- Agent / Task 配置导入导出与跨项目复制 ----
+const configMsg = ref('')
+const configFileInput = ref<HTMLInputElement | null>(null)
+const importMode = ref<'merge' | 'overwrite'>('merge')
+const showCopyConfig = ref(false)
+const copySourceId = ref('')
+
+async function handleExportConfig() {
+  if (!projectStore.currentProjectId) return
+  const res = await api.exportConfig(projectStore.currentProjectId)
+  const blob = new Blob([JSON.stringify(res.data, null, 2)], { type: 'application/json' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = `storyloom-config-${projectStore.currentProjectId}.json`
+  a.click()
+  URL.revokeObjectURL(a.href)
+  configMsg.value = '配置已导出'
+}
+
+async function handleImportConfigFile(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0]
+  ;(e.target as HTMLInputElement).value = ''
+  if (!file || !projectStore.currentProjectId) return
+  try {
+    const data = JSON.parse(await file.text())
+    await api.importConfig(projectStore.currentProjectId, {
+      agents: data.agents ?? [],
+      tasks: data.tasks ?? [],
+      mode: importMode.value,
+    })
+    await agentStore.fetchAgents(currentProjectId.value)
+    await taskStore.fetchTasks(currentProjectId.value)
+    configMsg.value = `导入成功（${importMode.value === 'merge' ? '合并' : '覆盖'}）`
+  } catch (err: any) {
+    configMsg.value = err?.response?.data?.detail || '导入失败：文件格式不正确'
+  }
+}
+
+async function handleCopyConfig() {
+  if (!projectStore.currentProjectId || !copySourceId.value) return
+  try {
+    await api.copyConfigFrom(projectStore.currentProjectId, copySourceId.value, 'overwrite')
+    await agentStore.fetchAgents(currentProjectId.value)
+    await taskStore.fetchTasks(currentProjectId.value)
+    configMsg.value = `已从 ${copySourceId.value} 复制配置（覆盖）`
+    showCopyConfig.value = false
+    copySourceId.value = ''
+  } catch (err: any) {
+    configMsg.value = err?.response?.data?.detail || '复制失败'
+  }
+}
 </script>
 
 <template>
@@ -235,6 +353,19 @@ async function handleGenerate() {
       <button class="btn btn-secondary btn-sm" @click="showCreateProject = true">
         ＋ 新建项目
       </button>
+
+      <!-- 小说导出 -->
+      <template v-if="projectStore.currentProjectId">
+        <button class="btn btn-secondary btn-sm" title="进入游戏 / 扮演模式" @click="showGame = true">
+          🎮 游戏模式
+        </button>
+        <button class="btn btn-secondary btn-sm" title="导出整本小说为 Markdown" @click="handleExportNovel('md')">
+          📤 导出 MD
+        </button>
+        <button class="btn btn-secondary btn-sm" title="导出整本小说为纯文本" @click="handleExportNovel('txt')">
+          📤 导出 TXT
+        </button>
+      </template>
 
       <div style="flex:1"></div>
 
@@ -270,6 +401,26 @@ async function handleGenerate() {
               <button class="btn btn-sm btn-primary" @click="openCreateAgent" style="margin-left:auto;">
                 ＋ 添加
               </button>
+            </div>
+
+            <!-- 配置导入导出 / 跨项目复制工具栏 -->
+            <div style="display:flex;gap:6px;align-items:center;padding:6px 8px;border-bottom:1px solid var(--border);font-size:12px;flex-wrap:wrap;">
+              <button class="btn btn-sm btn-secondary" title="导出当前项目 Agent/Task 配置为 JSON" @click="handleExportConfig">
+                📤 导出配置
+              </button>
+              <button class="btn btn-sm btn-secondary" title="从 JSON 文件导入配置" @click="configFileInput?.click()">
+                📥 导入配置
+              </button>
+              <select v-model="importMode" title="导入模式"
+                style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:6px;padding:3px 6px;font-size:12px;">
+                <option value="merge">合并</option>
+                <option value="overwrite">覆盖</option>
+              </select>
+              <button class="btn btn-sm btn-secondary" title="从其他项目复制配置" @click="showCopyConfig = true">
+                📋 从项目复制
+              </button>
+              <input ref="configFileInput" type="file" accept=".json,application/json" style="display:none" @change="handleImportConfigFile" />
+              <span v-if="configMsg" style="color:var(--accent);">{{ configMsg }}</span>
             </div>
 
             <div
@@ -486,14 +637,17 @@ async function handleGenerate() {
     <aside class="sidebar-right">
       <template v-if="projectStore.currentProjectId">
         <div class="tabs">
-          <div class="tab" :class="{ active: rightTab === 'characters' }" @click="rightTab = 'characters'">
+          <div class="tab" :class="{ active: rightTab === 'characters' }" @click="switchRightTab('characters')">
             🎭 角色
           </div>
-          <div class="tab" :class="{ active: rightTab === 'locations' }" @click="rightTab = 'locations'">
+          <div class="tab" :class="{ active: rightTab === 'locations' }" @click="switchRightTab('locations')">
             📍 场景
           </div>
-          <div class="tab" :class="{ active: rightTab === 'foreshadowings' }" @click="rightTab = 'foreshadowings'">
+          <div class="tab" :class="{ active: rightTab === 'foreshadowings' }" @click="switchRightTab('foreshadowings')">
             📌 伏笔
+          </div>
+          <div class="tab" :class="{ active: rightTab === 'metrics' }" @click="switchRightTab('metrics')">
+            📊 指标
           </div>
         </div>
 
@@ -557,14 +711,106 @@ async function handleGenerate() {
               <div style="margin-top:4px;color:var(--accent);">
                 → {{ fs.target_revelation }}
               </div>
+              <!-- 状态流转按钮 -->
+              <div style="display:flex;gap:4px;margin-top:6px;flex-wrap:wrap;">
+                <button
+                  v-for="a in FS_ACTIONS[fs.status] || []"
+                  :key="a.action"
+                  class="btn btn-sm btn-secondary"
+                  style="font-size:11px;padding:2px 8px;"
+                  @click="handleFsTransition(fs.foreshadow_id, a.action)"
+                >{{ a.label }}</button>
+              </div>
+            </div>
+            <div v-if="fsTransitionError" style="color:var(--error);font-size:12px;padding:4px 8px;">
+              {{ fsTransitionError }}
             </div>
             <div v-if="assetStore.foreshadowings.length === 0" style="text-align:center;color:var(--text-secondary);padding:20px;font-size:13px;">
               暂无伏笔
             </div>
           </div>
         </template>
+
+        <!-- 成本与质量指标 -->
+        <template v-if="rightTab === 'metrics'">
+          <div class="panel">
+            <div class="panel-title">
+              📊 成本与质量
+              <button class="btn btn-sm btn-secondary" style="margin-left:auto;" @click="loadMetrics" :disabled="metricsLoading">
+                {{ metricsLoading ? '加载中…' : '↻ 刷新' }}
+              </button>
+            </div>
+            <div v-if="metrics" style="padding:8px;font-size:13px;">
+              <!-- 汇总 -->
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">
+                <div class="character-card" style="text-align:center;">
+                  <div style="font-size:20px;color:var(--accent);">{{ metrics.scene_count }}</div>
+                  <div style="font-size:11px;color:var(--text-secondary);">场景数</div>
+                </div>
+                <div class="character-card" style="text-align:center;">
+                  <div style="font-size:20px;color:var(--accent);">
+                    {{ metrics.avg_quality_score != null ? metrics.avg_quality_score.toFixed(2) : '—' }}
+                  </div>
+                  <div style="font-size:11px;color:var(--text-secondary);">平均质量分</div>
+                </div>
+                <div class="character-card" style="text-align:center;">
+                  <div style="font-size:20px;color:var(--accent);">{{ formatDuration(metrics.total_duration_ms) }}</div>
+                  <div style="font-size:11px;color:var(--text-secondary);">总耗时</div>
+                </div>
+                <div class="character-card" style="text-align:center;">
+                  <div style="font-size:20px;color:var(--accent);">{{ formatDuration(metrics.avg_duration_ms) }}</div>
+                  <div style="font-size:11px;color:var(--text-secondary);">平均耗时/场景</div>
+                </div>
+              </div>
+
+              <!-- 模型调用量 -->
+              <div style="font-size:12px;color:var(--text-secondary);margin-bottom:4px;">模型调用量</div>
+              <div v-for="(n, model) in metrics.model_calls" :key="model"
+                style="display:flex;justify-content:space-between;font-size:12px;padding:2px 0;">
+                <span>{{ model }}</span><span style="color:var(--accent);">{{ n }} 次</span>
+              </div>
+              <div v-if="!Object.keys(metrics.model_calls).length" style="font-size:12px;color:var(--text-secondary);">
+                尚无生成记录
+              </div>
+
+              <!-- Agent 调用量 -->
+              <div style="font-size:12px;color:var(--text-secondary);margin:10px 0 4px;">Agent 调用量</div>
+              <div v-for="(n, agent) in metrics.agent_calls" :key="agent"
+                style="display:flex;justify-content:space-between;font-size:12px;padding:2px 0;">
+                <span>{{ AGENT_TYPE_META[String(agent) as AgentType]?.icon || '⚙️' }} {{ agent }}</span>
+                <span style="color:var(--accent);">{{ n }} 次</span>
+              </div>
+
+              <!-- 每场景明细 -->
+              <div style="font-size:12px;color:var(--text-secondary);margin:10px 0 4px;">场景明细</div>
+              <div v-for="s in [...metrics.scenes].reverse()" :key="s.scene_id"
+                style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0;border-bottom:1px solid var(--border);">
+                <span>{{ s.scene_id }}<template v-if="s.chapter_id"> · {{ s.chapter_id }}</template></span>
+                <span>
+                  <span :style="{ color: s.quality_score != null && s.quality_score < 0.6 ? 'var(--error)' : 'var(--success)' }">
+                    {{ s.quality_score != null ? s.quality_score.toFixed(2) : '—' }}
+                  </span>
+                  · {{ formatDuration(s.duration_ms) }}
+                </span>
+              </div>
+              <div v-if="!metrics.scenes.length" style="font-size:12px;color:var(--text-secondary);">
+                尚无场景
+              </div>
+            </div>
+            <div v-else style="text-align:center;color:var(--text-secondary);padding:20px;font-size:13px;">
+              {{ metricsLoading ? '加载中…' : '点击刷新加载指标' }}
+            </div>
+          </div>
+        </template>
       </template>
     </aside>
+
+    <!-- ==================== 游戏 / 扮演模式 ==================== -->
+    <GamePanel
+      v-if="showGame"
+      :project-id="currentProjectId"
+      @close="showGame = false"
+    />
 
     <!-- ==================== 对话框：创建项目 ==================== -->
     <div v-if="showCreateProject" class="dialog-overlay" @click.self="showCreateProject = false">
@@ -714,6 +960,28 @@ async function handleGenerate() {
         <div class="form-actions">
           <button class="btn btn-secondary" @click="showCreateLocation = false">取消</button>
           <button class="btn btn-primary" @click="handleCreateLocation" :disabled="!newLoc.name">创建</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== 对话框：从项目复制配置 ==================== -->
+    <div v-if="showCopyConfig" class="dialog-overlay" @click.self="showCopyConfig = false">
+      <div class="dialog">
+        <h3>📋 从其他项目复制配置</h3>
+        <div class="form-group">
+          <label>源项目（将以覆盖方式复制其 Agent / Task 配置到当前项目）</label>
+          <select v-model="copySourceId">
+            <option value="" disabled>选择源项目...</option>
+            <option
+              v-for="p in projectStore.projects.filter(p => p.project_id !== projectStore.currentProjectId)"
+              :key="p.project_id"
+              :value="p.project_id"
+            >{{ p.title }} ({{ p.project_id }})</option>
+          </select>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-secondary" @click="showCopyConfig = false">取消</button>
+          <button class="btn btn-primary" @click="handleCopyConfig" :disabled="!copySourceId">复制（覆盖当前配置）</button>
         </div>
       </div>
     </div>

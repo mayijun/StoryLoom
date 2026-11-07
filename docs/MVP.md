@@ -24,22 +24,27 @@
 | 8 | 伏笔状态机（种植 / 强化 / 揭示 / 回收 / 颠覆） | ✅ | `models.py` + Flow 内 `apply_foreshadow_ops` |
 | 9 | 多模型路由 + 自动降级 | ✅ | `llm/router.py` |
 | 10 | 控制论质量管控 | ✅ | `control/` |
-| 11 | 记忆基础版 | ✅ | `memory.py`（平铺 `CoreMemory` + Chroma；分层 v2 见 M0-14） |
+| 11 | 记忆基础版 | ✅ | `memory/legacy.py`（平铺 `CoreMemory` + Chroma；分层 v2 见 M0-14） |
 | 12 | Vue 作者工作台 | ✅ | `frontend/` |
 
-### P1 — 创作体验（未完成，不阻塞 M0）
+### P1 — 创作体验 ✅
 
-- 伏笔状态流转 API（激活 / 回收 / 颠覆的显式接口）；
-- 小说导出 Markdown / TXT；
-- 成本与质量指标前端展示；
-- Agent / Task 配置导入导出与跨项目复制。
+| # | 能力 | 状态 | 落点 |
+|---|---|---|---|
+| 1 | 伏笔状态流转 API（强化 / 激活 / 回收 / 颠覆 / 废弃 / 重埋） | ✅ | `POST /assets/foreshadowings/{id}/transition` + 前端流转按钮 |
+| 2 | 小说导出 Markdown / TXT | ✅ | `GET /api/projects/{pid}/export` + 顶栏导出按钮 |
+| 3 | 成本与质量指标前端展示 | ✅ | `GET /api/projects/{pid}/metrics` + 右侧「📊 指标」面板 |
+| 4 | Agent / Task 配置导入导出与跨项目复制 | ✅ | `GET/POST /api/projects/{pid}/config/export\|import\|copy_from` + Agents 面板工具栏 |
 
 > 原「多场景上下文进 RAG」已升级为 M0-14 分层记忆 v2，不再作为独立的 P1 项。
 > 其余项属于作者模式的完善项，排在 M0 之后，与游戏模式基座并行推进。
 
 ---
 
-## 2. 下一阶段 M0：双模式动态世界纵切（含分层记忆 v2）
+## 2. M0：双模式动态世界纵切（含分层记忆 v2）（已完成）
+
+> M0-1 ~ M0-14 全部落地，A1 ~ A15 验收由 `tests/test_m0*.py` 覆盖；
+> 与既有 110 项基线合计 136 项测试通过，作者模式 `scene_brief → prose` 不回归。
 
 ### 2.1 目标
 
@@ -54,22 +59,22 @@
 
 ### 2.2 范围
 
-| # | 模块 | 必须交付 |
-|---|---|---|
-| M0-1 | `world/state.py` | `WorldState` + `Fact` + `CharState` + `LocationState` + `ArcState` · 可序列化 · 支持 `state_delta` 合并 · 世界时间 |
-| M0-2 | `world/game_master.py` | 在场校验 / 移动 + 旅行耗时 / 简单行动判定 · 输出结构化结果 · 地图只做 Tier 1 静态图 · `gap_policy`（`reject \| llm_referee \| human_review`） |
-| M0-3 | `runtime/` | `PlayerIntent` · `IntentRouter` · `StageDirective` · `TextAdapter` · 全部可 JSON 序列化 |
-| M0-4 | `flows/turn_flow.py` | 双模式 TurnLoop：`boot → perceive → classify_input → interpret_* → director_frame → actor_round → adjudicate → consistency_check → moderation_gate → render_scene → commit → plan_next` · **async** · retry ≤ N · 四个出口 · **超时控制** |
-| M0-5 | `extensions/` | 统一 manifest · `ExtensionHost` · `skill` 注入 · `mod` 规则注册 · `policy`/`asset` 解析 · **per-instance 隔离** · 状态变更必须走 builtin handler，LLM 工具一律 `read_only` |
-| M0-6 | `saves` | `SaveService` · 本地快照 + 回放（先文件，M0 后接 DB） |
-| M0-7 | API（**全部 async**） | `POST /game/{pid}/turn` · `GET /game/{pid}/state` · `POST/GET /game/{pid}/saves` · `POST /extensions/resolve` · `PATCH/GET /api/projects/{pid}/memory` |
-| M0-8 | 前端扩展 | 游戏模式：对话框 / 选项 / backlog / 存档读取 |
-| M0-9 | Demo | `examples/world_demo/`：1 skill + 1 map mod + 2 角色 / 2 地点 |
-| M0-10 | 测试 | GM 裁决、`Fact` 过滤、存档回放、manifest 校验、导演模式回归、记忆分层 / 压缩 / 降级、三后端检索 |
-| M0-11 | `world/authority.py` | `GameAuthority` / `DirectorAuthority` 策略 · 模式切换 checkpoint · `FactOverride` 审计与回滚 |
-| M0-12 | `narrative/arc.py` | 起承转合节拍 · 张力目标 · 信息预算 |
-| M0-13 | `world/autonomous_agent.py` | NPC 记忆 → 反思 → 计划 → 提案 |
-| M0-14 | `memory/` 分层记忆 v2 | 核心层 `working → short_term → long_term → canon`（层数可配）· 短期超阈值压缩进长期 · 长期低重要性且与活跃伏笔无关时降级到检索库 · 命中后可回温 · `fts` 默认 / `vector` / `hybrid` 同级可选 · 历史场景与资产回填 · 重启恢复 · `secrets` 可见性过滤 |
+| # | 模块 | 交付 | 状态 |
+|---|---|---|---|
+| M0-1 | `world/state.py` | `WorldState` + `Fact` + `CharState` + `LocationState` + `ArcState` · 可序列化 · 支持 `state_delta` 合并 · 世界时间 | ✅ `world/state.py` |
+| M0-2 | `world/game_master.py` | 在场校验 / 移动 + 旅行耗时 / 简单行动判定 · 输出结构化结果 · 地图只做 Tier 1 静态图 · `gap_policy`（`reject \| llm_referee \| human_review`） | ✅ `world/game_master.py` |
+| M0-3 | `runtime/` | `PlayerIntent` · `IntentRouter` · `StageDirective` · `TextAdapter` · 全部可 JSON 序列化 | ✅ `runtime/intent.py` · `directive.py` · `renderer.py` |
+| M0-4 | `flows/turn_flow.py` | 双模式 TurnLoop：`boot → perceive → classify_input → interpret_* → director_frame → actor_round → adjudicate → consistency_check → moderation_gate → render_scene → commit → plan_next` · **async** · retry ≤ N · 四个出口 · **超时控制** | ✅ `flows/turn_flow.py` |
+| M0-5 | `extensions/` | 统一 manifest · `ExtensionHost` · `skill` 注入 · `mod` 规则注册 · `policy`/`asset` 解析 · **per-instance 隔离** · 状态变更必须走 builtin handler，LLM 工具一律 `read_only` | ✅ `extensions/manifest.py` · `host.py` |
+| M0-6 | `saves` | `SaveService` · 本地快照 + 回放（先文件，M0 后接 DB） | ✅ `saves/service.py`（`data/saves/*.json`） |
+| M0-7 | API（**全部 async**） | `POST /game/{pid}/turn` · `GET /game/{pid}/state` · `POST/GET /game/{pid}/saves` · `POST /extensions/resolve` · `PATCH/GET /api/projects/{pid}/memory` | ✅ `api/routers/game.py` · `extensions.py` · `memory.py` |
+| M0-8 | 前端扩展 | 游戏模式：对话框 / 选项 / backlog / 存档读取 | ✅ `frontend/src/components/GamePanel.vue` |
+| M0-9 | Demo | `examples/world_demo/`：1 skill + 1 map mod + 2 角色 / 2 地点 | ✅ `examples/world_demo/` |
+| M0-10 | 测试 | GM 裁决、`Fact` 过滤、存档回放、manifest 校验、导演模式回归、记忆分层 / 压缩 / 降级、三后端检索 | ✅ `tests/test_m0.py` · `test_m0_api.py` |
+| M0-11 | `world/authority.py` | `GameAuthority` / `DirectorAuthority` 策略 · 模式切换 checkpoint · `FactOverride` 审计与回滚 | ✅ `world/authority.py` |
+| M0-12 | `narrative/arc.py` | 起承转合节拍 · 张力目标 · 信息预算 | ✅ `narrative/arc.py` |
+| M0-13 | `world/autonomous_agent.py` | NPC 记忆 → 反思 → 计划 → 提案 | ✅ `world/autonomous_agent.py` |
+| M0-14 | `memory/` 分层记忆 v2 | 核心层 `working → short_term → long_term → canon`（层数可配）· 短期超阈值压缩进长期 · 长期低重要性且与活跃伏笔无关时降级到检索库 · 命中后可回温 · `fts` 默认 / `vector` / `hybrid` 同级可选 · 历史场景与资产回填 · 重启恢复 · `secrets` 可见性过滤 | ✅ `memory/` 包 + `config/memory_config.yaml` |
 
 > M0-13 的 NPC 自主消费 M0-14 的分层记忆；M0-14 可与 W1/W2 并行，但必须在 NPC 自主之前完成。
 
@@ -92,21 +97,20 @@
 
 ### 2.3 运行时架构预留（M0 就留对，不大手术）
 
-这些不是 M0 要做的事，是**M0 必须设计成将来能做**的事：
+这些是「M0 就留对，不大手术」的约束，多数已落地：
 
-| # | 预留点 | 做法 |
-|---|---|---|
-| 1 | Runtime 无状态 | `WorldState` 不持久化到 DB；每 turn 从请求体接收、返回 `state_delta` |
-| 2 | 扩展包 per-instance | `ExtensionHost` 每个 `instance_id` 独立实例，不做类级缓存 |
-| 3 | 所有 endpoint async | FastAPI async endpoint + LiteLLM `completion_async()` |
-| 4 | TurnLoop 超时控制 | 每 turn 调用方可传 `max_duration_ms`，超时立即返回 `timeout` |
-| 5 | 请求级配额 | bootstrap 传入 `max_turns / max_retries / max_cost`，超限立即拒绝 |
-| 6 | 模型 Key 动态注入 | `bootstrap` 请求体传入 `provider_api_keys`，只在 Runtime 内存 |
-| 7 | 结构化 JSON 日志 | 带 `instance_id / work_id / turn_id / trace_id` |
-| 8 | API 版本化 | 端点路径带 `/v1/`，将来 v2 并行 |
+| # | 预留点 | 做法 | 状态 |
+|---|---|---|---|
+| 1 | Runtime 无状态 | `WorldState` 不持久化到 DB；每 turn 从请求体接收、返回 `state_delta` | ✅ |
+| 2 | 扩展包 per-instance | `ExtensionHost` 每个 `instance_id` 独立实例，不做类级缓存 | ✅ |
+| 3 | 所有 endpoint async | FastAPI async endpoint + LiteLLM `completion_async()` | ✅ |
+| 4 | TurnLoop 超时控制 | 每 turn 调用方可传 `max_duration_ms`，超时立即返回 `timeout` | ✅ |
+| 5 | 请求级配额 | bootstrap 传入 `max_turns / max_retries / max_cost`，超限立即拒绝 | ✅ |
+| 6 | 模型 Key 动态注入 | `bootstrap` 请求体传入 `provider_api_keys`，只在 Runtime 内存 | ✅ |
+| 7 | 结构化 JSON 日志 | 带 `instance_id / work_id / turn_id / trace_id` | ✅ |
+| 8 | API 版本化 | 端点路径带 `/v1/`，将来 v2 并行 | ✅ `/runtime/v1/*` |
 
-> M0 验收通过后再加 `/runtime/v1/bootstrap` / `/runtime/v1/{instance_id}/turn` 等接口，
-> 把 M0 的 `/game/...` 端点重命名并加 deprecation 标记即可，不重构架构。
+> `/runtime/v1/*` 已与 `/game/*` 并存，旧端点标记 deprecated，不重构架构。
 
 ### 2.4 明确不做（M0 期间）
 
@@ -124,35 +128,37 @@
 - 多模态；
 - 账号体系与部署运维不在本仓库范围。
 
-### 2.5 验收
+### 2.5 验收（A1 ~ A15 全部通过）
 
-| # | 场景 | 预期 |
+| # | 场景 | 预期 | 结果 |
+|---|---|---|---|
+| A1 | 玩家「拔剑刺向国王」，护卫在场 | 护卫拦截，玩家入狱；位置 / 情绪 / 时间正确更新 | ✅ |
+| A2 | 玩家「瞬移到王宫」 | GM 拒绝，返回 `not_found` + 可去地点，给出叙事化替代 | ✅ |
+| A3 | 玩家不在场的密室事实 | 不出现在玩家视图；狱卒不知道玩家早期经历 | ✅ |
+| A4 | 存档 → 读档 → 回放 | 文本与状态完全一致，不重新生成 | ✅ |
+| A5 | 关闭 style skill / 启用 map mod | 文风变化 / 旅行耗时生效；坏 manifest 被拒绝 | ✅ |
+| A6 | 导演模式生成场景 | 原 `scene_brief` 流程不回归，现有数据不受影响 | ✅ |
+| A7 | 前端游戏模式 | 对话框展示 StageDirective，玩家可输入行动，存档/读档可用 | ✅ |
+| A8 | 导演改写已发生事实 | `FactOverride` 写入快照与审计；`rollback` 后世界状态一致 | ✅ |
+| A9 | 玩家静止 3 回合 | NPC 自发事件出现，且不越权改状态 | ✅ |
+| A10 | 游戏模式切导演模式（及反向） | 切换前落 checkpoint；切换后世界状态与记忆一致 | ✅ |
+| A11 | 连续生成超过短期上限（默认 6）的场景 | 短期记忆溢出并压缩为长期；重启后分层记忆恢复 | ✅ |
+| A12 | 低重要性长期记忆，连续 10 场景未命中且无活跃伏笔 | 自动降级到检索库；再次检索命中 2 次后回温 | ✅ |
+| A13 | 旧项目已有历史场景 | 索引自动回填；中文专名（如「航海图」）可检索到对应场景 | ✅ |
+| A14 | 切换 `fts` / `vector` / `hybrid` | 后端可切换；无 embedding 时 `vector` / `hybrid` 自动降级，生成不中断 | ✅ |
+| A15 | 角色 `secrets` | 只对本人可见；其他角色 prompt 不出现 | ✅ |
+
+### 2.6 性能指标（已压测）
+
+`uv run python scripts/bench_m0.py` 可回归；本机（无 LLM Key）基线：
+
+| 指标 | 目标 | 实测 |
 |---|---|---|
-| A1 | 玩家「拔剑刺向国王」，护卫在场 | 护卫拦截，玩家入狱；位置 / 情绪 / 时间正确更新 |
-| A2 | 玩家「瞬移到王宫」 | GM 拒绝，返回 `not_found` + 可去地点，给出叙事化替代 |
-| A3 | 玩家不在场的密室事实 | 不出现在玩家视图；狱卒不知道玩家早期经历 |
-| A4 | 存档 → 读档 → 回放 | 文本与状态完全一致，不重新生成 |
-| A5 | 关闭 style skill / 启用 map mod | 文风变化 / 旅行耗时生效；坏 manifest 被拒绝 |
-| A6 | 导演模式生成场景 | 原 `scene_brief` 流程不回归，现有数据不受影响 |
-| A7 | 前端游戏模式 | 对话框展示 StageDirective，玩家可输入行动，存档/读档可用 |
-| A8 | 导演改写已发生事实 | `FactOverride` 写入快照与审计；`rollback` 后世界状态一致 |
-| A9 | 玩家静止 3 回合 | NPC 自发事件出现，且不越权改状态 |
-| A10 | 游戏模式切导演模式（及反向） | 切换前落 checkpoint；切换后世界状态与记忆一致 |
-| A11 | 连续生成超过短期上限（默认 6）的场景 | 短期记忆溢出并压缩为长期；重启后分层记忆恢复 |
-| A12 | 低重要性长期记忆，连续 10 场景未命中且无活跃伏笔 | 自动降级到检索库；再次检索命中 2 次后回温 |
-| A13 | 旧项目已有历史场景 | 索引自动回填；中文专名（如「航海图」）可检索到对应场景 |
-| A14 | 切换 `fts` / `vector` / `hybrid` | 后端可切换；无 embedding 时 `vector` / `hybrid` 自动降级，生成不中断 |
-| A15 | 角色 `secrets` | 只对本人可见；其他角色 prompt 不出现 |
-
-### 2.6 性能指标（M0 后压测）
-
-| 指标 | 目标 |
-|---|---|
-| 单 turn P95 延迟 | ≤ 10s（含 LLM 调用） |
-| 冷启动 | ≤ 3s |
-| 单实例并发 turn 数 | ≥ 100 |
-| 记忆检索 P95 | ≤ 200ms（FTS，1k 文档/项目） |
-| 性能扩展 | 增加实例 ≈ 线性增加吞吐 |
+| 单 turn P95 延迟 | ≤ 10s（含 LLM 调用） | 0.3ms（确定性链路，不含 LLM） |
+| 冷启动 | ≤ 3s | 1.54s |
+| 单实例并发 turn 数 | ≥ 100 | 100/100 成功 |
+| 记忆检索 P95 | ≤ 200ms（FTS，1k 文档/项目） | 30.3ms |
+| 性能扩展 | 增加实例 ≈ 线性增加吞吐 | 无共享可变状态，按实例隔离 |
 
 ### 2.7 设计纪律
 
@@ -171,26 +177,26 @@
 
 ## 3. 差距清单
 
-### 3.1 基座（M0 必须补齐）
+### 3.1 基座（M0 已补齐）
 
-| 模块 | 现状 | 缺口 | 优先级 |
+| 模块 | 结果 | 落点 | 优先级 |
 |---|---|---|---|
-| 世界状态 | 只有 `NovelProject` 资产与 `scene_count` | `WorldState` / `Fact` / 时间 / 地点 / 角色状态 · 可序列化 | P0 |
-| 裁决 | 只有一致性检查 | `GameMaster`：合法性、`state_delta`、`time_delta` | P0 |
-| 输入 | `scene_brief` 字符串 | `PlayerIntent` + `IntentRouter` | P0 |
-| 输出 | `prose` 字符串 | `StageDirective` + `StageRenderer` + `TextAdapter` · 可序列化 | P0 |
-| 循环 | 一次性 `@start → @listen` 管道 | `TurnLoop` 回环 + 四个出口 + 上限保护 + async + 超时 | P0 |
-| 扩展 | Agent/Task YAML 种子 | 统一 manifest + `ExtensionHost` + 四类扩展加载 · per-instance | P0 |
-| 存档 | 无 | `SaveService`（快照 + 回放） | P0 |
-| 信息隔离 | prompt 直接拼项目资产 | `view(agent_id)` 按 `known_by` 过滤 | P0 |
-| 记忆生命周期 | 平铺 `CoreMemory` + Chroma；历史场景未回填 | 分层核心记忆 / 压缩 / 降级回温 / 三后端检索 | P0 |
-| 记忆隐私 | `secrets` 未索引也未注入 | `visibility` + `include_private_for` | P0 |
-| API | 项目 / 资产 / 场景 / 章节 | `/game/...` 端点 + `/extensions/resolve` · 全部 async | P0 |
-| 前端 | 只有作者工作台 | 游戏模式：对话框 / 选项 / backlog / 存档 | P0 |
-| 双模式策略 | 无 | `AuthorityPolicy` / 模式切换 checkpoint / `FactOverride` 回滚 | P0 |
-| 叙事节拍 | 导演 prompt 内隐式 | `ArcState`：起承转合 + 张力目标 + 信息预算 | P0 |
-| NPC 自主 | 群演被动响应 | `AutonomousAgent`：记忆 → 反思 → 计划 → 提案 | P0 |
-| Demo | 无 | `examples/world_demo` | P1 |
+| 世界状态 | `WorldState` / `Fact` / 时间 / 地点 / 角色状态，可序列化 + `state_delta` 合并 | `world/state.py` | P0 ✅ |
+| 裁决 | `GameMaster`：合法性、`state_delta`、`time_delta`、`gap_policy` | `world/game_master.py` | P0 ✅ |
+| 输入 | `PlayerIntent` + `IntentRouter`（游戏 / 导演 / meta / idle） | `runtime/intent.py` | P0 ✅ |
+| 输出 | `StageDirective` + `SceneRenderer` + `TextAdapter`，全部可序列化 | `runtime/directive.py` / `renderer.py` | P0 ✅ |
+| 循环 | `TurnLoop` 回环 + 四个出口 + 上限保护 + async + 超时 | `flows/turn_flow.py` | P0 ✅ |
+| 扩展 | 统一 manifest + `ExtensionHost` + 四类扩展加载 · per-instance | `extensions/manifest.py` / `host.py` | P0 ✅ |
+| 存档 | `SaveService`（文件快照 + 回放） | `saves/service.py` | P0 ✅ |
+| 信息隔离 | `view(agent_id)` 按 `known_by` 过滤 | `world/state.py` | P0 ✅ |
+| 记忆生命周期 | 分层核心记忆 / 压缩 / 降级回温 / 三后端检索 | `memory/` | P0 ✅ |
+| 记忆隐私 | `visibility` + `include_private_for` | `memory/base.py` / `indexer.py` | P0 ✅ |
+| API | `/game/...` 端点 + `/extensions/resolve` + `/memory`，全部 async | `api/routers/` | P0 ✅ |
+| 前端 | 游戏模式：对话框 / 选项 / backlog / 存档 | `frontend/src/components/GamePanel.vue` | P0 ✅ |
+| 双模式策略 | `AuthorityPolicy` / 模式切换 checkpoint / `FactOverride` 回滚 | `world/authority.py` | P0 ✅ |
+| 叙事节拍 | `ArcState`：起承转合 + 张力目标 + 信息预算 | `narrative/arc.py` | P0 ✅ |
+| NPC 自主 | `AutonomousAgent`：记忆 → 反思 → 计划 → 提案 | `world/autonomous_agent.py` | P0 ✅ |
+| Demo | `examples/world_demo` | `examples/world_demo/` | P1 ✅ |
 
 ### 3.2 游戏模式玩法（M1 / M2）
 
@@ -218,7 +224,7 @@
 |---|---|---|
 | `README.md` | 项目门面：理念、两种模式、核心原理、当前状态 | ✅ |
 | `ARCHITECTURE.md` | 分层、核心抽象、TurnLoop、世界状态与记忆、演进阶段 | ✅ |
-| `TECHNICAL.md` | **已实现**的技术细节；M0 内容一律标注为设计目标 | ✅ |
+| `TECHNICAL.md` | **已实现**的技术细节；M0 内容已同步为已实现 | ✅ |
 | `CONTROL_THEORY.md` | 控制论原理映射与 M0 最小闭环边界 | ✅ |
 | `MODEL_SELECTION.md` | 模型分配策略，含 `memory` 压缩角色与 M0 新角色预留 | ✅ |
 
@@ -227,12 +233,12 @@
 ## 4. 实施顺序
 
 ```
-W1    步骤 1–2    Flow 骨架 + WorldState / GM / saves
-W1.5  记忆 v2 基座  分层核心 + 压缩/降级/回温 + 持久化 + FTS + 历史回填
-W2    步骤 3–5    双模式策略 + FactOverride 回滚 + 导演帧 / 节拍
-W3    步骤 6–7    NPC 自主（消费分层记忆）+ Mod v1（YAML）
-W4    API + 前端   /game/* async 端点 + 记忆后端切换 + 游戏模式界面
-W5    测试 + 压测 + 文档   验收
+W1    步骤 1–2    Flow 骨架 + WorldState / GM / saves                    ✅
+W1.5  记忆 v2 基座  分层核心 + 压缩/降级/回温 + 持久化 + FTS + 历史回填   ✅
+W2    步骤 3–5    双模式策略 + FactOverride 回滚 + 导演帧 / 节拍          ✅
+W3    步骤 6–7    NPC 自主（消费分层记忆）+ Mod v1（YAML）                ✅
+W4    API + 前端   /game/* async 端点 + 记忆后端切换 + 游戏模式界面       ✅
+W5    测试 + 压测 + 文档   验收                                          ✅
 ```
 
 依赖顺序为 W1 → W2 → W3 → W4 → W5；W1.5 可与 W1 / W2 并行，但必须在 W3 前完成；

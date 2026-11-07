@@ -1,0 +1,39 @@
+# 示例世界数据（2+ 角色 / 2+ 地点）
+# 不是 manifest：没有 kind 字段，扩展发现会跳过它。
+project:
+  project_id: world_demo
+  title: 雾港疑云
+  style: film_narrative
+  description: 一个用于验证双模式纵切的短篇世界。
+
+characters:
+  - name: 玩家
+    importance_tier: primary
+    persona: 刚回到雾港的陌生人，话少，习惯先看出口。
+    motivation: 查清父亲失踪的真相。
+    secrets: 你的真实身份是王室的私生子。
+  - name: 国王
+    importance_tier: primary
+    persona: 声音不高，但没人敢打断他。
+    motivation: 守住王位与港口。
+    secrets: 父亲失踪与你有关。
+  - name: 侍卫长
+    importance_tier: secondary
+    persona: 甲胄不离身，动作比说话快。
+    motivation: 保护国王。
+    secrets: 他认识你的父亲。
+  - name: 旅店老板
+    importance_tier: background
+    persona: 一边擦杯子一边观察客人。
+    motivation: 把小店开下去。
+    secrets: 航海图是他藏起来的。
+
+locations:
+  - name: 雾港旅店
+    description: 潮湿的木楼，墙上挂着一张被海雾打湿的航海图。
+  - name: 码头
+    description: 缆绳与鱼腥味，远处有雾笛。
+  - name: 王宫
+    description: 白色石阶一路铺到海崖之上。
+  - name: 地牢
+    description: 石壁渗水，只有一盏油灯。

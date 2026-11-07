@@ -6,7 +6,12 @@
 
 from fastapi import APIRouter, HTTPException
 
-from storyloom.api.schemas import CharacterCreate, LocationCreate
+from storyloom.api.schemas import (
+    CharacterCreate,
+    ForeshadowTransition,
+    ForeshadowingView,
+    LocationCreate,
+)
 from storyloom.api.engine import engine
 from storyloom.models import CharacterAsset, LocationAsset, Foreshadowing
 
@@ -95,6 +100,38 @@ async def list_foreshadowings(project_id: str):
     if not p:
         raise HTTPException(404)
     return [f.model_dump(mode="json") for f in p.foreshadowings]
+
+
+@router.post(
+    "/foreshadowings/{foreshadow_id}/transition",
+    response_model=ForeshadowingView,
+)
+async def transition_foreshadowing(
+    project_id: str, foreshadow_id: str, data: ForeshadowTransition
+):
+    """伏笔状态显式流转：reinforce / activate / resolve / subvert /
+    abandon / replant。非法流转返回 409。"""
+    if not engine.get_project(project_id):
+        raise HTTPException(404, "Project not found")
+    try:
+        fs = engine.transition_foreshadowing(
+            project_id, foreshadow_id, data.action
+        )
+    except KeyError:
+        raise HTTPException(404, f"伏笔不存在: {foreshadow_id}")
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+    return ForeshadowingView(
+        foreshadow_id=fs.foreshadow_id,
+        description=fs.description,
+        status=fs.status.value,
+        planted_in_scene=fs.planted_in_scene,
+        target_revelation=fs.target_revelation,
+        reinforcement_count=fs.reinforcement_count,
+        scenes_since_last_mention=fs.scenes_since_last_mention,
+        max_dormant_scenes=fs.max_dormant_scenes,
+        linked_characters=fs.linked_characters,
+    )
 
 
 @router.delete("/foreshadowings/{foreshadow_id}")

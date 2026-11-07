@@ -91,3 +91,17 @@ class ModelRegistry:
 
     def list_available(self) -> List[str]:
         return [k for k in self.models if self.is_available(k)]
+
+    def apply_provider_keys(self, keys: Dict[str, str]) -> int:
+        """把 bootstrap 传入的 API Key 注入内存注册表。
+
+        只改内存中的 ModelSpec，不写环境变量、不落盘；
+        返回受影响的模型数量。
+        """
+        applied = 0
+        for spec in self.models.values():
+            key = keys.get(spec.provider)
+            if key:
+                spec.api_key = key
+                applied += 1
+        return applied
