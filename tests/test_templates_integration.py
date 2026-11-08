@@ -64,8 +64,8 @@ def test_template_list_endpoint(client):
     templates = {t["template_id"]: t for t in resp.json()["templates"]}
     assert TEMPLATE_ID in templates
     tpl = templates[TEMPLATE_ID]
-    assert tpl["title"] == "系统逼我当仙尊"
-    assert tpl["style"] == "爽文仙侠 · 系统流"
+    assert tpl["title"] == "青云宗 · 签到有债"
+    assert tpl["style"] == "仙侠世界 · 现实后果 · 群像"
     assert tpl["description"]
 
 
@@ -73,7 +73,7 @@ def test_apply_template_creates_listed_project(client):
     view = _apply(client)
     pid = view["project_id"]
     assert pid.startswith(f"tpl_{TEMPLATE_ID}_")
-    assert view["title"] == "系统逼我当仙尊"
+    assert view["title"] == "青云宗 · 签到有债"
     assert view["character_count"] == 5
     assert view["foreshadowing_count"] == 3
 
@@ -93,7 +93,7 @@ def test_apply_template_with_custom_title(client):
     assert view["title"] == "我的试玩"
     detail = client.get(f"/api/projects/{view['project_id']}").json()
     assert detail["title"] == "我的试玩"
-    assert detail["style"] == "爽文仙侠 · 系统流"
+    assert detail["style"] == "仙侠世界 · 现实后果 · 群像"
 
 
 def test_apply_unknown_template_returns_404(client):
@@ -155,9 +155,9 @@ def test_applied_chapters_visible_and_ordered(client):
 
     chapters = client.get(f"/api/projects/{pid}/chapters").json()
     assert [c["title"] for c in chapters] == [
-        "签到荒古圣体",
-        "大比之日，全宗都在看我",
-        "师姐，我真不是隐藏大佬",
+        "杂役院的第一笔",
+        "大比之日，人人有账",
+        "第九格的债主",
     ]
     assert [c["position"] for c in chapters] == [0, 1, 2]
     assert all(c["status"] == "draft" for c in chapters)
@@ -165,7 +165,7 @@ def test_applied_chapters_visible_and_ordered(client):
     first = client.get(
         f"/api/projects/{pid}/chapters/{chapters[0]['chapter_id']}"
     ).json()
-    assert first["title"] == "签到荒古圣体"
+    assert first["title"] == "杂役院的第一笔"
 
 
 def test_foreshadow_transition_works_on_template_assets(client):
@@ -247,15 +247,15 @@ def test_export_uses_template_chapters(client):
     md = client.get(f"/api/projects/{pid}/export", params={"format": "md"})
     assert md.status_code == 200, md.text
     text = md.text
-    assert text.startswith("# 系统逼我当仙尊")
-    assert "> 文风：爽文仙侠 · 系统流" in text
-    assert "## 第1章 签到荒古圣体" in text
-    assert "## 第3章 师姐，我真不是隐藏大佬" in text
+    assert text.startswith("# 青云宗 · 签到有债")
+    assert "> 文风：仙侠世界 · 现实后果 · 群像" in text
+    assert "## 第1章 杂役院的第一笔" in text
+    assert "## 第3章 第九格的债主" in text
 
     txt = client.get(f"/api/projects/{pid}/export", params={"format": "txt"})
     assert txt.status_code == 200
     assert "## " not in txt.text
-    assert "签到荒古圣体" in txt.text
+    assert "杂役院的第一笔" in txt.text
 
 
 def test_memory_backfill_consumes_template_assets(client):

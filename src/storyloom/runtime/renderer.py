@@ -87,8 +87,14 @@ class SceneRenderer:
         adjudication: AdjudicationResult,
         actor: str = "玩家",
         context: str = "",
+        style: str = "",
+        description: str = "",
+        world_book: str = "",
     ) -> StageScene:
-        prose = await self._maybe_prose(adjudication, state_after, context)
+        prose = await self._maybe_prose(
+            adjudication, state_after, context,
+            style=style, description=description, world_book=world_book,
+        )
         return self._build(
             state_before, state_after, adjudication, actor, prose
         )
@@ -98,10 +104,16 @@ class SceneRenderer:
         adjudication: AdjudicationResult,
         state: WorldState,
         context: str = "",
+        style: str = "",
+        description: str = "",
+        world_book: str = "",
     ) -> Optional[str]:
         if self.prose_fn is None:
             return None
-        prompt = self.prompt_for(adjudication, state, context)
+        prompt = self.prompt_for(
+            adjudication, state, context,
+            style=style, description=description, world_book=world_book,
+        )
         try:
             result = await asyncio.to_thread(self.prose_fn, prompt, state)
             text = str(result).strip()
@@ -116,11 +128,24 @@ class SceneRenderer:
         adjudication: AdjudicationResult,
         state: WorldState,
         context: str = "",
+        style: str = "",
+        description: str = "",
+        world_book: str = "",
     ) -> str:
         lines = [
             "请把下面的世界事件改写成第二人称、克制而有画面感的中文叙事，"
             "不要新增未经裁决的事实，不要复述系统提示。",
+            "世界先于主角：NPC 有各自的目标与处境，不会因为玩家期待而改变；"
+            "不要替玩家做决定，不要自动让玩家成功。",
         ]
+        if style:
+            lines.append(f"文风：{style}")
+        if description:
+            lines.append(f"作品设定：{description}")
+        if world_book:
+            lines.append("")
+            lines.append("## 世界书（只作事实与线索，不要直接说出秘密）")
+            lines.append(world_book)
         if context:
             lines.append("")
             lines.append("## 你已知的剧情与设定（仅作上下文，不必逐字引用）")

@@ -106,6 +106,7 @@ class NovelProject(BaseModel):
     style: str                              # 整体文风基调
     characters: List[CharacterAsset]
     locations: List[LocationAsset]
+    description: str = ""                   # 作品简介 / 世界前提
     foreshadowings: List[Foreshadowing] = Field(default_factory=list)
     scene_count: int = 0                    # 已生成场景数（用于频率控制）
     surprise_cooldown: int = 3              # 每 N 个场景最多 1 次重大意外

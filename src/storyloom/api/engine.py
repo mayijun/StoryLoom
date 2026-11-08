@@ -157,6 +157,7 @@ class NovelEngine:
                 )
                 for l in repo.list_locations(meta["project_id"])
             ],
+            description=meta.get("description", "") or "",
         )
         project.scene_count = meta["scene_count"]
         project.foreshadowings = [

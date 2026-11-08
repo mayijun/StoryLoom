@@ -378,7 +378,14 @@ class TurnLoop:
                 part for part in (core, retrieved) if part
             )
         scene = await self.renderer.arender(
-            before, working_state, primary, actor, context=memory_context
+            before,
+            working_state,
+            primary,
+            actor,
+            context=memory_context,
+            style=self.project.style,
+            description=self.project.description,
+            world_book=self._world_context(working_state, actor),
         )
         trace.append({"stage": "render_scene", "chars": len(scene.text)})
 
@@ -443,6 +450,60 @@ class TurnLoop:
         )
 
     # ---------------- 各阶段实现 ----------------
+
+    def _world_context(self, state: WorldState, actor: str) -> str:
+        """构造渲染用世界书：只放可公开的事实与线索，不放 secrets / 真相。"""
+        project = self.project
+        lines = [f"作品：{project.title}"]
+        if project.style:
+            lines.append(f"文风：{project.style}")
+        if project.description:
+            lines.append(f"设定：{project.description}")
+
+        arc = state.arc
+        lines.append(
+            f"当前节拍：{arc.phase} / 张力目标 {arc.tension_target:.2f}"
+            f" / 剩余节拍 {arc.beats_remaining}"
+        )
+
+        if project.locations:
+            lines.append("地点：")
+            for loc in project.locations:
+                desc = f"：{loc.description}" if loc.description else ""
+                lines.append(f"- {loc.name}{desc}")
+
+        actor_state = state.characters.get(actor)
+        location = actor_state.location if actor_state else ""
+        present = set(state.characters_at(location)) if location else set()
+        if state.characters:
+            lines.append("角色（公开信息）：")
+            for char in state.characters.values():
+                profile = project.get_character(char.name)
+                motivation = profile.motivation if profile else ""
+                if char.name in present:
+                    head = f"- {char.name}（在场，{char.emotion}，{char.status}）"
+                else:
+                    head = f"- {char.name}（在{char.location}）"
+                lines.append(f"{head}目标：{motivation}" if motivation else head)
+
+        active = [
+            fs for fs in project.foreshadowings
+            if fs.status != "resolved"
+        ]
+        if active:
+            lines.append("待回收伏笔（只作线索，不得直接解释）：")
+            for fs in active:
+                lines.append(f"- {fs.description}")
+
+        if state.flags:
+            pairs = "，".join(f"{k}={v}" for k, v in state.flags.items())
+            lines.append(f"世界标记：{pairs}")
+        if state.relationships:
+            pairs = "，".join(
+                f"{k}={v}" for k, v in state.relationships.items()
+            )
+            lines.append(f"关系：{pairs}")
+        return "\n".join(lines)
 
     def _adjudicate(
         self,

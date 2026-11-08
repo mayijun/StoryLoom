@@ -386,6 +386,60 @@ function checkpointLabel(save: any) {
   return label || '系统日志'
 }
 
+// 世界优先的 HUD：叙事节拍、在场角色、真实世界状态（非伪数值）
+const ARC_PHASE_LABELS: Record<string, string> = {
+  setup: '起',
+  rising: '承',
+  climax: '转',
+  resolution: '合',
+}
+
+const arcInfo = computed(() => {
+  const arc = state.value?.arc
+  if (!arc) return null
+  return {
+    label: ARC_PHASE_LABELS[arc.phase] || arc.phase,
+    tension: Number(arc.tension_target ?? 0).toFixed(2),
+    beats: arc.beats_remaining ?? 0,
+  }
+})
+
+const presentCharacters = computed(() => {
+  const s = state.value
+  if (!s?.characters) return []
+  const loc = s.characters['玩家']?.location
+  return Object.values(s.characters)
+    .filter((c: any) => c.location === loc && c.status === 'active')
+    .map((c: any) => ({
+      name: c.name,
+      emotion: c.emotion || '平静',
+      health: c.health ?? 100,
+    }))
+})
+
+const flagEntries = computed(() => Object.entries(state.value?.flags || {}))
+const relationshipEntries = computed(() =>
+  Object.entries(state.value?.relationships || {}),
+)
+
+// 只展示对玩家有意义的舞台指令，状态栏/选项等已有单独位置
+function visibleDirectives(entry: any) {
+  return (entry.directives || []).filter(
+    (d: any) => !['say', 'end', 'show', 'choice'].includes(d.kind),
+  )
+}
+
+function directiveLabel(d: any) {
+  if (d.kind === 'move') {
+    return `移动 ${d.params?.from || '?'} → ${d.params?.to || '?'}`
+  }
+  if (d.kind === 'bg') return `场景 ${d.params?.location || ''}`
+  if (d.kind === 'effect' && d.params?.name === 'blocked') {
+    return `受阻 ${d.params?.error_code || ''}`
+  }
+  return d.kind
+}
+
 const statusBar = () => {
   const s = state.value
   if (!s) return '载入中…'
@@ -418,6 +472,16 @@ const statusBar = () => {
           <div v-for="(entry, index) in backlog" :key="index" class="entry" :class="entry.role">
             <div class="bubble">
               <div class="entry-text">{{ entry.text }}</div>
+              <div
+                v-if="visibleDirectives(entry).length"
+                class="directive-chips"
+              >
+                <span
+                  v-for="(directive, di) in visibleDirectives(entry)"
+                  :key="di"
+                  class="directive-chip"
+                >{{ directiveLabel(directive) }}</span>
+              </div>
               <!-- 每回合输出内嵌短/长期记忆快照（默认折叠） -->
               <details
                 v-if="entry.role === 'narrator' && entry.memory"
@@ -497,7 +561,11 @@ const statusBar = () => {
             class="choice"
             :disabled="busy"
             @click="choose(option)"
-          >{{ option.label }}</button>
+          >
+            <span class="choice-index">{{ (option.index ?? 0) + 1 }}</span>
+            <span v-if="option.action" class="choice-kind">{{ option.action }}</span>
+            {{ option.label }}
+          </button>
         </div>
 
         <div class="input-row">
@@ -536,6 +604,48 @@ const statusBar = () => {
             <div class="kv"><span>回合</span><b>{{ state?.turn ?? 0 }}</b></div>
             <div class="kv"><span>质量</span><b>{{ quality.toFixed(2) }}</b></div>
             <div class="kv"><span>等待</span><b>{{ idleTurns }} 回合</b></div>
+
+            <div v-if="arcInfo" class="hud-block">
+              <div class="side-label">叙事节拍</div>
+              <div class="hud-row">
+                <span>{{ arcInfo.label }}</span>
+                <span>张力 {{ arcInfo.tension }}</span>
+                <span>剩余 {{ arcInfo.beats }}</span>
+              </div>
+            </div>
+
+            <div v-if="presentCharacters.length" class="hud-block">
+              <div class="side-label">在场角色</div>
+              <div
+                v-for="character in presentCharacters"
+                :key="character.name"
+                class="hud-row"
+              >
+                <span>{{ character.name }}</span>
+                <span>{{ character.emotion }}</span>
+                <span>HP {{ character.health }}</span>
+              </div>
+            </div>
+
+            <div v-if="flagEntries.length" class="hud-block">
+              <div class="side-label">世界标记</div>
+              <div class="hud-row" v-for="[key, value] in flagEntries" :key="key">
+                <span>{{ key }}</span>
+                <span>{{ value }}</span>
+              </div>
+            </div>
+
+            <div v-if="relationshipEntries.length" class="hud-block">
+              <div class="side-label">关系</div>
+              <div
+                class="hud-row"
+                v-for="[key, value] in relationshipEntries"
+                :key="key"
+              >
+                <span>{{ key }}</span>
+                <span>{{ value }}</span>
+              </div>
+            </div>
 
             <div class="side-label" style="margin-top:8px;">检索方式</div>
             <select :value="backend" @change="changeBackend">
@@ -785,6 +895,31 @@ const statusBar = () => {
   cursor: pointer;
 }
 .choice:hover { border-color: var(--accent, #5b8def); }
+.choice-index {
+  display: inline-block;
+  min-width: 16px;
+  margin-right: 4px;
+  color: var(--text-secondary, #9aa0aa);
+  font-size: 11px;
+}
+.choice-kind {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: rgba(91, 141, 239, 0.14);
+  color: var(--accent, #5b8def);
+  font-size: 10px;
+}
+/* 舞台指令 chip：移动 / 场景 / 受阻 */
+.directive-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.directive-chip {
+  padding: 1px 6px;
+  border: 1px solid var(--border, #2a2d36);
+  border-radius: 10px;
+  color: var(--text-secondary, #9aa0aa);
+  font-size: 10px;
+}
 .input-row { display: flex; gap: 10px; align-items: stretch; }
 .input-row textarea {
   flex: 1;
@@ -837,6 +972,15 @@ const statusBar = () => {
 }
 .worldbook-items li { padding: 6px 0; }
 .kv { display: flex; justify-content: space-between; font-size: 12px; }
+/* 世界优先 HUD：节拍 / 在场角色 / 标记 / 关系 */
+.hud-block { margin-top: 8px; }
+.hud-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-primary, #e6e8ec);
+}
 .counts { display: flex; flex-wrap: wrap; gap: 6px; font-size: 11px; color: var(--text-secondary, #9aa0aa); }
 .ext-item { font-size: 12px; }
 .save-item {

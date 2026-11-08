@@ -79,8 +79,8 @@ def api_engine(tmp_path, monkeypatch):
 def test_builtin_template_is_registered():
     template = get_template(TEMPLATE_ID)
     assert template is not None
-    assert template.title == "系统逼我当仙尊"
-    assert template.style == "爽文仙侠 · 系统流"
+    assert template.title == "青云宗 · 签到有债"
+    assert template.style == "仙侠世界 · 现实后果 · 群像"
     assert template.description
 
 
@@ -111,7 +111,7 @@ def test_list_templates_returns_summaries():
     assert TEMPLATE_ID in by_id
     summary = by_id[TEMPLATE_ID]
     assert set(summary) == {"template_id", "title", "style", "description"}
-    assert summary["title"] == "系统逼我当仙尊"
+    assert summary["title"] == "青云宗 · 签到有债"
 
 
 def test_get_unknown_template_returns_none():
@@ -216,9 +216,9 @@ def test_apply_template_chapters_positions_and_status(repo):
 
     chapters = repo.list_chapters("pid_chapters")
     assert [c["title"] for c in chapters] == [
-        "签到荒古圣体",
-        "大比之日，全宗都在看我",
-        "师姐，我真不是隐藏大佬",
+        "杂役院的第一笔",
+        "大比之日，人人有账",
+        "第九格的债主",
     ]
     assert [c["position"] for c in chapters] == [0, 1, 2]
     assert all(c["status"] == "draft" for c in chapters)

@@ -112,6 +112,8 @@
 ## 文档
 
 - [架构总览](docs/ARCHITECTURE.md)
+- [设计整合与外部参考评估](docs/DESIGN_INTEGRATION.md)
+- [双模式 Demo 剧本 · 青云宗 · 签到有债](docs/DEMO_XIANXIA_SYSTEM.md)
 - [最小 MVP 与差距清单](docs/MVP.md)
 - [技术细节 / 安装 / API](docs/TECHNICAL.md)
 - [后端测试用例清单](docs/TESTS.md)
