@@ -7,6 +7,8 @@ import type { ProjectView, ProjectCreate, TemplateView } from '@/types/project'
 import type { CharacterAsset, LocationAsset, Foreshadowing } from '@/types/asset'
 import type { AgentConfig, AgentConfigInput } from '@/types/agent'
 import type { TaskConfig, TaskConfigInput } from '@/types/task'
+import type { ChapterView, ChapterCreate, ChapterUpdate } from '@/types/chapter'
+import type { SceneView, SceneUpdate } from '@/types/scene'
 
 const api = axios.create({
   baseURL: '/api',
@@ -91,6 +93,32 @@ export function useApi() {
       params: projectId ? { project_id: projectId } : undefined,
     })
 
+  // ---- Chapters ----
+  const listChapters = (pid: string) =>
+    api.get<ChapterView[]>(`/projects/${pid}/chapters`)
+  const createChapter = (pid: string, data: ChapterCreate) =>
+    api.post<ChapterView>(`/projects/${pid}/chapters`, data)
+  const updateChapter = (pid: string, cid: string, data: ChapterUpdate) =>
+    api.put<ChapterView>(`/projects/${pid}/chapters/${cid}`, data)
+  const deleteChapter = (pid: string, cid: string) =>
+    api.delete(`/projects/${pid}/chapters/${cid}`)
+
+  // ---- Scenes ----
+  const listScenes = (pid: string, chapterId?: string | null) =>
+    api.get<SceneView[]>(`/projects/${pid}/scenes`, {
+      params: chapterId === undefined ? {} : { chapter_id: chapterId ?? 'null' },
+    })
+  const getScene = (pid: string, sid: string) =>
+    api.get<SceneView>(`/projects/${pid}/scenes/${sid}`)
+  const updateScene = (pid: string, sid: string, data: SceneUpdate) =>
+    api.put<SceneView>(`/projects/${pid}/scenes/${sid}`, data)
+  const assignSceneToChapter = (pid: string, sid: string, chapterId: string | null) =>
+    api.patch<SceneView>(`/projects/${pid}/scenes/${sid}/chapter`, { chapter_id: chapterId })
+  const deleteScene = (pid: string, sid: string) =>
+    api.delete(`/projects/${pid}/scenes/${sid}`)
+  const regenerateScene = (pid: string, sid: string) =>
+    api.post(`/projects/${pid}/scenes/${sid}/regenerate`)
+
   // ---- Generation ----
   const generateScene = (data: any) => api.post('/generate/scene', data)
 
@@ -160,6 +188,8 @@ export function useApi() {
     exportConfig, importConfig, copyConfigFrom,
     listAgents, createAgent, updateAgent, deleteAgent, getAgentTypes,
     listTasks, createTask, updateTask, deleteTask,
+    listChapters, createChapter, updateChapter, deleteChapter,
+    listScenes, getScene, updateScene, assignSceneToChapter, deleteScene, regenerateScene,
     generateScene, generateSceneStream,
     playTurn, getGameState, createGameSave, listGameSaves, loadGameSave,
     switchGameMode, getMemory, patchMemory, resolveExtensions,

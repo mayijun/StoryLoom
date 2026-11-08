@@ -7,6 +7,7 @@ import { useGenerationStore } from './stores/generationStore'
 import { useTaskStore } from './stores/taskStore'
 import { useApi } from './composables/useApi'
 import GamePanel from './components/GamePanel.vue'
+import ChapterPanel from './components/ChapterPanel.vue'
 
 import type { AgentConfig, AgentConfigInput, AgentMessage, AgentType } from './types/agent'
 import type { TaskConfig, TaskConfigInput } from './types/task'
@@ -23,7 +24,7 @@ const taskStore = useTaskStore()
 
 // ---- 状态 ----
 const serverOnline = ref(false)
-const activeTab = ref<'agents' | 'flow'>('agents')
+const activeTab = ref<'chapters' | 'crew'>('chapters')
 const rightTab = ref<'characters' | 'locations' | 'foreshadowings' | 'metrics'>('characters')
 const sceneBrief = ref('')
 const selectedChars = ref<string[]>([])
@@ -380,7 +381,7 @@ async function handleCopyConfig() {
 </script>
 
 <template>
-  <div class="app-layout" :class="{ 'layout-wide': activeTab === 'agents' }">
+  <div class="app-layout" :class="{ 'layout-wide': activeTab === 'chapters' || activeTab === 'crew' }">
     <!-- ==================== 顶栏 ==================== -->
     <header class="app-header">
       <h1>🧵 织章 StoryLoom</h1>
@@ -432,16 +433,24 @@ async function handleCopyConfig() {
     <aside class="sidebar-left">
       <!-- 标签切换 -->
       <div class="tabs">
-        <div class="tab" :class="{ active: activeTab === 'agents' }" @click="activeTab = 'agents'">
-          🤖 Agents
+        <div class="tab" :class="{ active: activeTab === 'chapters' }" @click="activeTab = 'chapters'">
+          📚 章节
         </div>
-        <div class="tab" :class="{ active: activeTab === 'flow' }" @click="activeTab = 'flow'">
-          🔗 Flow
+        <div class="tab" :class="{ active: activeTab === 'crew' }" @click="activeTab = 'crew'">
+          ⚙️ 剧组
         </div>
       </div>
 
-      <!-- Agent / Task 双栏编辑 -->
-      <template v-if="activeTab === 'agents'">
+      <!-- 章节面板 -->
+      <template v-if="activeTab === 'chapters'">
+        <ChapterPanel :project-id="currentProjectId" v-if="projectStore.currentProjectId" />
+        <div v-else style="text-align:center;color:var(--text-secondary);padding:40px 20px;font-size:13px;">
+          请先选择或创建项目
+        </div>
+      </template>
+
+      <!-- 剧组配置：Agent / Task 双栏 + Flow 占位 -->
+      <template v-if="activeTab === 'crew'">
         <div class="config-columns">
           <!-- 左栏：Agents -->
           <div class="panel">
@@ -570,16 +579,14 @@ async function handleCopyConfig() {
             </div>
           </div>
         </div>
-      </template>
 
-      <!-- Flow编辑器预留 -->
-      <template v-if="activeTab === 'flow'">
-        <div class="flow-editor-placeholder">
+        <!-- Flow 可视化编辑器（占位，Phase 2 接入 Vue Flow） -->
+        <div class="flow-editor-placeholder" style="margin-top:12px;">
           <div class="icon">🔗</div>
           <div class="title">Flow 可视化编辑器</div>
           <div class="desc">
             Phase 2 将接入 Vue Flow<br>
-            支持拖曳式Agent工作流编排<br><br>
+            支持拖曳式 Agent 工作流编排<br><br>
             <small style="color:var(--accent);">
               数据结构已预留，兼容 Vue Flow 节点/边格式
             </small>
