@@ -13,6 +13,12 @@ const api = axios.create({
   timeout: 300000, // 生成场景可能需要较长时间
 })
 
+// 双模式运行时的稳定入口，后端前缀为 /runtime/v1（见 routers/runtime_v1.py）
+const runtime = axios.create({
+  baseURL: '/runtime/v1',
+  timeout: 300000,
+})
+
 export function useApi() {
 
   // ---- Projects ----
@@ -89,22 +95,22 @@ export function useApi() {
   const generateScene = (data: any) => api.post('/generate/scene', data)
 
   // ---- 双模式运行时（M0） ----
-  const playTurn = (pid: string, data: any) => api.post(`/game/${pid}/turn`, data)
+  const playTurn = (pid: string, data: any) => runtime.post(`/${pid}/turn`, data)
   const getGameState = (pid: string, instanceId = 'ui') =>
-    api.get(`/game/${pid}/state`, { params: { instance_id: instanceId } })
-  const createGameSave = (pid: string, data: any) => api.post(`/game/${pid}/saves`, data)
-  const listGameSaves = (pid: string) => api.get(`/game/${pid}/saves`)
+    runtime.get(`/${pid}/state`, { params: { instance_id: instanceId } })
+  const createGameSave = (pid: string, data: any) => runtime.post(`/${pid}/saves`, data)
+  const listGameSaves = (pid: string) => runtime.get(`/${pid}/saves`)
   const loadGameSave = (pid: string, saveId: string, instanceId = 'ui') =>
-    api.post(`/game/${pid}/saves/${saveId}/load`, null, {
+    runtime.post(`/${pid}/saves/${saveId}/load`, null, {
       params: { instance_id: instanceId },
     })
   const switchGameMode = (pid: string, mode: 'game' | 'director', instanceId = 'ui') =>
-    api.post(`/game/${pid}/mode`, { mode, instance_id: instanceId })
+    runtime.post(`/${pid}/mode`, { mode, instance_id: instanceId })
   const getMemory = (pid: string) => api.get(`/projects/${pid}/memory`)
   const patchMemory = (pid: string, backend: string) =>
     api.patch(`/projects/${pid}/memory`, { backend })
   const resolveExtensions = (instanceId = 'ui') =>
-    api.post('/extensions/resolve', { instance_id: instanceId })
+    runtime.post('/extensions/resolve', { instance_id: instanceId })
 
   // ---- SSE流式生成 ----
   const generateSceneStream = (data: any, onMessage: (event: any) => void) => {

@@ -299,6 +299,7 @@ class TurnLoop:
                     snapshot_id = self.save_service.save(
                         self.project.project_id, state, StageScene(),
                         label=f"before_override_{override.override_id}",
+                        kind="checkpoint",
                     ).save_id
                 state, record = authority.apply_override(
                     override, state, snapshot_id=snapshot_id

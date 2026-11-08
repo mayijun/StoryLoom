@@ -85,7 +85,10 @@ async def get_state(project_id: str, instance_id: str = "default"):
 async def create_save(project_id: str, data: SaveCreateRequest):
     _ensure_project(project_id)
     record = engine.create_save(
-        project_id, instance_id=data.instance_id, label=data.label
+        project_id,
+        instance_id=data.instance_id,
+        label=data.label,
+        backlog=data.backlog,
     )
     return record.model_dump(mode="json")
 

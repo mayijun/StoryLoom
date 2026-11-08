@@ -24,7 +24,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 class SaveRecord(BaseModel):
-    """一次完整快照：状态 + 已渲染结果（回放不重新生成）"""
+    """一次完整快照：状态 + 已渲染结果（回放不重新生成）
+
+    kind: story=玩家主动保存的故事存档；checkpoint=模式切换/改写前等系统检查点
+    """
 
     save_id: str
     project_id: str
@@ -34,9 +37,11 @@ class SaveRecord(BaseModel):
     )
     turn: int = 0
     mode: str = "game"
+    kind: str = "story"
     world_state: Dict[str, Any] = Field(default_factory=dict)
     directives: List[Dict[str, Any]] = Field(default_factory=list)
     text: str = ""
+    choices: List[Dict[str, Any]] = Field(default_factory=list)
     memory_snapshot: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
@@ -48,6 +53,14 @@ class SaveSummary(BaseModel):
     created_at: str
     turn: int
     mode: str
+    kind: str = "story"
+
+
+def _infer_kind(label: str) -> str:
+    """兼容旧存档：模式切换 / 改写前快照属于系统检查点"""
+    if label.startswith("switch_to_") or label.startswith("before_override_"):
+        return "checkpoint"
+    return "story"
 
 
 class SaveService:
@@ -80,6 +93,7 @@ class SaveService:
         label: str = "",
         memory_snapshot: Optional[Dict[str, Any]] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        kind: str = "story",
     ) -> SaveRecord:
         save_id = f"save_{state.turn}_{uuid.uuid4().hex[:6]}"
         record = SaveRecord(
@@ -88,9 +102,11 @@ class SaveService:
             label=label or f"第{state.turn}回合",
             turn=state.turn,
             mode=state.mode,
+            kind=kind,
             world_state=state.model_dump(mode="json"),
             directives=[d.model_dump(mode="json") for d in scene.directives],
             text=scene.text,
+            choices=[dict(c) for c in scene.choices],
             memory_snapshot=dict(memory_snapshot or {}),
             metadata=dict(metadata or {}),
         )
@@ -112,7 +128,10 @@ class SaveService:
         if not path.exists():
             raise KeyError(f"存档不存在: {save_id}")
         raw = json.loads(path.read_text(encoding="utf-8"))
-        return SaveRecord.model_validate(raw)
+        record = SaveRecord.model_validate(raw)
+        if "kind" not in raw:
+            record.kind = _infer_kind(record.label)
+        return record
 
     def list(self, project_id: str) -> List[SaveSummary]:
         directory = self._project_dir(project_id)
@@ -125,6 +144,7 @@ class SaveService:
                 record = SaveRecord.model_validate(raw)
             except Exception:
                 continue
+            kind = record.kind if "kind" in raw else _infer_kind(record.label)
             summaries.append(
                 SaveSummary(
                     save_id=record.save_id,
@@ -133,6 +153,7 @@ class SaveService:
                     created_at=record.created_at,
                     turn=record.turn,
                     mode=record.mode,
+                    kind=kind,
                 )
             )
         summaries.sort(key=lambda s: s.created_at, reverse=True)

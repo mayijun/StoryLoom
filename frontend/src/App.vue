@@ -34,6 +34,19 @@ const showCreateAgent = ref(false)
 const showCreateCharacter = ref(false)
 const showCreateLocation = ref(false)
 const showGame = ref(false)
+// 从游戏面板切回导演模式时的一次性提示
+const gameNotice = ref('')
+let gameNoticeTimer: number | undefined
+
+function handleGameClose(notice?: string) {
+  showGame.value = false
+  if (!notice) return
+  gameNotice.value = notice
+  window.clearTimeout(gameNoticeTimer)
+  gameNoticeTimer = window.setTimeout(() => {
+    gameNotice.value = ''
+  }, 3000)
+}
 
 // 配置编辑：null 表示新建
 const editingAgentKey = ref<string | null>(null)
@@ -386,6 +399,7 @@ async function handleCopyConfig() {
         <button class="btn btn-secondary btn-sm" title="进入游戏 / 扮演模式" @click="showGame = true">
           🎮 游戏模式
         </button>
+        <span v-if="gameNotice" style="font-size:12px;color:var(--accent);">{{ gameNotice }}</span>
         <button class="btn btn-secondary btn-sm" title="导出整本小说为 Markdown" @click="handleExportNovel('md')">
           📤 导出 MD
         </button>
@@ -836,7 +850,7 @@ async function handleCopyConfig() {
     <GamePanel
       v-if="showGame"
       :project-id="currentProjectId"
-      @close="showGame = false"
+      @close="handleGameClose"
     />
 
     <!-- ==================== 对话框：创建项目 ==================== -->

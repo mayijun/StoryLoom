@@ -46,7 +46,11 @@ class InterpretedIntent(BaseModel):
 _MOVE_VERBS = (
     "前往", "走到", "来到", "进入", "回到", "赶往", "动身去", "去", "到",
 )
-_ATTACK_WORDS = ("攻击", "袭击", "拔剑", "刺向", "刺杀", "杀死", "砍", "偷袭", "打")
+_ATTACK_WORDS = (
+    "攻击", "袭击", "拔剑", "刺向", "刺杀", "杀死", "砍", "偷袭",
+    "殴打", "打斗", "打倒", "打伤", "打架",
+)
+_REST_WORDS = ("打坐", "练功", "修炼", "冥想", "调息", "运功")
 _TALK_WORDS = ("交谈", "问", "说", "告诉", "喊道", "搭话", "回应")
 _LOOK_WORDS = ("观察", "环顾", "打量", "看看")
 _WAIT_WORDS = ("等待", "等等", "原地等", "休息")
@@ -161,6 +165,15 @@ class IntentRouter:
                     target=character,
                     detail=text,
                     source="player",
+                )
+            )
+            return proposals
+
+        # 「回到住处打坐练功」这类休整描述优先按等待处理，避免被移动动词抢走
+        if _contains_any(text, _REST_WORDS) and location is None:
+            proposals.append(
+                ActionProposal(
+                    actor=actor, kind="wait", detail=text, source="player"
                 )
             )
             return proposals

@@ -69,11 +69,11 @@ from storyloom.memory import CoreMemory, LayeredMemory, MemoryIndexer, SimpleRAG
 from storyloom.flows.scene_flow import SceneGenerationFlow
 from storyloom.flows.turn_flow import TurnBoot, TurnLoop, TurnResult
 from storyloom.extensions.host import ExtensionRegistry
-from storyloom.runtime.directive import StageScene
+from storyloom.runtime.directive import StageDirective, StageScene
 from storyloom.runtime.intent import PlayerIntent
 from storyloom.saves.service import SaveService, state_from_save
 from storyloom.world.authority import AuthorityController
-from storyloom.world.state import WorldState
+from storyloom.world.state import StateDelta, WorldState
 from storyloom.api.schemas import (
     GenerateSceneRequest, GenerationStepUpdate,
     GenerateSceneResponse, ForeshadowingView,
@@ -639,7 +639,7 @@ class NovelEngine:
 
         def checkpoint(world: WorldState, label: str) -> str:
             record = self.save_service.save(
-                project_id, world, StageScene(), label=label
+                project_id, world, StageScene(), label=label, kind="checkpoint"
             )
             return record.save_id
 
@@ -650,7 +650,11 @@ class NovelEngine:
         return new_state, checkpoint_id
 
     def create_save(
-        self, project_id: str, instance_id: str = "default", label: str = ""
+        self,
+        project_id: str,
+        instance_id: str = "default",
+        label: str = "",
+        backlog: list[dict] | None = None,
     ):
         state = self.get_game_state(project_id, instance_id)
         last = self.last_turns.get((project_id, instance_id))
@@ -662,6 +666,8 @@ class NovelEngine:
             scene,
             label=label,
             memory_snapshot=memory.snapshot() if memory else {},
+            metadata={"backlog": list(backlog or [])},
+            kind="story",
         )
 
     def list_saves(self, project_id: str):
@@ -679,6 +685,25 @@ class NovelEngine:
                 record.memory_snapshot,
                 repo=get_repository(),
             )
+        # 同步「最近一回合」，保证读档后立即存档能保存读档时点的场景与选项
+        scene = StageScene(
+            directives=[
+                StageDirective.model_validate(d) for d in record.directives
+            ],
+            text=record.text,
+            choices=[dict(c) for c in record.choices],
+        )
+        self.last_turns[(project_id, instance_id)] = TurnResult(
+            turn_id=f"loaded_{record.save_id}",
+            trace_id="",
+            project_id=project_id,
+            instance_id=instance_id,
+            state=state,
+            state_delta=StateDelta(),
+            scene=scene,
+            text=record.text,
+            choices=[dict(c) for c in record.choices],
+        )
         return record
 
     def memory_overview(self, project_id: str) -> dict:

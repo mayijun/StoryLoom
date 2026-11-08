@@ -445,6 +445,8 @@ class TurnRequest(BaseModel):
 class SaveCreateRequest(BaseModel):
     instance_id: str = "default"
     label: str = ""
+    # 存档时点的对话记录，读档时原样返回用于恢复上下文
+    backlog: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class ModeSwitchRequest(BaseModel):

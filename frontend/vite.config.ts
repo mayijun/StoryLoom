@@ -16,6 +16,11 @@ export default defineConfig({
         target: 'http://localhost:8000',
         changeOrigin: true,
       },
+      // 双模式运行时（游戏 / 导演）的版本化入口
+      '/runtime': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
     },
   },
 })

@@ -255,7 +255,11 @@ class GameMaster:
                 success=False,
                 outcome="not_found",
                 error_code="target_not_found",
-                narrative=f"没有找到目标：{target_name}",
+                narrative=(
+                    f"没有找到目标：{target_name}"
+                    if target_name
+                    else "你想出手，但身边没有可攻击的目标。"
+                ),
                 rule="existence",
             )
         if target.location != actor.location or target.status != "active":
