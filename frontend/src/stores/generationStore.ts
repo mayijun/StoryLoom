@@ -11,11 +11,14 @@ export const useGenerationStore = defineStore('generation', () => {
   const isGenerating = ref(false)
   const currentStep = ref('')
   const finalProse = ref('')
+  /** 主舞台当前编辑的场景；生成成功后自动指向新场景 */
+  const currentSceneId = ref<string | null>(null)
   const generationHistory = ref<{ scene_id: string; prose: string; timestamp: number }[]>([])
 
   async function generateScene(projectId: string, sceneBrief: string, presentChars: string[]) {
     isGenerating.value = true
     currentStep.value = '准备中...'
+    currentSceneId.value = null
     agentStore.clearMessages()
 
     try {
@@ -28,6 +31,7 @@ export const useGenerationStore = defineStore('generation', () => {
 
       const data = res.data
       finalProse.value = data.final_prose
+      currentSceneId.value = data.scene_id ?? null
 
       // 将步骤转为消息
       for (const step of data.steps) {
@@ -54,8 +58,21 @@ export const useGenerationStore = defineStore('generation', () => {
     }
   }
 
+  function setCurrentScene(sceneId: string | null) {
+    currentSceneId.value = sceneId
+  }
+
+  /** 切换项目时清空写作态，避免上一项目残留 */
+  function reset() {
+    isGenerating.value = false
+    currentStep.value = ''
+    finalProse.value = ''
+    currentSceneId.value = null
+    generationHistory.value = []
+  }
+
   return {
-    isGenerating, currentStep, finalProse, generationHistory,
-    generateScene,
+    isGenerating, currentStep, finalProse, currentSceneId, generationHistory,
+    generateScene, setCurrentScene, reset,
   }
 })

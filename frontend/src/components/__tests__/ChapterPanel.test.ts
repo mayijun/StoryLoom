@@ -149,28 +149,43 @@ describe('ChapterPanel', () => {
     expect(apiMock.deleteChapter).toHaveBeenCalledWith('p1', 'c1')
   })
 
-  it('查看正文：只读展示，点击编辑后可保存', async () => {
-    apiMock.updateScene.mockResolvedValue({ data: scene('s3', null) })
+  it('点击正文：通知主舞台切换到该场景', async () => {
     const wrapper = await mountPanel()
 
-    // 未归属场景第一个操作按钮为「正文」
     await buttonByText(wrapper, '正文').trigger('click')
+
+    expect(wrapper.emitted('select-scene')?.[0]).toEqual(['s3'])
+  })
+
+  it('点击章节标题：通知主舞台设置目标章节', async () => {
+    const wrapper = await mountPanel()
+
+    await wrapper.find('.chapter-head').trigger('click')
+
+    expect(wrapper.emitted('select-chapter')?.[0]).toEqual(['c1'])
+  })
+
+  it('重跑需确认，确认后调用重跑接口', async () => {
+    apiMock.regenerateScene.mockResolvedValue({ data: { scene_id: 's3' } })
+    apiMock.getScene.mockResolvedValue({ data: scene('s3', null, { prose: '重跑正文' }) })
+    const wrapper = await mountPanel()
+
+    const regenBtn = wrapper
+      .find('.unassigned-block')
+      .findAll('button')
+      .find(b => b.text().includes('重跑'))!
+    await regenBtn.trigger('click')
     await flushPromises()
 
-    const dialog = wrapper.find('.prose-dialog')
-    const textarea = dialog.find('textarea')
-    expect((textarea.element as HTMLTextAreaElement).value).toBe('prose-s3')
-    expect(textarea.attributes('readonly')).toBeDefined()
+    expect(apiMock.regenerateScene).not.toHaveBeenCalled()
+    const dialog = wrapper.find('.confirm-dialog')
+    expect(dialog.exists()).toBe(true)
 
-    const editBtn = dialog.findAll('button').find(b => b.text() === '编辑')!
-    await editBtn.trigger('click')
-    await textarea.setValue('修改后的正文')
-
-    const saveBtn = dialog.findAll('button').find(b => b.text() === '保存')!
-    await saveBtn.trigger('click')
+    const confirmBtn = dialog.findAll('button').find(b => b.text() === '重跑')!
+    await confirmBtn.trigger('click')
     await flushPromises()
 
-    expect(apiMock.updateScene).toHaveBeenCalledWith('p1', 's3', { prose: '修改后的正文' })
+    expect(apiMock.regenerateScene).toHaveBeenCalledWith('p1', 's3')
   })
 
   it('删除场景需确认，确认后调用删除接口', async () => {

@@ -5,13 +5,17 @@ import { useAgentStore } from './stores/agentStore'
 import { useAssetStore } from './stores/assetStore'
 import { useGenerationStore } from './stores/generationStore'
 import { useTaskStore } from './stores/taskStore'
+import { useChapterStore } from './stores/chapterStore'
+import { useSceneStore } from './stores/sceneStore'
 import { useApi } from './composables/useApi'
 import GamePanel from './components/GamePanel.vue'
 import ChapterPanel from './components/ChapterPanel.vue'
+import ConfirmDialog from './components/ConfirmDialog.vue'
 
 import type { AgentConfig, AgentConfigInput, AgentMessage, AgentType } from './types/agent'
 import type { TaskConfig, TaskConfigInput } from './types/task'
 import type { CharacterAsset } from './types/asset'
+import type { SceneView } from './types/scene'
 import { AGENT_TYPE_META } from './types/agent'
 import { FORESHADOW_STATUS_META } from './types/asset'
 
@@ -21,6 +25,8 @@ const agentStore = useAgentStore()
 const assetStore = useAssetStore()
 const genStore = useGenerationStore()
 const taskStore = useTaskStore()
+const chapterStore = useChapterStore()
+const sceneStore = useSceneStore()
 
 // ---- 状态 ----
 const serverOnline = ref(false)
@@ -28,6 +34,191 @@ const activeTab = ref<'chapters' | 'crew'>('chapters')
 const rightTab = ref<'characters' | 'locations' | 'foreshadowings' | 'metrics'>('characters')
 const sceneBrief = ref('')
 const selectedChars = ref<string[]>([])
+
+// ---- 写作工作台（主舞台）----
+type SaveState = 'idle' | 'unsaved' | 'saving' | 'saved' | 'error'
+const SAVE_STATE_LABEL: Record<SaveState, string> = {
+  idle: '',
+  unsaved: '未保存',
+  saving: '保存中…',
+  saved: '已保存',
+  error: '保存失败',
+}
+const targetChapterId = ref('') // '' 表示不归属
+const editorSceneId = ref<string | null>(null)
+const editorProse = ref('')
+const lastSavedProse = ref('')
+const saveState = ref<SaveState>('idle')
+const showProcess = ref(false)
+let saveTimer: number | undefined
+
+const currentScene = computed<SceneView | null>(() =>
+  editorSceneId.value
+    ? sceneStore.scenes.find(s => s.scene_id === editorSceneId.value) ?? null
+    : null,
+)
+
+const wordCount = computed(() => editorProse.value.replace(/\s/g, '').length)
+
+const currentSceneMeta = computed(() => {
+  const s = currentScene.value
+  if (!s) return ''
+  const ch = s.chapter_id
+    ? chapterStore.chapters.find(c => c.chapter_id === s.chapter_id)
+    : null
+  const parts = [ch ? ch.title : '未归属']
+  if (s.created_at) {
+    const d = new Date(s.created_at)
+    if (!Number.isNaN(d.getTime())) parts.push(d.toLocaleString())
+  }
+  return parts.join(' · ')
+})
+
+const canGenerate = computed(
+  () => !genStore.isGenerating && !!sceneBrief.value.trim() && selectedChars.value.length > 0,
+)
+
+/** 生成按钮不可用时说明原因，而不是只变灰 */
+const generationHint = computed(() => {
+  if (genStore.isGenerating) return ''
+  if (assetStore.characters.length === 0) return '请先在右侧「角色」中添加角色'
+  if (!sceneBrief.value.trim()) return '请先填写场景 brief'
+  if (selectedChars.value.length === 0) return '请选择至少一位在场角色'
+  return ''
+})
+
+/** 统一确认弹窗 */
+const confirmState = ref<{
+  title: string
+  message: string
+  confirmText: string
+  onConfirm: () => void | Promise<void>
+} | null>(null)
+
+function askConfirm(opts: {
+  title: string
+  message: string
+  confirmText?: string
+  onConfirm: () => void | Promise<void>
+}) {
+  confirmState.value = { confirmText: '确定', ...opts }
+}
+
+async function runConfirm() {
+  const action = confirmState.value?.onConfirm
+  confirmState.value = null
+  await action?.()
+}
+
+function resetWritingState() {
+  if (saveTimer) {
+    window.clearTimeout(saveTimer)
+    saveTimer = undefined
+  }
+  sceneBrief.value = ''
+  selectedChars.value = []
+  targetChapterId.value = ''
+  editorSceneId.value = null
+  editorProse.value = ''
+  lastSavedProse.value = ''
+  saveState.value = 'idle'
+  showProcess.value = false
+  genStore.reset()
+  agentStore.clearMessages()
+}
+
+function setEditorScene(scene: SceneView | null) {
+  if (saveTimer) {
+    window.clearTimeout(saveTimer)
+    saveTimer = undefined
+  }
+  editorSceneId.value = scene?.scene_id ?? null
+  editorProse.value = scene?.prose ?? ''
+  lastSavedProse.value = scene?.prose ?? ''
+  saveState.value = scene ? 'saved' : 'idle'
+  if (scene) targetChapterId.value = scene.chapter_id ?? ''
+  genStore.setCurrentScene(scene?.scene_id ?? null)
+}
+
+async function saveProseNow() {
+  if (!editorSceneId.value) return
+  if (editorProse.value === lastSavedProse.value) {
+    if (saveState.value === 'unsaved') saveState.value = 'saved'
+    return
+  }
+  const pid = projectStore.currentProjectId
+  if (!pid) return
+  saveState.value = 'saving'
+  try {
+    await sceneStore.updateSceneProse(pid, editorSceneId.value, editorProse.value)
+    lastSavedProse.value = editorProse.value
+    saveState.value = 'saved'
+  } catch {
+    saveState.value = 'error'
+  }
+}
+
+/** 输入后 800ms 防抖保存 */
+function handleProseInput() {
+  saveState.value = 'unsaved'
+  if (saveTimer) window.clearTimeout(saveTimer)
+  saveTimer = window.setTimeout(() => {
+    saveTimer = undefined
+    void saveProseNow()
+  }, 800)
+}
+
+async function flushSave() {
+  if (saveTimer) {
+    window.clearTimeout(saveTimer)
+    saveTimer = undefined
+  }
+  await saveProseNow()
+}
+
+async function loadWritingData(pid: string) {
+  await Promise.all([chapterStore.fetchChapters(pid), sceneStore.fetchScenes(pid)])
+}
+
+function sceneLabel(s: SceneView) {
+  const ch = s.chapter_id
+    ? chapterStore.chapters.find(c => c.chapter_id === s.chapter_id)
+    : null
+  const brief = (s.brief || '无 brief').replace(/\s+/g, ' ').slice(0, 18)
+  return `${ch ? ch.title : '未归属'} · ${brief}`
+}
+
+async function handleSceneSwitch(sceneId: string) {
+  await flushSave()
+  if (!sceneId) {
+    setEditorScene(null)
+    return
+  }
+  const scene = sceneStore.scenes.find(s => s.scene_id === sceneId)
+  if (scene) setEditorScene(scene)
+}
+
+async function handleSelectSceneFromPanel(sceneId: string) {
+  await flushSave()
+  const scene = sceneStore.scenes.find(s => s.scene_id === sceneId)
+  if (scene) setEditorScene(scene)
+}
+
+/** 目标章节变化：有当前场景时同步移动归属 */
+async function handleTargetChapterChange() {
+  const pid = projectStore.currentProjectId
+  if (!pid || !editorSceneId.value) return
+  const updated = await sceneStore.assignScene(
+    pid,
+    editorSceneId.value,
+    targetChapterId.value || null,
+  )
+  if (updated) setEditorScene(updated)
+}
+
+function handleHintClick() {
+  if (assetStore.characters.length === 0) switchRightTab('characters')
+}
 
 // 对话框状态
 const showCreateProject = ref(false)
@@ -98,6 +289,9 @@ onMounted(async () => {
     await projectStore.fetchTemplates()
     await agentStore.fetchAgents(currentProjectId.value)
     await taskStore.fetchTasks(currentProjectId.value)
+    if (projectStore.currentProjectId) {
+      await loadWritingData(projectStore.currentProjectId)
+    }
   } catch {
     serverOnline.value = false
   }
@@ -114,7 +308,12 @@ async function handleCreateProject() {
   newProject.value = { title: '', style: '' }
   selectedTemplateId.value = ''
   if (projectStore.currentProjectId) {
-    await assetStore.fetchAll(projectStore.currentProjectId)
+    await flushSave()
+    resetWritingState()
+    await Promise.all([
+      assetStore.fetchAll(projectStore.currentProjectId),
+      loadWritingData(projectStore.currentProjectId),
+    ])
   }
 }
 
@@ -138,12 +337,34 @@ function onSelectTemplate(tid: string) {
 }
 
 async function handleSelectProject(id: string) {
+  if (!id || id === projectStore.currentProjectId) return
+  // 先保存当前场景，再切换，避免丢失编辑
+  await flushSave()
+  resetWritingState()
   await projectStore.selectProject(id)
   await assetStore.fetchAll(id)
   // 切换项目后，Agent / Task 配置也要切换到该项目自己的
   await agentStore.fetchAgents(currentProjectId.value)
   await taskStore.fetchTasks(currentProjectId.value)
-  selectedChars.value = []
+  await loadWritingData(id)
+}
+
+function handleRemoveAgent(key: string, role: string) {
+  askConfirm({
+    title: '删除 Agent',
+    message: `确定删除「${role}」（${key}）？删除后无法恢复。`,
+    confirmText: '删除',
+    onConfirm: () => agentStore.removeAgent(key, currentProjectId.value),
+  })
+}
+
+function handleRemoveTask(key: string) {
+  askConfirm({
+    title: '删除 Task',
+    message: `确定删除 Task「${key}」？删除后无法恢复。`,
+    confirmText: '删除',
+    onConfirm: () => taskStore.removeTask(key, currentProjectId.value),
+  })
 }
 
 function openCreateAgent() {
@@ -255,12 +476,30 @@ function toggleCharSelection(name: string) {
 }
 
 async function handleGenerate() {
-  if (!projectStore.currentProjectId || !sceneBrief.value.trim()) return
-  await genStore.generateScene(
-    projectStore.currentProjectId,
-    sceneBrief.value,
-    selectedChars.value,
-  )
+  if (!projectStore.currentProjectId || !canGenerate.value) return
+  const pid = projectStore.currentProjectId
+  await genStore.generateScene(pid, sceneBrief.value, selectedChars.value)
+
+  const sid = genStore.currentSceneId
+  if (!sid) return
+
+  // 刷新场景列表，让新场景进入章节树 / 未归属区
+  await sceneStore.fetchScenes(pid)
+  if (targetChapterId.value) {
+    await sceneStore.assignScene(pid, sid, targetChapterId.value)
+  }
+
+  const scene = sceneStore.scenes.find(s => s.scene_id === sid)
+  if (scene) {
+    setEditorScene(scene)
+  } else {
+    editorSceneId.value = sid
+    editorProse.value = genStore.finalProse
+    lastSavedProse.value = genStore.finalProse
+    saveState.value = 'saved'
+    genStore.setCurrentScene(sid)
+  }
+  showProcess.value = false
 }
 
 // ---- 小说导出（Markdown / TXT）----
@@ -365,7 +604,18 @@ async function handleImportConfigFile(e: Event) {
   }
 }
 
-async function handleCopyConfig() {
+function handleCopyConfig() {
+  if (!projectStore.currentProjectId || !copySourceId.value) return
+  const source = copySourceId.value
+  askConfirm({
+    title: '覆盖当前配置',
+    message: `将用项目「${source}」的 Agent / Task 配置覆盖当前项目，现有配置会被替换。确定继续？`,
+    confirmText: '覆盖',
+    onConfirm: doCopyConfig,
+  })
+}
+
+async function doCopyConfig() {
   if (!projectStore.currentProjectId || !copySourceId.value) return
   try {
     await api.copyConfigFrom(projectStore.currentProjectId, copySourceId.value, 'overwrite')
@@ -443,7 +693,12 @@ async function handleCopyConfig() {
 
       <!-- 章节面板 -->
       <template v-if="activeTab === 'chapters'">
-        <ChapterPanel :project-id="currentProjectId" v-if="projectStore.currentProjectId" />
+        <ChapterPanel
+          v-if="projectStore.currentProjectId"
+          :project-id="currentProjectId"
+          @select-scene="handleSelectSceneFromPanel"
+          @select-chapter="targetChapterId = $event"
+        />
         <div v-else style="text-align:center;color:var(--text-secondary);padding:40px 20px;font-size:13px;">
           请先选择或创建项目
         </div>
@@ -509,7 +764,7 @@ async function handleCopyConfig() {
               ></div>
               <button
                 class="btn btn-icon btn-sm"
-                @click.stop="agentStore.removeAgent(agent.key, currentProjectId)"
+                @click.stop="handleRemoveAgent(agent.key, agent.role)"
                 title="删除"
                 style="color:var(--error);background:transparent;border:none;"
               >✕</button>
@@ -551,7 +806,7 @@ async function handleCopyConfig() {
               </div>
               <button
                 class="btn btn-icon btn-sm"
-                @click.stop="taskStore.removeTask(task.key, currentProjectId)"
+                @click.stop="handleRemoveTask(task.key)"
                 title="删除"
                 style="color:var(--error);background:transparent;border:none;"
               >✕</button>
@@ -595,57 +850,99 @@ async function handleCopyConfig() {
       </template>
     </aside>
 
-    <!-- ==================== 主内容区：场景剧场 ==================== -->
+    <!-- ==================== 主内容区：写作工作台 ==================== -->
     <main class="main-content">
       <template v-if="projectStore.currentProjectId">
         <div class="scene-theater">
-          <!-- 消息流 -->
-          <div class="scene-messages">
-            <!-- 系统消息 -->
-            <div v-if="agentStore.messages.length === 0 && !genStore.finalProse"
-              style="text-align:center;color:var(--text-secondary);padding:60px 20px;">
-              <div style="font-size:48px;margin-bottom:16px;">🎭</div>
-              <div style="font-size:16px;margin-bottom:8px;">准备好创作了吗？</div>
+          <!-- 场景头：目标章节 / 当前场景 / 字数 / 保存状态 -->
+          <div class="scene-header">
+            <label class="scene-field">
+              <span>目标章节</span>
+              <select v-model="targetChapterId" @change="handleTargetChapterChange">
+                <option value="">不归属</option>
+                <option v-for="ch in chapterStore.chapters" :key="ch.chapter_id" :value="ch.chapter_id">
+                  {{ ch.title }}
+                </option>
+              </select>
+            </label>
+
+            <label class="scene-field">
+              <span>当前场景</span>
+              <select
+                :value="editorSceneId || ''"
+                @change="handleSceneSwitch(($event.target as HTMLSelectElement).value)"
+              >
+                <option value="">未选择场景</option>
+                <option v-for="s in sceneStore.scenes" :key="s.scene_id" :value="s.scene_id">
+                  {{ sceneLabel(s) }}
+                </option>
+              </select>
+            </label>
+
+            <div class="scene-header-meta">
+              <span v-if="currentSceneMeta">{{ currentSceneMeta }}</span>
+              <span v-if="editorSceneId" class="word-count">{{ wordCount }} 字</span>
+              <span
+                v-if="editorSceneId && SAVE_STATE_LABEL[saveState]"
+                class="save-status"
+                :class="saveState"
+              >{{ SAVE_STATE_LABEL[saveState] }}</span>
+            </div>
+          </div>
+
+          <!-- 正文编辑区：生成后可直接编辑，失焦 / 防抖自动保存 -->
+          <div class="prose-editor-area">
+            <div v-if="!editorSceneId" class="editor-empty">
+              <div style="font-size:48px;margin-bottom:12px;">🖋️</div>
+              <div style="font-size:16px;margin-bottom:8px;">还没有正在编辑的场景</div>
               <div style="font-size:13px;">
-                在下方输入场景描述，选择在场角色，开始生成
+                在左侧点击场景「正文」，或填写下方 brief 生成第一段
               </div>
             </div>
+            <textarea
+              v-else
+              v-model="editorProse"
+              class="prose-editor"
+              placeholder="正文为空，可以直接开始写作…"
+              @input="handleProseInput"
+              @blur="flushSave"
+            ></textarea>
+          </div>
 
-            <!-- Agent消息 -->
-            <div
-              v-for="msg in agentStore.messages"
-              :key="msg.message_id"
-              class="message-bubble"
-              :class="msg.message_type"
-            >
-              <div class="msg-header">
-                <span class="msg-agent-icon">{{ AGENT_TYPE_META[msg.agent_type]?.icon || '⚙️' }}</span>
-                <span class="msg-agent-name" :style="{ color: AGENT_TYPE_META[msg.agent_type]?.color }">
-                  {{ msg.agent_name }}
-                </span>
-                <span style="font-size:11px;color:var(--text-secondary);margin-left:auto;">
-                  {{ AGENT_TYPE_META[msg.agent_type]?.label }}
-                </span>
+          <!-- 生成过程：默认折叠，与正文分区 -->
+          <div v-if="agentStore.messages.length || genStore.isGenerating" class="process-panel">
+            <button class="process-toggle" @click="showProcess = !showProcess">
+              {{ showProcess ? '▾' : '▸' }} 生成过程（{{ agentStore.messages.length }} 步）
+              <span v-if="genStore.isGenerating" style="color:var(--warning);">
+                · {{ genStore.currentStep }} 生成中
+              </span>
+            </button>
+            <div v-if="showProcess" class="process-messages">
+              <div
+                v-for="msg in agentStore.messages"
+                :key="msg.message_id"
+                class="message-bubble"
+                :class="msg.message_type"
+              >
+                <div class="msg-header">
+                  <span class="msg-agent-icon">{{ AGENT_TYPE_META[msg.agent_type]?.icon || '⚙️' }}</span>
+                  <span class="msg-agent-name" :style="{ color: AGENT_TYPE_META[msg.agent_type]?.color }">
+                    {{ msg.agent_name }}
+                  </span>
+                  <span style="font-size:11px;color:var(--text-secondary);margin-left:auto;">
+                    {{ AGENT_TYPE_META[msg.agent_type]?.label }}
+                  </span>
+                </div>
+                <div class="msg-content">{{ msg.content }}</div>
               </div>
-              <div class="msg-content">{{ msg.content }}</div>
-            </div>
-
-            <!-- 生成中动画 -->
-            <div v-if="genStore.isGenerating" class="message-bubble system">
-              <span class="loading-dots">{{ genStore.currentStep }} 生成中</span>
-            </div>
-
-            <!-- 最终正文 -->
-            <div v-if="genStore.finalProse" class="final-prose">
-              <div style="font-size:12px;color:var(--accent);margin-bottom:12px;font-family:sans-serif;">
-                📖 最终正文
+              <div v-if="genStore.isGenerating" class="message-bubble system">
+                <span class="loading-dots">{{ genStore.currentStep }} 生成中</span>
               </div>
-              {{ genStore.finalProse }}
             </div>
           </div>
 
           <!-- 在场角色选择 -->
-          <div style="padding:8px 16px;display:flex;gap:6px;flex-wrap:wrap;border-top:1px solid var(--border);">
+          <div class="character-picker">
             <span style="font-size:12px;color:var(--text-secondary);line-height:28px;">在场角色：</span>
             <button
               v-for="char in assetStore.characters"
@@ -656,18 +953,30 @@ async function handleCopyConfig() {
             >
               {{ char.name }}
             </button>
+            <span
+              v-if="assetStore.characters.length === 0"
+              style="font-size:12px;color:var(--warning);line-height:28px;"
+            >还没有角色，请先在右侧添加</span>
           </div>
 
           <!-- 输入区 -->
           <div class="scene-input">
-            <textarea
-              v-model="sceneBrief"
-              placeholder="描述这个场景的大致内容..."
-              @keydown.ctrl.enter="handleGenerate"
-            ></textarea>
+            <div class="brief-wrap">
+              <textarea
+                v-model="sceneBrief"
+                placeholder="描述这个场景的大致内容..."
+                @keydown.ctrl.enter="handleGenerate"
+              ></textarea>
+              <div
+                v-if="generationHint"
+                class="generation-hint"
+                :class="{ clickable: assetStore.characters.length === 0 }"
+                @click="handleHintClick"
+              >{{ generationHint }}</div>
+            </div>
             <button
               class="btn btn-primary"
-              :disabled="genStore.isGenerating || !sceneBrief.trim() || selectedChars.length === 0"
+              :disabled="!canGenerate"
               @click="handleGenerate"
               style="align-self:flex-end;min-width:80px;"
             >
@@ -693,11 +1002,15 @@ async function handleCopyConfig() {
     <aside class="sidebar-right">
       <template v-if="projectStore.currentProjectId">
         <div class="tabs">
-          <div class="tab" :class="{ active: rightTab === 'characters' }" @click="switchRightTab('characters')">
+          <div
+            class="tab"
+            :class="{ active: rightTab === 'characters', attention: assetStore.characters.length === 0 }"
+            @click="switchRightTab('characters')"
+          >
             🎭 角色
           </div>
-          <div class="tab" :class="{ active: rightTab === 'locations' }" @click="switchRightTab('locations')">
-            📍 场景
+          <div class="tab" :class="{ active: rightTab === 'locations' }" @click="switchRightTab('locations')" aria-label="地点">
+            📍 地点
           </div>
           <div class="tab" :class="{ active: rightTab === 'foreshadowings' }" @click="switchRightTab('foreshadowings')">
             📌 伏笔
@@ -730,16 +1043,19 @@ async function handleCopyConfig() {
           </div>
         </template>
 
-        <!-- 场景列表 -->
+        <!-- 地点列表 -->
         <template v-if="rightTab === 'locations'">
           <div class="panel">
             <div class="panel-title">
-              场景资产
+              地点资产
               <button class="btn btn-sm btn-secondary" @click="showCreateLocation = true" style="margin-left:auto;">＋</button>
             </div>
             <div v-for="loc in assetStore.locations" :key="loc.name" class="character-card">
               <div class="char-name">📍 {{ loc.name }}</div>
               <div class="char-persona">{{ loc.description }}</div>
+            </div>
+            <div v-if="assetStore.locations.length === 0" style="text-align:center;color:var(--text-secondary);padding:20px;font-size:13px;">
+              暂无地点
             </div>
           </div>
         </template>
@@ -1019,16 +1335,16 @@ async function handleCopyConfig() {
       </div>
     </div>
 
-    <!-- ==================== 对话框：创建场景 ==================== -->
+    <!-- ==================== 对话框：创建地点 ==================== -->
     <div v-if="showCreateLocation" class="dialog-overlay" @click.self="showCreateLocation = false">
       <div class="dialog">
-        <h3>📍 新建场景</h3>
+        <h3>📍 新建地点</h3>
         <div class="form-group">
-          <label>场景名称</label>
+          <label>地点名称</label>
           <input v-model="newLoc.name" placeholder="例：雾港旅店" />
         </div>
         <div class="form-group">
-          <label>场景描述</label>
+          <label>地点描述</label>
           <textarea v-model="newLoc.description" rows="3" placeholder="例：潮湿、灯光昏暗的小旅店大堂"></textarea>
         </div>
         <div class="form-actions">
@@ -1059,5 +1375,15 @@ async function handleCopyConfig() {
         </div>
       </div>
     </div>
+
+    <!-- ==================== 统一确认弹窗 ==================== -->
+    <ConfirmDialog
+      :show="!!confirmState"
+      :title="confirmState?.title || ''"
+      :message="confirmState?.message || ''"
+      :confirm-text="confirmState?.confirmText"
+      @confirm="runConfirm"
+      @cancel="confirmState = null"
+    />
   </div>
 </template>

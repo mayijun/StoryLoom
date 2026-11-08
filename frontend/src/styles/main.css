@@ -34,17 +34,19 @@ body {
 
 /* 布局 */
 .app-layout {
+  --left-width: 280px;
+  --right-width: 320px;
   display: grid;
-  grid-template-columns: 280px 1fr 320px;
+  grid-template-columns: var(--left-width) 1fr var(--right-width);
   grid-template-rows: 56px 1fr;
   height: 100vh;
   gap: 1px;
   background: var(--border);
 }
 
-/* Agents 页展开为 Agent / Task 双栏 */
+/* 章节 / 剧组页展开左栏；宽度统一走 CSS 变量，避免响应式漏改 */
 .app-layout.layout-wide {
-  grid-template-columns: 560px 1fr 320px;
+  --left-width: 560px;
 }
 
 /* Agent / Task 双栏编辑 */
@@ -112,6 +114,7 @@ body {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
+  min-width: 0;
 }
 
 .sidebar-right {
@@ -266,18 +269,137 @@ body {
   border-left-color: var(--error);
 }
 
-/* 场景剧场 */
+/* 写作工作台 */
 .scene-theater {
   flex: 1;
   display: flex;
   flex-direction: column;
+  gap: 12px;
   padding: 16px;
+  min-height: 0;
 }
 
-.scene-messages {
+/* 场景头 */
+.scene-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.scene-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.scene-field select {
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+  max-width: 220px;
+}
+
+.scene-header-meta {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  min-width: 0;
+}
+
+.word-count { color: var(--text-primary); }
+
+.save-status {
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: var(--bg-input);
+}
+.save-status.unsaved,
+.save-status.saving { color: var(--warning); }
+.save-status.saved { color: var(--success); }
+.save-status.error { color: var(--error); }
+
+/* 正文编辑区 */
+.prose-editor-area {
   flex: 1;
+  min-height: 200px;
+  display: flex;
+  background: var(--bg-card);
+  border-radius: 12px;
+  border-left: 4px solid var(--accent);
+  overflow: hidden;
+}
+
+.prose-editor {
+  flex: 1;
+  width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: none;
+  color: var(--text-primary);
+  font-family: 'Noto Serif SC', 'Source Han Serif CN', serif;
+  font-size: 16px;
+  line-height: 2;
+  padding: 24px;
+}
+
+.editor-empty {
+  margin: auto;
+  text-align: center;
+  color: var(--text-secondary);
+  padding: 40px 20px;
+}
+
+/* 生成过程折叠区 */
+.process-panel {
+  flex-shrink: 0;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.process-toggle {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+.process-toggle:hover { color: var(--text-primary); }
+
+.process-messages {
+  max-height: 180px;
   overflow-y: auto;
-  padding: 12px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.process-messages .message-bubble {
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  max-width: 100%;
+}
+
+.character-picker {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
 }
 
 .message-bubble {
@@ -337,24 +459,44 @@ body {
   padding: 12px 16px;
   display: flex;
   gap: 12px;
+  flex-shrink: 0;
+}
+
+.brief-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .scene-input textarea {
-  flex: 1;
+  width: 100%;
   background: var(--bg-input);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 10px 14px;
   color: var(--text-primary);
   font-size: 14px;
-  resize: none;
-  min-height: 60px;
+  resize: vertical;
+  min-height: 72px;
+  max-height: 240px;
   outline: none;
   font-family: inherit;
 }
 
 .scene-input textarea:focus {
   border-color: var(--accent);
+}
+
+.generation-hint {
+  font-size: 12px;
+  color: var(--warning);
+}
+
+.generation-hint.clickable {
+  cursor: pointer;
+  text-decoration: underline;
 }
 
 /* 按钮 */
@@ -375,6 +517,12 @@ body {
 
 .btn-primary:hover { opacity: 0.9; transform: translateY(-1px); }
 .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+.btn-danger {
+  background: var(--error);
+  color: #fff;
+}
+.btn-danger:hover { opacity: 0.9; }
 
 .btn-secondary {
   background: var(--bg-input);
@@ -471,6 +619,11 @@ body {
   border-bottom-color: var(--accent);
 }
 
+/* 零角色时高亮右栏「角色」标签 */
+.tab.attention:not(.active) {
+  color: var(--warning);
+}
+
 /* Flow编辑器预留区 */
 .flow-editor-placeholder {
   background: var(--bg-card);
@@ -498,15 +651,21 @@ body {
   100% { content: '...'; }
 }
 
-/* 响应式 */
+/* 响应式：宽度统一走 CSS 变量，layout-wide 单独覆盖 */
 @media (max-width: 1200px) {
-  .app-layout {
-    grid-template-columns: 240px 1fr 280px;
+  .app-layout,
+  .app-layout.layout-wide {
+    --left-width: 240px;
+    --right-width: 280px;
+  }
+  .app-layout.layout-wide {
+    --left-width: 380px;
   }
 }
 
 @media (max-width: 900px) {
-  .app-layout {
+  .app-layout,
+  .app-layout.layout-wide {
     grid-template-columns: 1fr;
     grid-template-rows: 56px auto 1fr auto;
   }

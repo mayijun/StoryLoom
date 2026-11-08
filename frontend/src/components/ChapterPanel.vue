@@ -8,9 +8,14 @@ import { useChapterStore } from '../stores/chapterStore'
 import { useSceneStore } from '../stores/sceneStore'
 import { CHAPTER_STATUS_META } from '../types/chapter'
 import type { ChapterView, ChapterCreate, ChapterUpdate, ChapterStatus } from '../types/chapter'
-import type { SceneView } from '../types/scene'
+import ConfirmDialog from './ConfirmDialog.vue'
 
 const props = defineProps<{ projectId: string }>()
+
+const emit = defineEmits<{
+  (e: 'select-scene', sceneId: string): void
+  (e: 'select-chapter', chapterId: string): void
+}>()
 
 const chapterStore = useChapterStore()
 const sceneStore = useSceneStore()
@@ -82,31 +87,23 @@ async function handleChapterDrop(to: number) {
   await chapterStore.reorderChapters(props.projectId, list)
 }
 
-// ---- 场景正文查看/编辑 ----
-const showProseDialog = ref(false)
-const proseSceneId = ref<string | null>(null)
-const proseText = ref('')
-const proseEditing = ref(false)
-
+// ---- 场景正文：交给主舞台编辑 ----
 function openProse(sid: string) {
-  const scene = sceneStore.scenes.find(s => s.scene_id === sid)
-  if (!scene) return
-  proseSceneId.value = sid
-  proseText.value = scene.prose || ''
-  proseEditing.value = false
-  showProseDialog.value = true
+  emit('select-scene', sid)
 }
 
-async function saveProse() {
-  if (!proseSceneId.value) return
-  await sceneStore.updateSceneProse(props.projectId, proseSceneId.value, proseText.value)
-  proseEditing.value = false
-}
-
-// ---- 场景重跑 ----
+// ---- 场景重跑（统一确认弹窗）----
 const regeneratingId = ref<string | null>(null)
-async function handleRegenerate(sid: string) {
-  if (!confirm('重跑将覆盖该场景正文，确定继续？')) return
+const pendingRegenerateId = ref<string | null>(null)
+
+function handleRegenerate(sid: string) {
+  pendingRegenerateId.value = sid
+}
+
+async function confirmRegenerate() {
+  const sid = pendingRegenerateId.value
+  pendingRegenerateId.value = null
+  if (!sid) return
   regeneratingId.value = sid
   try {
     await sceneStore.regenerateScene(props.projectId, sid)
@@ -198,7 +195,7 @@ async function load() {
         @dragover.prevent
         @drop.prevent="handleChapterDrop(idx)"
       >
-        <div class="chapter-head">
+        <div class="chapter-head" @click="emit('select-chapter', ch.chapter_id)">
           <button class="expand-btn" @click="toggleExpand(ch.chapter_id)">
             {{ expanded[ch.chapter_id] ? '▾' : '▸' }}
           </button>
@@ -327,28 +324,17 @@ async function load() {
       </div>
     </div>
 
-    <!-- 场景正文查看/编辑 -->
-    <div v-if="showProseDialog" class="dialog-overlay prose-overlay" @click.self="showProseDialog = false">
-      <div class="dialog prose-dialog">
-        <h3>场景正文</h3>
-        <textarea
-          v-model="proseText"
-          rows="14"
-          :readonly="!proseEditing"
-          :class="{ readonly: !proseEditing }"
-        ></textarea>
-        <div class="form-actions">
-          <template v-if="!proseEditing">
-            <button class="btn btn-secondary" @click="showProseDialog = false">关闭</button>
-            <button class="btn btn-primary" @click="proseEditing = true">编辑</button>
-          </template>
-          <template v-else>
-            <button class="btn btn-secondary" @click="proseEditing = false">取消</button>
-            <button class="btn btn-primary" @click="saveProse">保存</button>
-          </template>
-        </div>
-      </div>
-    </div>
+    <!-- 场景正文由主舞台编辑，此处不再弹窗 -->
+
+    <!-- 重跑确认 -->
+    <ConfirmDialog
+      :show="!!pendingRegenerateId"
+      title="重跑场景"
+      message="重跑将用原 brief 重新生成正文，并覆盖当前正文。此操作暂不支持恢复，确定继续？"
+      confirm-text="重跑"
+      @confirm="confirmRegenerate"
+      @cancel="pendingRegenerateId = null"
+    />
   </div>
 </template>
 
@@ -541,19 +527,4 @@ async function load() {
 }
 .form-group textarea { resize: vertical; }
 .form-actions { display: flex; justify-content: flex-end; gap: 8px; }
-.prose-overlay { z-index: 101; }
-.prose-dialog { width: 640px; }
-.prose-dialog textarea {
-  font-family: inherit;
-  line-height: 1.7;
-  background: var(--bg-input);
-  color: var(--text-primary);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 12px;
-}
-.prose-dialog textarea.readonly {
-  background: var(--bg-secondary);
-  cursor: default;
-}
 </style>
