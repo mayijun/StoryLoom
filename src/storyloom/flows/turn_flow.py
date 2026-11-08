@@ -269,13 +269,18 @@ class TurnLoop:
         actor_state = state.characters.get(actor)
         location = actor_state.location if actor_state else ""
         present = state.characters_at(location)
+        action_text = (
+            str(boot.intent.payload.get("text", "")).strip()
+            if isinstance(boot.intent.payload, dict)
+            else ""
+        )
         if self.memory is not None:
             self.memory.configure_working(
                 location=location,
                 present_characters=present,
-                scene_brief=boot.intent.payload.get("text", "")  # type: ignore[union-attr]
-                if isinstance(boot.intent.payload, dict) else "",
-                intent=boot.intent.kind,
+                scene_brief=action_text,
+                # 意图应展示玩家实际输入，而不是 "text" / "choice" 这类总线类型
+                intent=action_text or boot.intent.kind,
                 time=state.format_time(),
             )
         trace.append({"stage": "perceive", "location": location})
@@ -371,7 +376,7 @@ class TurnLoop:
         )
         memory_context = ""
         if self.memory is not None:
-            query = str(boot.intent.payload.get("text", "") or primary.narrative)
+            query = action_text or primary.narrative
             core = self.memory.prompt_block(viewer=actor)
             retrieved = self.memory.retrieval_block(query, viewer=actor)
             memory_context = "\n".join(
@@ -390,11 +395,18 @@ class TurnLoop:
         trace.append({"stage": "render_scene", "chars": len(scene.text)})
 
         # 10. commit（内存分层记忆 + arc）
-        if self.memory is not None and scene.text:
+        # 只记录真正推进了世界的回合：被拒绝 / 一致性失败 / 空转的回合不写记忆，
+        # 避免无效输入污染短期与正史。
+        if (
+            self.memory is not None
+            and scene.text
+            and not issues
+            and any(result.success for result in results)
+        ):
             self.memory.add_scene(
                 scene_index=working_state.turn,
                 prose=scene.text,
-                brief=str(boot.intent.payload.get("text", "")),
+                brief=action_text,
                 present_characters=working_state.characters_at(
                     (working_state.characters.get(actor).location
                      if working_state.characters.get(actor) else "")

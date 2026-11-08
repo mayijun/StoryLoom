@@ -20,10 +20,16 @@ from storyloom.memory.base import (
     TierSpec,
     WorkingMemory,
 )
+from storyloom.memory.compress import (
+    build_compress_prompt,
+    clamp_compressed_text,
+    fallback_compress,
+    is_empty_compression,
+)
 from storyloom.memory.hybrid import HybridBackend
 from storyloom.memory.lexical import LexicalBackend
 from storyloom.memory.scoring import (
-    compress_batch,
+    score_compressed_importance,
     score_importance,
     should_demote,
     summarize,
@@ -75,10 +81,23 @@ class LayeredMemory:
                 if raw_id.startswith(prefix)
                 else raw_id
             )
-            item = MemoryItem.from_row({**row, "id": logical_id})
+            item = self._normalize_loaded(
+                MemoryItem.from_row({**row, "id": logical_id})
+            )
             self.items[item.id] = item
             if item.tier == "archive":
                 self.vector.add(item)
+
+    @staticmethod
+    def _normalize_loaded(item: MemoryItem) -> MemoryItem:
+        """迁移旧版压缩产物：正史不再由系统 pin，重要度按当前规则重算，
+        否则旧存档里的历史事件永远无法按创作者阈值冷却。"""
+        if item.tier == "canon" and item.source == "compressed":
+            item.pinned = False
+            item.importance = score_compressed_importance(
+                item.text, stage="canon"
+            )
+        return item
 
     def _storage_id(self, item_id: str) -> str:
         """存储层 id 带项目前缀，避免跨项目主键冲突"""
@@ -207,7 +226,7 @@ class LayeredMemory:
     # ---------------- 压缩 ----------------
 
     def consolidate(self) -> List[MemoryItem]:
-        """短期超阈值 → 长期；长期超阈值 → canon；canon 超限 → archive"""
+        """短期超阈值 → 长期；长期超阈值 → 正史；正史溢出在正史内部合并"""
         created: List[MemoryItem] = []
 
         for spec in self.settings.tiers:
@@ -219,79 +238,140 @@ class LayeredMemory:
                     break
                 batch_size = max(1, min(spec.compress_batch, len(layer)))
                 batch = layer[:batch_size]
-                created.append(self._compress(batch, spec))
+                item = self._compress(batch, spec)
+                if item is not None:
+                    created.append(item)
 
-        if self.settings.canon_compress_into != "canon":
+        if self.settings.canon_compress_into == "archive":
+            # 兼容旧配置：正史溢出写入检索库
             while True:
                 canon_items = self._items_in("canon")
                 if len(canon_items) <= self.settings.canon_max_items:
                     break
                 overflow = len(canon_items) - self.settings.canon_max_items
                 batch = canon_items[: max(1, overflow)]
-                created.append(
-                    self._compress(
-                        batch,
-                        TierSpec(
-                            name="canon",
-                            max_items=self.settings.canon_max_items,
-                            compress_batch=len(batch),
-                            compress_into=self.settings.canon_compress_into,
-                        ),
-                    )
+                item = self._compress(
+                    batch,
+                    TierSpec(
+                        name="canon",
+                        max_items=self.settings.canon_max_items,
+                        compress_batch=len(batch),
+                        compress_into="archive",
+                        compress_max_chars=self.settings.canon_compress_max_chars,
+                        compress_hint=self.settings.canon_compress_hint,
+                    ),
                 )
+                if item is not None:
+                    created.append(item)
+        else:
+            created.extend(self._merge_canon_overflow())
+        return created
+
+    def _merge_canon_overflow(self) -> List[MemoryItem]:
+        """正史溢出时合并最旧事件；没有关键事件就丢弃，不污染世界书。"""
+        created: List[MemoryItem] = []
+        if self.settings.canon_max_items <= 0:
+            return created
+        while True:
+            canon_items = self._items_in("canon")
+            if len(canon_items) <= self.settings.canon_max_items:
+                break
+            overflow = len(canon_items) - self.settings.canon_max_items
+            batch_size = max(1, overflow)
+            # 只溢出 1 条时，与次旧条目一起合并，保证层数确实下降
+            if batch_size == 1 and len(canon_items) >= 2:
+                batch_size = 2
+            batch = canon_items[:batch_size]
+            item = self._compress(
+                batch,
+                TierSpec(
+                    name="canon",
+                    max_items=self.settings.canon_max_items,
+                    compress_batch=batch_size,
+                    compress_into="canon",
+                    compress_max_chars=self.settings.canon_compress_max_chars,
+                    compress_hint=self.settings.canon_compress_hint,
+                ),
+            )
+            if item is not None:
+                created.append(item)
         return created
 
     def _compress(
         self, batch: List[MemoryItem], spec: TierSpec
-    ) -> MemoryItem:
-        text = compress_batch(batch)
+    ) -> Optional[MemoryItem]:
+        """把一批记忆压缩到目标层；正史没有关键事件时返回 None（直接丢弃）。"""
+        target = spec.compress_into
+        max_chars = spec.compress_max_chars
+        prompt = build_compress_prompt(
+            target,
+            batch,
+            max_chars=max_chars,
+            hint=spec.compress_hint,
+        )
+
+        text = ""
         if self.compress_fn is not None:
             try:
-                candidate = str(self.compress_fn(text)).strip()
-                if candidate:
+                candidate = str(self.compress_fn(prompt)).strip()
+                if candidate and not is_empty_compression(candidate, target):
                     text = candidate
             except Exception:
-                pass
-        target = spec.compress_into
-        importance = max(item.importance for item in batch)
-        tags = sorted(
-            {tag for item in batch for tag in item.tags} | {"compressed"}
+                text = ""
+        if not text:
+            text = fallback_compress(batch, target, max_chars=max_chars)
+        text = clamp_compressed_text(
+            text, max_chars, multiline=(target == "canon")
         )
+
+        for child in batch:
+            self._drop(child.id)
+        if not text:
+            return None
+
+        last_scene = max(item.scene_index for item in batch)
         item = MemoryItem(
             id=f"mem_{uuid.uuid4().hex[:10]}",
             project_id=self.project_id,
             tier=target,
             text=text,
             summary=text[:200],
-            importance=importance,
-            # canon 是核心设定，默认 pinned
-            pinned=target == "canon",
-            scene_index=max(item.scene_index for item in batch),
+            importance=score_compressed_importance(text, stage=target),
+            # 正史也可按创作者配置的阈值冷却到世界书，因此默认不 pin
+            pinned=False,
+            scene_index=last_scene,
+            # 刚压缩产生的记忆从当前场景开始计算冷却，避免立即降级
+            last_hit_scene=last_scene,
             visibility="public",
-            tags=tags,
+            tags=sorted({"compressed", target}),
             source="compressed",
+            active_foreshadow=any(item.active_foreshadow for item in batch),
         )
-        for child in batch:
-            self._drop(child.id)
         return self._put(item)
 
     # ---------------- 降级 / 回温 ----------------
 
     def evaluate_demotion(self, current_scene: int) -> List[MemoryItem]:
-        """低价值长期记忆 → 检索库（archive）"""
+        """低价值长期记忆 / 历史事件 → 检索库（archive）
+
+        每一层使用创作者配置的降级规则（settings.rule_for），
+        因此长期记忆与正史可以有不同的重要度阈值和沉睡场景数。
+        """
         demoted: List[MemoryItem] = []
-        for item in list(self._items_in("long_term")):
-            if should_demote(
-                item,
-                current_scene=current_scene,
-                importance_threshold=self.settings.demotion_threshold,
-                miss_scenes=self.settings.demotion_miss_scenes,
-            ):
-                item.tier = "archive"
-                item.source = "demoted"
-                item.tags = sorted(set(item.tags) | {"demoted"})
-                self._put(item)
-                demoted.append(item)
+        for tier in ("long_term", "canon"):
+            rule = self.settings.rule_for(tier)
+            for item in list(self._items_in(tier)):
+                if should_demote(
+                    item,
+                    current_scene=current_scene,
+                    importance_threshold=rule.importance_threshold,
+                    miss_scenes=rule.miss_scenes,
+                ):
+                    item.tier = "archive"
+                    item.source = "demoted"
+                    item.tags = sorted(set(item.tags) | {"demoted"})
+                    self._put(item)
+                    demoted.append(item)
         return demoted
 
     def _reheat_if_needed(self, item: MemoryItem) -> bool:
@@ -354,12 +434,12 @@ class LayeredMemory:
     # ---------------- prompt ----------------
 
     def prompt_block(self, viewer: Optional[str] = None) -> str:
-        """核心层（L0 + L1~L3）拼成的 prompt 块；archive 不进 prompt"""
+        """核心层（当前场景 + L1~L3）拼成的 prompt 块；archive 不进 prompt"""
         lines = [self.working.as_prompt_block()]
         labels = {
             "short_term": "近期剧情",
             "long_term": "长期剧情",
-            "canon": "核心设定",
+            "canon": "历史事件",
         }
         for spec in self.settings.tiers:
             items = [
@@ -370,17 +450,22 @@ class LayeredMemory:
                 continue
             lines.append(f"【{labels.get(spec.name, spec.name)}】")
             for item in items:
-                lines.append(f"  - {item.summary or item.text}")
+                body = (
+                    item.text
+                    if spec.name == "canon"
+                    else (item.summary or item.text)
+                )
+                lines.append(f"  - {body}")
         canon = [
             item for item in self._items_in("canon")
-            if item.visible_to(viewer) and item.pinned
+            if item.visible_to(viewer)
         ]
         if canon and not any(
             spec.name == "canon" for spec in self.settings.tiers
         ):
-            lines.append("【核心设定】")
+            lines.append("【历史事件】")
             for item in canon:
-                lines.append(f"  - {item.summary or item.text}")
+                lines.append(f"  - {item.text}")
         return "\n".join(lines)
 
     def retrieval_block(
@@ -392,7 +477,9 @@ class LayeredMemory:
         items = self.retrieve(query, k=k, viewer=viewer)
         if not items:
             return ""
-        body = "\n".join(f"  - {item.summary or item.text}" for item in items)
+        body = "\n".join(
+            f"  - {item.summary or item.text}" for item in items
+        )
         return f"【相关回忆】\n{body}"
 
     # ---------------- 工具 ----------------
@@ -403,9 +490,8 @@ class LayeredMemory:
         return items
 
     def counts(self) -> Dict[str, int]:
-        result: Dict[str, int] = {
-            "working": 1 if self.working.location or self.working.intent else 0
-        }
+        """核心记忆只统计持久化三层 + 世界书；当前场景不作为一个记忆层。"""
+        result: Dict[str, int] = {}
         for tier in ("short_term", "long_term", "canon", "archive"):
             result[tier] = len(self._items_in(tier))
         return result
@@ -433,6 +519,7 @@ class LayeredMemory:
         repo: Any = None,
         settings: Optional[MemorySettings] = None,
         backend: Optional[str] = None,
+        compress_fn: Optional[Any] = None,
     ) -> "LayeredMemory":
         """从快照恢复（存档读档 / 重启恢复）"""
         memory = cls(
@@ -440,10 +527,13 @@ class LayeredMemory:
             repo=repo,
             settings=settings,
             backend=backend or snapshot.get("backend"),
+            compress_fn=compress_fn,
         )
         memory.items = {}
         for raw in snapshot.get("items", []):
-            item = MemoryItem.model_validate(raw)
+            item = cls._normalize_loaded(
+                MemoryItem.model_validate(raw)
+            )
             memory.items[item.id] = item
         working = snapshot.get("working")
         if working:

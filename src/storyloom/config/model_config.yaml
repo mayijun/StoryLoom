@@ -88,6 +88,18 @@ agent_model_mapping:
     temperature: 0.85
     reason: "润色需要极强文学表现力"
 
+  narrator:
+    primary: "deepseek.flash"
+    fallback: "deepseek.v4pro"
+    temperature: 0.8
+    reason: "游戏回合叙述与开场要求低延迟，优先用快速模型，避免玩家等待超时"
+
+  memory:
+    primary: "deepseek.flash"
+    fallback: "deepseek.v4pro"
+    temperature: 0.2
+    reason: "记忆压缩要求忠实、去重、不脑补，低温 + 快速模型兼顾质量与延迟"
+
   outline:
     primary: "deepseek.v4pro"
     fallback: "openai.gpt4o"

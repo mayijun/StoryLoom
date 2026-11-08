@@ -8,6 +8,7 @@ This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 """
 
 from storyloom.memory.base import (
+    DemotionRule,
     MemoryItem,
     MemorySettings,
     MemoryTier,
@@ -23,6 +24,7 @@ from storyloom.memory.vector import VectorBackend
 
 __all__ = [
     "CoreMemory",
+    "DemotionRule",
     "HybridBackend",
     "LayeredMemory",
     "LexicalBackend",

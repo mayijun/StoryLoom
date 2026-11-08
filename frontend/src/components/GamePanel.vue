@@ -39,10 +39,8 @@ const storySaves = computed(() => saves.value.filter((s) => (s.kind || 'story') 
 const checkpointSaves = computed(() => saves.value.filter((s) => s.kind === 'checkpoint'))
 const backend = ref('fts')
 const memoryCounts = ref<Record<string, number>>({})
-// 分层核心记忆：总开关 + 各层级展开状态
+// 分层核心记忆：各层级展开状态
 const memory = ref<any>(null)
-const memoryOpen = ref(false)
-const openTiers = ref<Record<string, boolean>>({})
 const extensions = ref<any[]>([])
 const logEl = ref<HTMLElement | null>(null)
 
@@ -66,15 +64,14 @@ async function refreshMemory() {
 }
 
 const MEMORY_TIER_META: Array<{ key: string; label: string }> = [
-  { key: 'working', label: '工作记忆' },
   { key: 'short_term', label: '短期记忆' },
   { key: 'long_term', label: '长期记忆' },
-  { key: 'canon', label: '正史' },
+  { key: 'canon', label: '历史事件' },
   { key: 'archive', label: '世界书' },
 ]
 
-// 侧边栏 tab：世界状态 / 世界书（原「检索库」）
-const sideTab = ref<'world' | 'codex'>('world')
+// 侧边栏 tab：世界状态 / 世界书（原「检索库」）/ 历史事件
+const sideTab = ref<'world' | 'codex' | 'history'>('world')
 
 const memoryTiers = computed(() => {
   const items = memory.value?.items || []
@@ -86,19 +83,18 @@ const memoryTiers = computed(() => {
   }))
 })
 
-// 中央区只保留当前核心层：工作记忆 + 正史
-const coreMemoryTiers = computed(() =>
-  memoryTiers.value.filter((tier) => ['working', 'canon'].includes(tier.key)),
-)
-
-const coreMemoryTotal = computed(() =>
-  coreMemoryTiers.value.reduce((sum, tier) => sum + tier.items.length, 0),
-)
-
 // 世界书：原 archive 检索库，落位到侧边栏
 const worldBookItems = computed(
   () => memoryTiers.value.find((tier) => tier.key === 'archive')?.items || [],
 )
+
+// 历史事件：正史层，按场景时间线排列
+const historyItems = computed(() => {
+  const items = memory.value?.items || []
+  return items
+    .filter((item: any) => item.tier === 'canon')
+    .sort((a: any, b: any) => (a.scene_index ?? 0) - (b.scene_index ?? 0))
+})
 
 function tierLabel(key: string) {
   return MEMORY_TIER_META.find((tier) => tier.key === key)?.label || key
@@ -106,6 +102,8 @@ function tierLabel(key: string) {
 
 function itemSourceLabel(item: any) {
   const tags: string[] = item.tags || []
+  if (tags.includes('demoted')) return '冷却记忆'
+  if (tags.includes('compressed')) return item.tier === 'canon' ? '历史事件' : '压缩记忆'
   if (tags.includes('secret')) return '秘密'
   if (tags.includes('character')) return '角色'
   if (tags.includes('location')) return '地点'
@@ -121,10 +119,6 @@ function snapshotMemory(): MemorySnapshot {
       .filter((item: any) => item.tier === tier)
       .sort((a: any, b: any) => (b.importance ?? 0) - (a.importance ?? 0))
   return { short_term: pick('short_term'), long_term: pick('long_term') }
-}
-
-function toggleTier(key: string) {
-  openTiers.value = { ...openTiers.value, [key]: !openTiers.value[key] }
 }
 
 async function refreshSaves() {
@@ -160,12 +154,27 @@ async function loadSession() {
     choices.value = []
     idleTurns.value = 0
     quality.value = 1
-    backlog.value = [
-      {
-        role: 'system',
-        text: '世界已载入。你可以自由输入行动，也可以从下方选项中选择。',
-      },
-    ]
+    backlog.value = [{ role: 'system', text: '世界已载入。' }]
+    // 进入一个尚未开始的世界时，先给一段前情提要，避免玩家在空白场景里凭空行动
+    if ((state.value?.turn ?? 0) === 0) {
+      const loading = { role: 'system' as const, text: '正在根据世界观生成开场…' }
+      backlog.value.push(loading)
+      try {
+        const opening = await api.getGameOpening(props.projectId, INSTANCE_ID)
+        const text = (opening.data?.text || '').trim()
+        if (text) {
+          backlog.value.push({ role: 'narrator', text })
+          choices.value = opening.data?.choices || []
+        }
+      } catch {
+        // 开场生成失败不阻塞试玩，保留「世界已载入」提示
+      } finally {
+        backlog.value = backlog.value.filter(
+          (entry) => entry.text !== '正在根据世界观生成开场…',
+        )
+        await scrollDown()
+      }
+    }
   } catch (err) {
     statusText.value = '无法载入世界状态，请确认后端在线。'
   }
@@ -218,7 +227,7 @@ async function play(intent: any, label: string, isIdle = false) {
       mode: mode.value,
       intent,
       idle_turns: idleTurns.value,
-      max_duration_ms: 60000,
+      max_duration_ms: 120000,
     })
     const data = res.data
     state.value = data.state
@@ -227,13 +236,18 @@ async function play(intent: any, label: string, isIdle = false) {
     if (data.quality_flags?.length) {
       statusText.value = `质量标记：${data.quality_flags.join('、')}`
     }
+    const text = (data.text || '').trim()
     if (data.status === 'timeout') {
       statusText.value = '本回合超时，世界保持原状。'
     }
     backlog.value.push({
-      role: 'narrator',
-      text: data.text || '（这一回合没有新的叙述）',
-      directives: data.scene?.directives || [],
+      role: text ? 'narrator' : 'system',
+      text:
+        text ||
+        (data.status === 'timeout'
+          ? '本回合生成超时，世界未推进；请重试一次，或把行动写得更短一些。'
+          : '本回合没有产生叙述，世界保持原状。'),
+      directives: text ? data.scene?.directives || [] : [],
     })
     // 通过响应式数组取回这条记录，后续写入记忆快照才能触发界面更新
     const entry = backlog.value[backlog.value.length - 1]
@@ -518,40 +532,6 @@ const statusBar = () => {
           </div>
         </div>
 
-        <!-- 当前核心层（工作记忆 / 正史）；短期与长期记忆已内嵌到每条输出 -->
-        <div class="memory-block">
-          <button class="memory-toggle" @click="memoryOpen = !memoryOpen">
-            <span>🧠 核心记忆</span>
-            <span class="memory-meta">{{ coreMemoryTotal }} 条 · {{ backend }}</span>
-            <span class="memory-caret">{{ memoryOpen ? '▾' : '▸' }}</span>
-          </button>
-          <div v-if="memoryOpen" class="memory-tiers">
-            <div v-for="tier in coreMemoryTiers" :key="tier.key" class="memory-tier">
-              <button
-                class="tier-head"
-                :disabled="!tier.items.length"
-                @click="toggleTier(tier.key)"
-              >
-                <span>{{ tier.label }}</span>
-                <span class="tier-count">{{ tier.items.length }}</span>
-                <span class="memory-caret">{{ openTiers[tier.key] ? '▾' : '▸' }}</span>
-              </button>
-              <ul v-if="openTiers[tier.key] && tier.items.length" class="tier-items">
-                <li v-for="item in tier.items" :key="item.id">
-                  <div class="tier-text">{{ item.summary || item.text }}</div>
-                  <div class="tier-tags">
-                    <span>重要度 {{ Number(item.importance ?? 0).toFixed(2) }}</span>
-                    <span>场景 {{ item.scene_index }}</span>
-                    <span v-if="item.pinned">📌 固定</span>
-                    <span v-if="item.active_foreshadow">活跃伏笔</span>
-                    <span v-if="item.source === 'demoted'">已降级</span>
-                  </div>
-                </li>
-              </ul>
-            </div>
-          </div>
-        </div>
-
         <div v-if="statusText" class="status-note">{{ statusText }}</div>
 
         <div v-if="choices.length" class="choices">
@@ -584,7 +564,7 @@ const statusBar = () => {
 
       <aside class="game-side">
         <div class="side-block">
-          <!-- 世界状态 / 世界书（原检索库）合并为一个 tab 区 -->
+          <!-- 世界状态 / 世界书（原检索库）/ 历史事件 共用侧边栏 tab 区 -->
           <div class="side-tabs">
             <button
               class="side-tab"
@@ -596,6 +576,11 @@ const statusBar = () => {
               :class="{ active: sideTab === 'codex' }"
               @click="sideTab = 'codex'"
             >世界书</button>
+            <button
+              class="side-tab"
+              :class="{ active: sideTab === 'history' }"
+              @click="sideTab = 'history'"
+            >历史事件</button>
           </div>
 
           <template v-if="sideTab === 'world'">
@@ -658,7 +643,7 @@ const statusBar = () => {
             </div>
           </template>
 
-          <template v-else>
+          <template v-else-if="sideTab === 'codex'">
             <div class="worldbook-head">
               <span>共 {{ worldBookItems.length }} 条</span>
               <span class="memory-meta">按重要度排序</span>
@@ -670,6 +655,24 @@ const statusBar = () => {
                 <div class="tier-tags">
                   <span>{{ itemSourceLabel(item) }}</span>
                   <span>重要度 {{ Number(item.importance ?? 0).toFixed(2) }}</span>
+                  <span v-if="item.pinned">📌 固定</span>
+                </div>
+              </li>
+            </ul>
+          </template>
+
+          <template v-else>
+            <div class="worldbook-head">
+              <span>共 {{ historyItems.length }} 条</span>
+              <span class="memory-meta">只保留关键事件</span>
+            </div>
+            <div v-if="!historyItems.length" class="empty">暂无历史事件</div>
+            <ul v-else class="tier-items worldbook-items">
+              <li v-for="item in historyItems" :key="item.id">
+                <div class="tier-text">{{ item.text }}</div>
+                <div class="tier-tags">
+                  <span>{{ itemSourceLabel(item) }}</span>
+                  <span v-if="item.scene_index">场景 {{ item.scene_index }}</span>
                   <span v-if="item.pinned">📌 固定</span>
                 </div>
               </li>
@@ -825,48 +828,8 @@ const statusBar = () => {
 }
 .mem-item-meta { margin-left: 6px; font-size: 11px; color: var(--text-secondary, #9aa0aa); }
 .mem-empty { font-size: 11px; color: var(--text-secondary, #9aa0aa); }
-/* 分层核心记忆 */
-.memory-block { border-top: 1px solid var(--border, #2a2d36); padding-top: 6px; }
-.memory-toggle {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 0;
-  border: none;
-  background: transparent;
-  color: var(--text-primary, #e6e8ec);
-  font-family: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
+/* 记忆条目通用样式 */
 .memory-meta { font-size: 11px; color: var(--text-secondary, #9aa0aa); }
-.memory-caret { margin-left: auto; font-size: 11px; color: var(--text-secondary, #9aa0aa); }
-.memory-tiers { display: flex; flex-direction: column; gap: 4px; margin: 4px 0; }
-.memory-tier { border: 1px solid var(--border, #2a2d36); border-radius: 6px; overflow: hidden; }
-.tier-head {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  border: none;
-  background: var(--bg-input, #1c1f27);
-  color: var(--text-primary, #e6e8ec);
-  font-family: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-.tier-head:disabled { opacity: 0.45; cursor: default; }
-.tier-count {
-  min-width: 18px;
-  padding: 0 5px;
-  border-radius: 9px;
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--text-secondary, #9aa0aa);
-  font-size: 11px;
-  text-align: center;
-}
 .tier-items {
   list-style: none;
   margin: 0;

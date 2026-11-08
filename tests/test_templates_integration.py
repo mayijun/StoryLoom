@@ -20,6 +20,14 @@ from storyloom.saves.service import SaveService
 TEMPLATE_ID = "xianxia_system"
 
 
+def _fake_prose(prompt: str, state) -> str:
+    """伪装 prose 模型：原样返回 prompt 里已裁决的「事实」，不访问网络。"""
+    for line in prompt.splitlines():
+        if line.startswith("事实："):
+            return line[len("事实："):]
+    return ""
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     """真实 app + 独立 SQLite 文件；清空引擎运行时缓存。"""
@@ -32,6 +40,8 @@ def client(tmp_path, monkeypatch):
     from storyloom.api.engine import engine
     from storyloom.api.main import app
 
+    # 游戏回合的叙述润色改为假模型返回，避免真实 LLM 调用导致超时
+    monkeypatch.setattr(engine, "_game_prose_fn", _fake_prose)
     engine._project_runtime.clear()
     engine.memories.clear()
     engine.rags.clear()

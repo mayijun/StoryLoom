@@ -126,6 +126,8 @@ export function useApi() {
   const playTurn = (pid: string, data: any) => runtime.post(`/${pid}/turn`, data)
   const getGameState = (pid: string, instanceId = 'ui') =>
     runtime.get(`/${pid}/state`, { params: { instance_id: instanceId } })
+  const getGameOpening = (pid: string, instanceId = 'ui') =>
+    runtime.get(`/${pid}/opening`, { params: { instance_id: instanceId } })
   const createGameSave = (pid: string, data: any) => runtime.post(`/${pid}/saves`, data)
   const listGameSaves = (pid: string) => runtime.get(`/${pid}/saves`)
   const loadGameSave = (pid: string, saveId: string, instanceId = 'ui') =>
@@ -191,7 +193,7 @@ export function useApi() {
     listChapters, createChapter, updateChapter, deleteChapter,
     listScenes, getScene, updateScene, assignSceneToChapter, deleteScene, regenerateScene,
     generateScene, generateSceneStream,
-    playTurn, getGameState, createGameSave, listGameSaves, loadGameSave,
+    playTurn, getGameState, getGameOpening, createGameSave, listGameSaves, loadGameSave,
     switchGameMode, getMemory, patchMemory, resolveExtensions,
     checkHealth,
   }

@@ -74,6 +74,7 @@ from storyloom.runtime.intent import PlayerIntent
 from storyloom.runtime.renderer import SceneRenderer
 from storyloom.saves.service import SaveService, state_from_save
 from storyloom.world.authority import AuthorityController
+from storyloom.world.game_master import AdjudicationResult
 from storyloom.world.state import StateDelta, WorldState
 from storyloom.api.schemas import (
     GenerateSceneRequest, GenerationStepUpdate,
@@ -571,6 +572,7 @@ class NovelEngine:
             project_id,
             repo=repo,
             backend=backend,
+            compress_fn=self._memory_compress_fn,
         )
         MemoryIndexer(memory).backfill(
             repo.list_scenes(project_id),
@@ -600,22 +602,160 @@ class NovelEngine:
             self.game_states[key] = state
         return state
 
-    def _game_prose_fn(self, prompt: str, state: WorldState) -> str:
-        """游戏模式叙述润色：用 prose 角色模型把裁决事实改写成叙事。
+    def _narrator_llm(self):
+        """游戏内叙述 / 开场使用的低延迟模型（narrator 角色）"""
+        if self.router is None:
+            return None
+        try:
+            llm, _ = self.router.get_llm_for_role("narrator")
+            return llm
+        except Exception:
+            return None
 
+    def _game_prose_fn(self, prompt: str, state: WorldState) -> str:
+        """游戏模式叙述润色：把裁决事实改写成叙事。
+
+        使用 narrator 角色（默认快速模型）控制单回合延迟；
         任何失败（无可用模型 / 网络异常）都返回空串，由渲染层回退到确定性文本，
         保证游戏不会因为 LLM 不可用而中断。
         """
-        if self.router is None:
-            return ""
-        try:
-            llm, _ = self.router.get_llm_for_role("prose")
-        except Exception:
+        llm = self._narrator_llm()
+        if llm is None:
             return ""
         try:
             return str(llm.call([{"role": "user", "content": prompt}])).strip()
         except Exception:
             return ""
+
+    def _memory_llm(self):
+        """记忆压缩使用的低温模型，避免压缩时脑补。"""
+        if self.router is None:
+            return None
+        try:
+            llm, _ = self.router.get_llm_for_role("memory")
+            return llm
+        except Exception:
+            return None
+
+    def _memory_compress_fn(self, prompt: str) -> str:
+        """分层记忆压缩：让 LLM 按目标层规则动态压缩。
+
+        失败或没有可用模型时返回空串，由 LayeredMemory 走确定性选择性兜底。
+        """
+        llm = self._memory_llm()
+        if llm is None:
+            return ""
+        try:
+            return str(llm.call([{"role": "user", "content": prompt}])).strip()
+        except Exception:
+            return ""
+
+    def _opening_prompt(self, project: NovelProject, state: WorldState) -> str:
+        """构造开场叙述提示：只喂公开设定与首章大纲，不暴露秘密。"""
+        player_loc = state.location_of("玩家") or next(
+            iter(state.locations), ""
+        )
+        present = [
+            name
+            for name in state.characters_at(player_loc)
+            if name != "玩家"
+        ]
+        lines = [
+            "请为下面这部互动小说写一段开场（前情提要）。",
+            "要求：",
+            "- 第二人称「你」，150-250 字，克制、有画面感；",
+            "- 交代你是谁、身在何处、眼下最紧迫的处境；",
+            "- 至少写到两位在场角色的态度或动作线索；",
+            "- 只写已经存在的世界状态，不要替玩家做决定，不要写玩家尚未采取的行动；",
+            "- 不要解释系统、规则或身份设定。",
+            "",
+            f"作品：{project.title}",
+        ]
+        if project.style:
+            lines.append(f"文风：{project.style}")
+        if project.description:
+            lines.append(f"设定：{project.description}")
+        lines.append(f"开场地点：{player_loc}")
+        if present:
+            lines.append("在场角色：")
+            for name in present:
+                char = project.get_character(name)
+                if char is None:
+                    lines.append(f"- {name}")
+                    continue
+                detail = f"- {name}：{char.persona}"
+                if char.motivation:
+                    detail += f"；动机：{char.motivation}"
+                lines.append(detail)
+        chapters = get_repository().list_chapters(project.project_id)
+        if chapters and chapters[0].get("outline"):
+            lines.append(
+                f"首章大纲（只作背景，不要照抄）：{chapters[0]['outline']}"
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _opening_fallback(project: NovelProject, state: WorldState) -> str:
+        """LLM 不可用时的确定性开场，保证玩家始终有前情提要。"""
+        player_loc = state.location_of("玩家") or next(
+            iter(state.locations), "无名之地"
+        )
+        present = [
+            name
+            for name in state.characters_at(player_loc)
+            if name != "玩家"
+        ]
+        lines = []
+        if project.description.strip():
+            lines.append(project.description.strip())
+        scene_line = f"此刻你身在{player_loc}。"
+        if present:
+            scene_line += "在场的有：" + "、".join(present) + "。"
+        lines.append(scene_line)
+        chapters = get_repository().list_chapters(project.project_id)
+        if chapters and chapters[0].get("outline"):
+            lines.append(f"眼下：{chapters[0]['outline'].strip()}")
+        return "\n\n".join(lines)
+
+    async def generate_opening(
+        self, project_id: str, instance_id: str = "default"
+    ) -> dict:
+        """生成进入游戏模式时的开场叙述，不推进世界状态。"""
+        project = self._get_or_load_project(project_id)
+        state = self.get_game_state(project_id, instance_id)
+
+        text = ""
+        llm = self._narrator_llm()
+        if llm is not None:
+            try:
+                raw = await asyncio.to_thread(
+                    llm.call,
+                    [
+                        {
+                            "role": "user",
+                            "content": self._opening_prompt(project, state),
+                        }
+                    ],
+                )
+                text = str(raw).strip()
+            except Exception:
+                text = ""
+        if not text:
+            text = self._opening_fallback(project, state)
+
+        scene = SceneRenderer().render(
+            state,
+            state,
+            AdjudicationResult(
+                success=True, outcome="idle", narrative=text
+            ),
+            actor="玩家",
+        )
+        return {
+            "text": scene.text,
+            "choices": scene.choices,
+            "scene": scene.model_dump(mode="json"),
+        }
 
     async def play_turn(
         self, project_id: str, boot: TurnBoot
@@ -704,6 +844,7 @@ class NovelEngine:
                 project_id,
                 record.memory_snapshot,
                 repo=get_repository(),
+                compress_fn=self._memory_compress_fn,
             )
         # 同步「最近一回合」，保证读档后立即存档能保存读档时点的场景与选项
         scene = StageScene(
@@ -737,6 +878,16 @@ class NovelEngine:
             "backend": memory.backend_name,
             "counts": memory.counts(),
             "tiers": [spec.model_dump(mode="json") for spec in memory.settings.tiers],
+            "canon": {
+                "max_items": memory.settings.canon_max_items,
+                "compress_into": memory.settings.canon_compress_into,
+                "compress_max_chars": memory.settings.canon_compress_max_chars,
+            },
+            "demotion": {
+                tier: memory.settings.rule_for(tier).model_dump(mode="json")
+                for tier in ("long_term", "canon")
+            },
+            "reheat_hits": memory.settings.reheat_hits,
             "items": items,
             "prompt_block": memory.prompt_block(),
         }

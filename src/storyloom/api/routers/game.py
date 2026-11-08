@@ -65,6 +65,13 @@ async def play_turn(project_id: str, data: TurnRequest):
     return result.model_dump(mode="json")
 
 
+@router.get("/{project_id}/opening")
+async def get_opening(project_id: str, instance_id: str = "default"):
+    """进入游戏模式时的开场（前情提要），不推进世界状态"""
+    _ensure_project(project_id)
+    return await engine.generate_opening(project_id, instance_id)
+
+
 @router.get("/{project_id}/state", deprecated=True)
 async def get_state(project_id: str, instance_id: str = "default"):
     """返回当前实例的运行时世界状态与记忆概览"""

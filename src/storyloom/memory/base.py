@@ -79,6 +79,15 @@ class TierSpec(BaseModel):
     max_items: int = 6
     compress_batch: int = 3
     compress_into: MemoryTier = "long_term"
+    compress_max_chars: int = 200
+    compress_hint: str = ""
+
+
+class DemotionRule(BaseModel):
+    """一层核心记忆的冷却规则（由创作者配置）"""
+
+    importance_threshold: float = 0.35
+    miss_scenes: int = 10
 
 
 class MemorySettings(BaseModel):
@@ -86,12 +95,28 @@ class MemorySettings(BaseModel):
 
     tiers: List[TierSpec] = Field(default_factory=list)
     canon_max_items: int = 20
-    canon_compress_into: MemoryTier = "archive"
+    # 正史溢出时默认在正史内部合并，不再写入世界书
+    canon_compress_into: MemoryTier = "canon"
+    canon_compress_max_chars: int = 240
+    canon_compress_hint: str = ""
+    # 兼容旧配置的全局降级参数
     demotion_threshold: float = 0.35
     demotion_miss_scenes: int = 10
+    # 按层配置的降级阈值：长期记忆与历史事件都可以冷却到世界书
+    # 留空时回落到全局 demotion_threshold / demotion_miss_scenes
+    demotion_rules: Dict[str, DemotionRule] = Field(default_factory=dict)
     reheat_hits: int = 2
     backend: Literal["fts", "vector", "hybrid"] = "fts"
     top_k: int = 5
+
+    def rule_for(self, tier: str) -> DemotionRule:
+        rule = self.demotion_rules.get(tier)
+        if rule is not None:
+            return rule
+        return DemotionRule(
+            importance_threshold=self.demotion_threshold,
+            miss_scenes=self.demotion_miss_scenes,
+        )
 
     @classmethod
     def load(cls, path: Optional[str] = None) -> "MemorySettings":
@@ -102,10 +127,12 @@ class MemorySettings(BaseModel):
                     TierSpec(
                         name="short_term", max_items=6,
                         compress_batch=3, compress_into="long_term",
+                        compress_max_chars=220,
                     ),
                     TierSpec(
                         name="long_term", max_items=8,
                         compress_batch=4, compress_into="canon",
+                        compress_max_chars=160,
                     ),
                 ]
             )
@@ -115,16 +142,45 @@ class MemorySettings(BaseModel):
             for item in raw.get("tiers", [])
         ]
         canon = raw.get("canon", {})
-        demotion = raw.get("demotion", {})
+        demotion = raw.get("demotion", {}) or {}
         retrieval = raw.get("retrieval", {})
+        legacy_threshold = float(
+            demotion.get("importance_threshold", 0.35)
+        )
+        legacy_miss = int(demotion.get("miss_scenes", 10))
+        long_rule_raw = demotion.get("long_term", {}) or {}
+        canon_rule_raw = demotion.get("canon", {}) or {}
+        demotion_rules = {
+            "long_term": DemotionRule(
+                importance_threshold=float(
+                    long_rule_raw.get(
+                        "importance_threshold", legacy_threshold
+                    )
+                ),
+                miss_scenes=int(
+                    long_rule_raw.get("miss_scenes", legacy_miss)
+                ),
+            ),
+            "canon": DemotionRule(
+                importance_threshold=float(
+                    canon_rule_raw.get("importance_threshold", 0.30)
+                ),
+                miss_scenes=int(
+                    canon_rule_raw.get("miss_scenes", 20)
+                ),
+            ),
+        }
         return cls(
             tiers=tiers,
             canon_max_items=int(canon.get("max_items", 20)),
-            canon_compress_into=canon.get("compress_into", "archive"),
-            demotion_threshold=float(
-                demotion.get("importance_threshold", 0.35)
+            canon_compress_into=canon.get("compress_into", "canon"),
+            canon_compress_max_chars=int(
+                canon.get("compress_max_chars", 240)
             ),
-            demotion_miss_scenes=int(demotion.get("miss_scenes", 10)),
+            canon_compress_hint=str(canon.get("compress_hint", "")),
+            demotion_threshold=legacy_threshold,
+            demotion_miss_scenes=legacy_miss,
+            demotion_rules=demotion_rules,
             reheat_hits=int(demotion.get("reheat_hits", 2)),
             backend=retrieval.get("backend", "fts"),
             top_k=int(retrieval.get("top_k", 5)),

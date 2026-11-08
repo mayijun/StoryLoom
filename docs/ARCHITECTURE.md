@@ -268,7 +268,7 @@ WorldState
 | L0 `working` | 当前场景 brief / 地点 / 在场角色 / 本轮意图 | 总是 | 否 |
 | L1 `short_term` | 最近 K 个场景的详细摘要 | 是 | 是 |
 | L2 `long_term` | 压缩后的章节 / 桥段摘要 | 是 | 是 |
-| L3 `canon` | 稳定身份、世界规则、活跃伏笔、核心设定 | 是（pinned） | 是 |
+| L3 `canon` | 改变主线 / 世界格局的关键事件（历史事件） | 是 | 是 |
 | L4 `archive` | 环境、世界观、角色背景、已解决伏笔、被降级旧记忆 | 按需检索 | 是（索引可重建） |
 
 层数不写死：`memory_config.yaml` 用有序列表定义 L1~L3，可在短期与长期之间继续加层。
@@ -279,12 +279,12 @@ WorldState
 ```
 场景提交
   → 生成 short_term 摘要（截断正文 + 人物 / 地点 / 伏笔 / importance）
-  → short_term 超过 max_items → 取最旧 batch 压缩为 long_term
+  → short_term 超过 max_items → 取最旧 compress_batch 条压缩为 long_term
   → long_term 超过 max_items → 压缩为 canon / arc
-  → 每次提交后评估降级：
-      importance 低 + 连续 N 场景未命中 + 无活跃伏笔 + 非 pinned
-      → 写入 L4 检索库（tier=demoted），核心标记 demoted
-  → 检索命中 demoted 且被采用 N 次 → 回温为 long_term
+  → 每次提交后评估降级（长期记忆与历史事件分别使用各自的阈值）：
+      importance 低于该层阈值 + 连续 N 场景未命中 + 无活跃伏笔 + 非 pinned
+      → 写入 L4 检索库（tier=archive, source=demoted）
+  → 检索命中 demoted 且被采用 reheat_hits 次 → 回温为 long_term
 ```
 
 原则：**近期高保真、远期高压缩、冷记忆可召回、再命中可回温**。

@@ -1,21 +1,37 @@
 # 分层记忆 v2 配置
-# L0 working / L4 archive 是固定端点；以下有序列表定义 L1~L3，
-# 可在短期与长期之间继续插入新层（例如 episode）。
+# 核心记忆只有三层：short_term → long_term → canon（历史事件）；
+# archive（世界书）是检索层，保存项目资产与被冷却的旧记忆。
 tiers:
   - name: short_term
     max_items: 6
     compress_batch: 3
     compress_into: long_term
+    compress_max_chars: 220
+    compress_hint: "保留主线事实、人物选择、承诺/契约、关键物品与伏笔线索，删除环境与情绪描写"
   - name: long_term
     max_items: 8
     compress_batch: 4
     compress_into: canon
+    compress_max_chars: 160
+    compress_hint: "只保留改变主线走向的关键事件与转折，一行一个事件，忽略日常互动"
 
 canon:
   max_items: 20
-  compress_into: archive
+  # 正史溢出时在正史内部合并；不写入世界书，避免正史与世界书职责重叠
+  compress_into: canon
+  compress_max_chars: 240
+  compress_hint: "只记录改变世界格局或主线走向的事件：转折、死亡、背叛、契约、身份揭示、伏笔回收"
 
 demotion:
+  # 每层可单独设定冷却阈值：重要度低于阈值且连续 miss_scenes 个场景未命中，
+  # 就降级进入世界书（archive），命中 hits 次后可回温。
+  long_term:
+    importance_threshold: 0.35
+    miss_scenes: 10
+  canon:
+    importance_threshold: 0.30
+    miss_scenes: 20
+  # 全局默认（旧配置兼容，分层未配置时使用）
   importance_threshold: 0.35
   miss_scenes: 10
   reheat_hits: 2

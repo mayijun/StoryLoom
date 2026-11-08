@@ -14,6 +14,9 @@ router.add_api_route(
     "/{project_id}/turn", game.play_turn, methods=["POST"]
 )
 router.add_api_route(
+    "/{project_id}/opening", game.get_opening, methods=["GET"]
+)
+router.add_api_route(
     "/{project_id}/state", game.get_state, methods=["GET"]
 )
 router.add_api_route(

@@ -15,6 +15,14 @@ from storyloom.db import get_repository, reset_engines, reset_repositories
 from storyloom.saves.service import SaveService
 
 
+def _fake_prose(prompt: str, state) -> str:
+    """伪装 prose 模型：原样返回 prompt 里已裁决的「事实」，不访问网络。"""
+    for line in prompt.splitlines():
+        if line.startswith("事实："):
+            return line[len("事实："):]
+    return ""
+
+
 @pytest.fixture
 def apis(tmp_path, monkeypatch):
     monkeypatch.setenv(
@@ -26,6 +34,8 @@ def apis(tmp_path, monkeypatch):
     from storyloom.api.engine import engine
     from storyloom.api.routers import extensions, game, memory
 
+    # 游戏回合的叙述润色改为假模型返回，避免真实 LLM 调用导致超时
+    monkeypatch.setattr(engine, "_game_prose_fn", _fake_prose)
     engine._project_runtime.clear()
     engine.game_states.clear()
     engine.game_memories.clear()

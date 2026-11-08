@@ -61,9 +61,11 @@ PLANTED ──→ REINFORCED ──→ ACTIVATED ──→ RESOLVED
 
 - **分层核心记忆**（`memory/core.py`）：`working → short_term → long_term → canon`，
   `archive` 作为按需检索库；层数由 `config/memory_config.yaml` 的有序列表定义；
-- **生命周期**：短期超 `max_items` 取最旧 batch 压缩进长期；长期超限压缩进 canon；
-  低重要性 + 连续未命中 + 无活跃伏笔 + 非 pinned → 降级到 archive；
-  archive 命中 2 次 → 回温为 long_term；
+- **生命周期**：短期超 `max_items` 取最旧 `compress_batch` 条压缩进长期；
+  长期超限压缩进 canon；长期记忆与历史事件都可按各自阈值冷却到 archive：
+  `demotion.long_term` / `demotion.canon` 分别配置 `importance_threshold` 与
+  `miss_scenes`（重要度低于阈值且连续 N 场景未命中，且非 pinned / 无活跃伏笔）；
+  archive 命中 `reheat_hits` 次 → 回温为 long_term；
 - **持久化**：SQLite `memory_items` 表（`db/models.py`），按 `project_id + id` 隔离；
   重启后自动恢复；作品数据是事实来源，索引可重建；
 - **检索后端**：`fts`（默认，SQLite LIKE + 中文二元组打分）/ `vector`（需显式注入
@@ -71,6 +73,20 @@ PLANTED ──→ REINFORCED ──→ ACTIVATED ──→ RESOLVED
 - **历史回填**：`MemoryIndexer` 把旧项目场景与资产写入 archive，支持中文专名检索；
 - **隐私**：`secrets` 以 `visibility=private:<角色>` 写入检索库，只对本人可见；
 - 旧的平铺 `CoreMemory` / `SimpleRAGMemory` 保留在 `memory/legacy.py`，作者模式继续使用。
+
+```yaml
+tiers:
+  - name: short_term
+    max_items: 6          # 短期记忆存量阈值
+    compress_batch: 3     # 每次压缩几条进长期
+  - name: long_term
+    max_items: 8          # 长期记忆存量阈值
+    compress_batch: 4     # 每次压缩几条进历史事件
+demotion:
+  long_term: { importance_threshold: 0.35, miss_scenes: 10 }
+  canon:     { importance_threshold: 0.30, miss_scenes: 20 }
+  reheat_hits: 2
+```
 
 ### 🎲 可控随机性
 

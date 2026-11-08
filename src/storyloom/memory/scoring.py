@@ -59,6 +59,26 @@ def score_importance(
     return round(max(0.05, min(1.0, score)), 3)
 
 
+def score_compressed_importance(text: str, stage: str = "long_term") -> float:
+    """压缩产物的留存价值（0.05~1.0）。
+
+    与场景正文打分不同：压缩后的长期记忆已经丢失大量细节，
+    只有仍与主线 / 伏笔 / 关键事实相关时才值得常驻，否则应冷却到世界书。
+    正史条目起点更高，但仍可被创作者设置的阈值冷却。
+    """
+    score = 0.55 if stage == "canon" else 0.28
+    hits = sum(1 for word in _HIGH_VALUE_WORDS if word in text)
+    score += min(0.3 if stage == "canon" else 0.24, hits * 0.06)
+    if any(
+        word in text
+        for word in ("伏笔", "秘密", "真相", "契约", "承诺", "主线", "目标")
+    ):
+        score += 0.1
+    if len(text) >= 60:
+        score += 0.04
+    return round(max(0.05, min(1.0, score)), 3)
+
+
 def compress_batch(
     items: List[MemoryItem], limit: int = 300
 ) -> str:
@@ -80,8 +100,10 @@ def should_demote(
     importance_threshold: float,
     miss_scenes: int,
 ) -> bool:
-    """长期记忆是否应降级到检索库"""
-    if item.tier != "long_term" or item.pinned or item.active_foreshadow:
+    """长期记忆 / 历史事件是否应降级到检索库（世界书）"""
+    if item.tier not in ("long_term", "canon"):
+        return False
+    if item.pinned or item.active_foreshadow:
         return False
     if item.importance >= importance_threshold:
         return False
