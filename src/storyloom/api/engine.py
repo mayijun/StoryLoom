@@ -71,6 +71,7 @@ from storyloom.flows.turn_flow import TurnBoot, TurnLoop, TurnResult
 from storyloom.extensions.host import ExtensionRegistry
 from storyloom.runtime.directive import StageDirective, StageScene
 from storyloom.runtime.intent import PlayerIntent
+from storyloom.runtime.renderer import SceneRenderer
 from storyloom.saves.service import SaveService, state_from_save
 from storyloom.world.authority import AuthorityController
 from storyloom.world.state import StateDelta, WorldState
@@ -598,6 +599,23 @@ class NovelEngine:
             self.game_states[key] = state
         return state
 
+    def _game_prose_fn(self, prompt: str, state: WorldState) -> str:
+        """游戏模式叙述润色：用 prose 角色模型把裁决事实改写成叙事。
+
+        任何失败（无可用模型 / 网络异常）都返回空串，由渲染层回退到确定性文本，
+        保证游戏不会因为 LLM 不可用而中断。
+        """
+        if self.router is None:
+            return ""
+        try:
+            llm, _ = self.router.get_llm_for_role("prose")
+        except Exception:
+            return ""
+        try:
+            return str(llm.call([{"role": "user", "content": prompt}])).strip()
+        except Exception:
+            return ""
+
     async def play_turn(
         self, project_id: str, boot: TurnBoot
     ) -> TurnResult:
@@ -623,6 +641,7 @@ class NovelEngine:
             memory=memory,
             extensions=self.extension_registry,
             save_service=self.save_service,
+            renderer=SceneRenderer(prose_fn=self._game_prose_fn),
         )
         result = await loop.run(boot)
         key = (project_id, boot.instance_id)

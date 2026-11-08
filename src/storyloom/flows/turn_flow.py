@@ -365,12 +365,20 @@ class TurnLoop:
         # 8. moderation_gate（M0 默认 passthrough）
         quality_flags = self._quality_flags(results, issues, retry_count)
 
-        # 9. render_scene
+        # 9. render_scene（注入分层记忆：核心层常驻 + 检索库按需召回）
         primary = results[0] if results else AdjudicationResult(
             success=True, outcome="idle", narrative="你静静地站着，等待下一刻。"
         )
+        memory_context = ""
+        if self.memory is not None:
+            query = str(boot.intent.payload.get("text", "") or primary.narrative)
+            core = self.memory.prompt_block(viewer=actor)
+            retrieved = self.memory.retrieval_block(query, viewer=actor)
+            memory_context = "\n".join(
+                part for part in (core, retrieved) if part
+            )
         scene = await self.renderer.arender(
-            before, working_state, primary, actor
+            before, working_state, primary, actor, context=memory_context
         )
         trace.append({"stage": "render_scene", "chars": len(scene.text)})
 

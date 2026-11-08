@@ -34,9 +34,17 @@ const showCreateAgent = ref(false)
 const showCreateCharacter = ref(false)
 const showCreateLocation = ref(false)
 const showGame = ref(false)
+// 首次打开后游戏面板常驻，切换导演模式只隐藏不卸载，避免对话记录丢失
+const gameMounted = ref(false)
 // 从游戏面板切回导演模式时的一次性提示
 const gameNotice = ref('')
 let gameNoticeTimer: number | undefined
+
+function openGame() {
+  gameMounted.value = true
+  showGame.value = true
+  gameNotice.value = ''
+}
 
 function handleGameClose(notice?: string) {
   showGame.value = false
@@ -396,7 +404,7 @@ async function handleCopyConfig() {
 
       <!-- 小说导出 -->
       <template v-if="projectStore.currentProjectId">
-        <button class="btn btn-secondary btn-sm" title="进入游戏 / 扮演模式" @click="showGame = true">
+        <button class="btn btn-secondary btn-sm" title="进入游戏 / 扮演模式" @click="openGame">
           🎮 游戏模式
         </button>
         <span v-if="gameNotice" style="font-size:12px;color:var(--accent);">{{ gameNotice }}</span>
@@ -847,11 +855,15 @@ async function handleCopyConfig() {
     </aside>
 
     <!-- ==================== 游戏 / 扮演模式 ==================== -->
-    <GamePanel
-      v-if="showGame"
-      :project-id="currentProjectId"
-      @close="handleGameClose"
-    />
+    <template v-if="gameMounted">
+      <GamePanel
+        v-show="showGame"
+        :project-id="currentProjectId"
+        :project-title="projectStore.currentProject?.title || ''"
+        :active="showGame"
+        @close="handleGameClose"
+      />
+    </template>
 
     <!-- ==================== 对话框：创建项目 ==================== -->
     <div v-if="showCreateProject" class="dialog-overlay" @click.self="showCreateProject = false">

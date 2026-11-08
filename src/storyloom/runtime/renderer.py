@@ -86,18 +86,22 @@ class SceneRenderer:
         state_after: WorldState,
         adjudication: AdjudicationResult,
         actor: str = "玩家",
+        context: str = "",
     ) -> StageScene:
-        prose = await self._maybe_prose(adjudication, state_after)
+        prose = await self._maybe_prose(adjudication, state_after, context)
         return self._build(
             state_before, state_after, adjudication, actor, prose
         )
 
     async def _maybe_prose(
-        self, adjudication: AdjudicationResult, state: WorldState
+        self,
+        adjudication: AdjudicationResult,
+        state: WorldState,
+        context: str = "",
     ) -> Optional[str]:
         if self.prose_fn is None:
             return None
-        prompt = self.prompt_for(adjudication, state)
+        prompt = self.prompt_for(adjudication, state, context)
         try:
             result = await asyncio.to_thread(self.prose_fn, prompt, state)
             text = str(result).strip()
@@ -108,17 +112,29 @@ class SceneRenderer:
     # ---------------- 组装 ----------------
 
     def prompt_for(
-        self, adjudication: AdjudicationResult, state: WorldState
+        self,
+        adjudication: AdjudicationResult,
+        state: WorldState,
+        context: str = "",
     ) -> str:
-        return (
+        lines = [
             "请把下面的世界事件改写成第二人称、克制而有画面感的中文叙事，"
-            "不要新增未经裁决的事实，不要复述系统提示。\n"
-            f"时间：{state.format_time()}\n"
-            f"地点：{state.present_characters() and ''}"
-            f"{self._actor_location(state)}\n"
-            f"裁决：{adjudication.outcome}\n"
-            f"事实：{adjudication.narrative}"
+            "不要新增未经裁决的事实，不要复述系统提示。",
+        ]
+        if context:
+            lines.append("")
+            lines.append("## 你已知的剧情与设定（仅作上下文，不必逐字引用）")
+            lines.append(context)
+        lines.extend(
+            [
+                "",
+                f"时间：{state.format_time()}",
+                f"地点：{self._actor_location(state)}",
+                f"裁决：{adjudication.outcome}",
+                f"事实：{adjudication.narrative}",
+            ]
         )
+        return "\n".join(lines)
 
     @staticmethod
     def _actor_location(state: WorldState) -> str:
