@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 MemoryTier = Literal["working", "short_term", "long_term", "canon", "archive"]
 
-CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "memory_config.yaml"
+CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "memory_config.default.yaml"
 
 
 class MemoryItem(BaseModel):
@@ -91,7 +91,7 @@ class DemotionRule(BaseModel):
 
 
 class MemorySettings(BaseModel):
-    """memory_config.yaml 的运行时视图"""
+    """memory_config.default.yaml 的运行时视图"""
 
     tiers: List[TierSpec] = Field(default_factory=list)
     canon_max_items: int = 20
@@ -119,24 +119,9 @@ class MemorySettings(BaseModel):
         )
 
     @classmethod
-    def load(cls, path: Optional[str] = None) -> "MemorySettings":
-        target = Path(path) if path else CONFIG_PATH
-        if not target.exists():
-            return cls(
-                tiers=[
-                    TierSpec(
-                        name="short_term", max_items=6,
-                        compress_batch=3, compress_into="long_term",
-                        compress_max_chars=220,
-                    ),
-                    TierSpec(
-                        name="long_term", max_items=8,
-                        compress_batch=4, compress_into="canon",
-                        compress_max_chars=160,
-                    ),
-                ]
-            )
-        raw = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
+    def from_dict(cls, raw: Optional[Dict[str, Any]]) -> "MemorySettings":
+        """从配置字典构建（YAML 文件与数据库 payload 共用同一结构）"""
+        raw = raw or {}
         tiers = [
             TierSpec.model_validate(item)
             for item in raw.get("tiers", [])
@@ -185,6 +170,49 @@ class MemorySettings(BaseModel):
             backend=retrieval.get("backend", "fts"),
             top_k=int(retrieval.get("top_k", 5)),
         )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """导出为 YAML / 数据库使用的配置结构"""
+        return {
+            "tiers": [spec.model_dump() for spec in self.tiers],
+            "canon": {
+                "max_items": self.canon_max_items,
+                "compress_into": self.canon_compress_into,
+                "compress_max_chars": self.canon_compress_max_chars,
+                "compress_hint": self.canon_compress_hint,
+            },
+            "demotion": {
+                **{
+                    tier: rule.model_dump()
+                    for tier, rule in self.demotion_rules.items()
+                },
+                "importance_threshold": self.demotion_threshold,
+                "miss_scenes": self.demotion_miss_scenes,
+                "reheat_hits": self.reheat_hits,
+            },
+            "retrieval": {"backend": self.backend, "top_k": self.top_k},
+        }
+
+    @classmethod
+    def load(cls, path: Optional[str] = None) -> "MemorySettings":
+        target = Path(path) if path else CONFIG_PATH
+        if not target.exists():
+            return cls(
+                tiers=[
+                    TierSpec(
+                        name="short_term", max_items=6,
+                        compress_batch=3, compress_into="long_term",
+                        compress_max_chars=220,
+                    ),
+                    TierSpec(
+                        name="long_term", max_items=8,
+                        compress_batch=4, compress_into="canon",
+                        compress_max_chars=160,
+                    ),
+                ]
+            )
+        raw = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
+        return cls.from_dict(raw)
 
 
 class WorkingMemory(BaseModel):

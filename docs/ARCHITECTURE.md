@@ -271,8 +271,11 @@ WorldState
 | L3 `canon` | 改变主线 / 世界格局的关键事件（历史事件） | 是 | 是 |
 | L4 `archive` | 环境、世界观、角色背景、已解决伏笔、被降级旧记忆 | 按需检索 | 是（索引可重建） |
 
-层数不写死：`memory_config.yaml` 用有序列表定义 L1~L3，可在短期与长期之间继续加层。
-`working` 与 `archive` 是固定端点。
+核心层固定为 `short_term → long_term → canon` 三档（`working` / `archive` 是端点）；
+三档的容量与压缩由 `tiers` 有序列表配置，降级 / 回温由 `demotion` 配置。
+优先级：`MemorySettings` 代码默认 < `memory_config.default.yaml` 种子 < 项目 `memory_configs`；
+种子只在项目首次读取时导入，之后以数据库配置为准。层名受 `MemoryTier`
+枚举约束，当前不支持新增自定义层。
 
 生命周期：
 
@@ -298,7 +301,7 @@ WorldState
 | `vector` | Chroma + 可配置 embedding（OpenAI / Ollama） | 主题、情绪、相似桥段 |
 | `hybrid` | FTS + 向量，RRF 融合 | 配好 embedding 后的推荐值 |
 
-- 三种后端同级，按项目 `memory_backend` 切换；
+- 三种后端同级，按项目记忆配置（`memory_configs` 的 `retrieval.backend`）切换；
 - 作品数据（`scenes` / 资产）是事实来源，记忆索引与向量库可重建；
 - 不使用 Chroma 默认英文 embedding；中文叙事需显式配置多语言模型；
 - embedding / Chroma 不可用时，`vector` 返回空，`hybrid` 自动退化为 `fts`，不阻断生成。
@@ -339,7 +342,7 @@ src/storyloom/
 ├── saves/        # service.py
 ├── memory/       # base.py / tiers.py / scoring.py / core.py / consolidation.py
 │                 # lexical.py / embeddings.py / vector.py / hybrid.py / indexer.py
-├── config/memory_config.yaml    # 记忆层数 / 压缩 / 降级策略
+├── config/memory_config.default.yaml    # 核心层压缩 / 降级 / 检索的默认种子（项目配置落 DB）
 ├── examples/                    # 扩展 manifest 扫描目录（可空，内置扩展由 templates 内嵌）
 └── templates/                   # 试用模板（角色/地点/伏笔/章节 + 内嵌扩展）
 ```
@@ -379,7 +382,7 @@ M0 只解析 `asset` manifest，不做媒体渲染。
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | 作者模式 MVP | 场景生成 / 资产与场景落库 / 章节 / Web 工作台 | ✅ |
-| M0 | 双模式纵切：世界状态、GM、双总线、TurnLoop、authority + 模式切换、NPC 自主、分层记忆 v2、Mod v1、存档、游戏前端 | 🔲 |
+| M0 | 双模式纵切：世界状态、GM、双总线、TurnLoop、authority + 模式切换、NPC 自主、分层记忆 v2、Mod v1、存档、游戏前端 | ✅ |
 | M1 | TFC 五档、审核 Gate 实装、图片/音频媒体、Flag/Choice/好感度、章节化收束 | 🔲 |
 | M2 | 命运、Casting、路线图、日程、POV、Belief 全量、ADV/NVL | 🔲 |
 | M3 | 视频、生成式媒体、TTS | 🔲 |

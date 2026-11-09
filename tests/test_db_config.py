@@ -30,7 +30,7 @@ def test_seed_from_yaml(repo):
     assert tasks[0]["key"] == "surprise_proposal"
 
     director = repo.get_agent("director")
-    assert director["role"] == "导演"
+    assert director["role"] == "叙事导演 · 场景意图设计"
     assert director["allow_delegation"] is None
 
 

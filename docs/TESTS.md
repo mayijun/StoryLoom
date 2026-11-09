@@ -1,7 +1,7 @@
 # 后端测试用例清单
 
 > 运行：`uv run pytest -q`（根目录）。
-> 当前基线：**16 个文件 / 176 个用例全部通过**。
+> 当前基线：**17 个文件 / 189 个用例全部通过**。
 > 进度口径见 [MVP.md](MVP.md)；性能基线见 `scripts/bench_m0.py`。
 
 | 文件 | 用例数 | 覆盖范围 |
@@ -13,6 +13,7 @@
 | `test_templates_integration.py` | 14 | 模板端到端集成 |
 | `test_chapter_structure.py` | 13 | 章节结构与场景归属 |
 | `test_m0.py` | 19 | M0 验收 A1–A15 + 运行时保护 |
+| `test_memory_compression.py` | 13 | 记忆分层压缩 / 降级回温 / 按层阈值 |
 | `test_m0_api.py` | 7 | M0 API（game / memory / extensions） |
 | `test_db_config.py` | 7 | Agent/Task 配置种子与迁移 |
 | `test_flow.py` | 6 | 作者模式 Flow 与伏笔操作 |
@@ -22,7 +23,7 @@
 | `test_api_agents.py` | 4 | Agent 配置 API |
 | `test_assets.py` | 4 | 资产模型默认值 |
 | `test_memory.py` | 3 | 记忆基础版（CoreMemory + RAG） |
-| **合计** | **176** | |
+| **合计** | **189** | |
 
 ---
 
@@ -235,6 +236,24 @@
 | `test_extensions_resolve_endpoint` | `/extensions/resolve` |
 | `test_provider_api_keys_injected_in_memory` | Key 只注入运行时内存，不落盘 |
 | `test_runtime_v1_routes_registered` | `/runtime/v1/*` 版本化入口 + 旧端点保留 |
+
+### 3.3 记忆分层压缩与配置 — `test_memory_compression.py`（13）
+
+| 用例 | 验证点 |
+|---|---|
+| `test_short_to_long_uses_llm_compression_prompt` | 短期→长期使用 LLM 压缩提示词 |
+| `test_long_to_history_keeps_only_key_events` | 长期→canon 只保留关键事件 |
+| `test_fallback_compression_drops_scenery_keeps_key_fact` | LLM 压缩失败时确定性兜底保留关键事实 |
+| `test_history_overflow_merges_inside_history_not_world_book` | canon 溢出在正史内部合并，不写世界书 |
+| `test_minor_long_term_memory_demotes_to_world_book_and_reheats` | 低价值长期记忆降级 + 命中回温 |
+| `test_simulated_31_turn_playthrough_tier_flow` | 31 回合模拟的完整层级流转 |
+| `test_prompt_block_separates_history_and_world_book` | prompt 中正史与世界书分区 |
+| `test_turn_working_context_uses_player_action_text` | 回合工作记忆使用玩家行动文本 |
+| `test_creator_can_configure_each_layer_threshold` | 每层阈值可独立配置 |
+| `test_demotion_rules_fall_back_to_global_thresholds` | 分层未配置时回退全局阈值 |
+| `test_easiest_threshold_demotes_long_and_canon_to_world_book` | 最宽松阈值下长期与正史均可降级 |
+| `test_demotion_skips_pinned_and_active_foreshadowing` | pinned 与活跃伏笔不降级 |
+| `test_legacy_pinned_canon_is_normalized_on_load` | 旧配置 pinned canon 加载时归一化 |
 
 ---
 

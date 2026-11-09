@@ -11,7 +11,7 @@ This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import yaml
 from sqlalchemy import func, inspect, select
@@ -25,6 +25,7 @@ from storyloom.db.models import (
     CharacterRow,
     ForeshadowRow,
     LocationRow,
+    MemoryConfigRow,
     MemoryRow,
     ProjectRow,
     SceneRow,
@@ -37,6 +38,9 @@ DEFAULT_PROJECT_ID = "demo"
 
 _CONFIG_DIR = (
     Path(__file__).resolve().parents[1] / "crews" / "scene_crew" / "config"
+)
+_MEMORY_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "memory_config.default.yaml"
 )
 
 _AGENT_FIELDS = (
@@ -308,6 +312,8 @@ class CrewConfigRepository:
         # 必须在 session 提交/关闭之后再调 seed_from_yaml，
         # 否则 SQLite 写锁未释放，seed 内部开新 session 会 database is locked
         self.seed_from_yaml(project_id=project_id)
+        # 每个项目一份独立的记忆配置（种子来自 memory_config.default.yaml）
+        self.load_memory_config(project_id)
         return record
 
     def upsert_project(
@@ -1165,6 +1171,55 @@ class CrewConfigRepository:
             session.delete(row)
             return True
 
+    # ---------------- 记忆层配置（MemoryConfigRow） ----------------
+
+    def load_memory_config(
+        self, project_id: str = DEFAULT_PROJECT_ID
+    ) -> Dict[str, Any]:
+        """读取项目记忆配置；首次访问时从 memory_config.default.yaml 播种"""
+        self.create_all()
+        self.ensure_project(project_id)
+        with self.session() as session:
+            row = session.get(MemoryConfigRow, project_id)
+            if row is None:
+                row = MemoryConfigRow(
+                    project_id=project_id, payload=_load_yaml(_MEMORY_CONFIG_PATH)
+                )
+                session.add(row)
+                session.flush()
+            return dict(row.payload or {})
+
+    def memory_config_exists(
+        self, project_id: str = DEFAULT_PROJECT_ID
+    ) -> bool:
+        """项目是否已有记忆配置行（不触发播种）"""
+        with self.session() as session:
+            return session.get(MemoryConfigRow, project_id) is not None
+
+    def save_memory_config(
+        self, project_id: str, payload: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """整体覆盖项目记忆配置（调用方负责补全默认值）"""
+        self.create_all()
+        self.ensure_project(project_id)
+        with self.session() as session:
+            row = session.get(MemoryConfigRow, project_id)
+            if row is None:
+                row = MemoryConfigRow(project_id=project_id, payload=dict(payload))
+                session.add(row)
+            else:
+                row.payload = dict(payload)
+            session.flush()
+            return dict(row.payload or {})
+
+    def reset_memory_config(
+        self, project_id: str = DEFAULT_PROJECT_ID
+    ) -> Dict[str, Any]:
+        """恢复为 memory_config.default.yaml 的默认值（项目级重置）"""
+        return self.save_memory_config(
+            project_id, _load_yaml(_MEMORY_CONFIG_PATH)
+        )
+
     # ---------------- 分层记忆（MemoryRow） ----------------
 
     def upsert_memory_item(
@@ -1244,18 +1299,28 @@ class CrewConfigRepository:
         project_id: str = DEFAULT_PROJECT_ID,
         crew: str = SCENE_CREW,
         overwrite: bool = False,
+        kinds: Tuple[str, ...] = ("agents", "tasks"),
     ) -> Dict[str, int]:
         """
-        把 crew 的 agents.yaml / tasks.yaml 导入数据库。
+        把 crew 的 agents.default.yaml / tasks.default.yaml 导入数据库。
 
         overwrite=False 时只补充缺失条目，不覆盖手工修改。
+        kinds 可限定只同步 agents 或 tasks（配置迁移脚本使用）。
         """
         self.create_all()
         # 必须先确保 projects 表里有目标 project_id 行，
         # 否则插入 agent_configs / task_configs 时撞外键（迁移场景下 demo 可能缺失）
         self.ensure_project(project_id)
-        agents_yaml = _load_yaml(_CONFIG_DIR / "agents.yaml")
-        tasks_yaml = _load_yaml(_CONFIG_DIR / "tasks.yaml")
+        agents_yaml = (
+            _load_yaml(_CONFIG_DIR / "agents.default.yaml")
+            if "agents" in kinds
+            else {}
+        )
+        tasks_yaml = (
+            _load_yaml(_CONFIG_DIR / "tasks.default.yaml")
+            if "tasks" in kinds
+            else {}
+        )
 
         inserted = {"agents": 0, "tasks": 0}
         with self.session() as session:

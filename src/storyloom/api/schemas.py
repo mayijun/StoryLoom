@@ -455,7 +455,13 @@ class ModeSwitchRequest(BaseModel):
 
 
 class MemoryPatchRequest(BaseModel):
-    backend: Literal["fts", "vector", "hybrid"]
+    """项目级记忆配置局部更新（只传需要调整的字段）"""
+
+    backend: Optional[Literal["fts", "vector", "hybrid"]] = None
+    tiers: Optional[List[Dict[str, Any]]] = None
+    canon: Optional[Dict[str, Any]] = None
+    demotion: Optional[Dict[str, Any]] = None
+    retrieval: Optional[Dict[str, Any]] = None
 
 
 class ExtensionResolveRequest(BaseModel):

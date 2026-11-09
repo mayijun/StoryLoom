@@ -8,12 +8,12 @@ This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
   由 DbConfig 描述符接入 @CrewBase 的 self.agents_config
 - 标准任务序列持久化在数据库（task_configs 表），
   由 self.tasks_config 读取、self.crew() 按 agent_key/context_keys 装配
-- 同级 config/*.yaml 仅作为首次运行的种子数据，数据库是唯一事实来源
+- 同级 config/*.default.yaml 仅作为首次运行的种子数据，数据库是唯一事实来源
 - 通过 AgentModelRouter 为每个 Agent 注入最适合的 LLM
   （router 为 None 时使用 CrewAI 默认 LLM）
 - protagonist / ensemble / prose 三个 Agent 由 Flow 按资产数据动态生成，
   配置中的 {name}/{persona}/{motivation}/{names}/{brief}/{style}
-  占位符会被代码填充（_dynamic_config）
+  占位符会被代码填充（_config）
 
 Agent 角色划分（8 类）：
 - ProtagonistAgent   重要角色，1 角色 = 1 实例
@@ -34,6 +34,20 @@ from crewai.project import CrewBase, agent, crew
 from storyloom.db import DEFAULT_PROJECT_ID, DbConfig, get_repository
 from storyloom.llm.router import AgentModelRouter
 from storyloom.models import CharacterAsset
+
+
+#: 无工具的单次创作类 Agent 不需要默认的 25 轮迭代，收紧上限让异常快速收敛。
+#: 数据库配置里的同名字段优先（setdefault），这里是兜底默认值。
+AGENT_DEFAULTS: dict = {
+    "protagonist": {"max_iter": 6},
+    "ensemble": {"max_iter": 4},
+    "director": {"max_iter": 6},
+    "outline": {"max_iter": 8},
+    "consistency": {"max_iter": 6},
+    "prose": {"max_iter": 4},
+    "surprise": {"max_iter": 6},
+    "foreshadowing": {"max_iter": 6},
+}
 
 
 @CrewBase
@@ -66,13 +80,42 @@ class SceneCrew:
             self._summary.append((agent_key, model_key))
         return llm
 
-    def _dynamic_config(self, key: str, **values) -> dict:
-        """复制数据库中的配置并用实际资产数据填充占位符"""
+    def _config(self, key: str, **values) -> dict:
+        """复制数据库配置：补默认参数，再用实际资产数据填充占位符"""
         config = dict(self.agents_config[key])
-        for field in ("role", "goal", "backstory"):
-            if isinstance(config.get(field), str):
-                config[field] = config[field].format(**values)
+        for field, value in AGENT_DEFAULTS.get(key, {}).items():
+            config.setdefault(field, value)
+        if values:
+            for field in ("role", "goal", "backstory"):
+                if isinstance(config.get(field), str):
+                    config[field] = config[field].format(**values)
         return config
+
+    def _render_task_field(
+        self, key: str, field: str, values: dict
+    ) -> str:
+        """把数据库里的任务模板渲染成最终提示词。
+
+        数据库是任务提示词的唯一来源：Flow 的单 Agent 步骤与标准 Crew
+        共用同一份 description，避免两处各写一遍导致漂移。
+        """
+        config = self.tasks_config.get(key)
+        if config is None:
+            raise KeyError(f"数据库中没有 Task 定义: {key}")
+        template = str(config.get(field, ""))
+        try:
+            return template.format(**values)
+        except (KeyError, IndexError, ValueError):
+            # 用户手工编辑的模板可能有未转义的花括号：退回原文而不是中断生成
+            return template
+
+    def task_prompt(self, key: str, **values: Any) -> str:
+        """按 key 读取任务描述并填充占位符"""
+        return self._render_task_field(key, "description", values)
+
+    def task_expected_output(self, key: str, **values: Any) -> str:
+        """按 key 读取期望输出并填充占位符"""
+        return self._render_task_field(key, "expected_output", values)
 
     def agent_for_key(self, key: str, **values: Any) -> Agent:
         """
@@ -88,9 +131,7 @@ class SceneCrew:
         config = self.agents_config.get(key)
         if config is None:
             raise KeyError(f"数据库中没有 Agent 定义: {key}")
-        if values:
-            config = self._dynamic_config(key, **values)
-        return Agent(config=config, llm=self._llm(key), verbose=False)
+        return Agent(config=self._config(key, **values), llm=self._llm(key), verbose=False)
 
     # ---------------- 角色类 Agent ----------------
 
@@ -99,13 +140,13 @@ class SceneCrew:
         """主角 Agent：1 角色 = 1 实例，用最有创意表现力的模型"""
         if char is None:
             return Agent(
-                config=self.agents_config["protagonist"],
+                config=self._config("protagonist"),
                 llm=self._llm("protagonist"),
                 verbose=True,
             )
         llm = self._llm("protagonist", label=f"protagonist:{char.name}")
         return Agent(
-            config=self._dynamic_config(
+            config=self._config(
                 "protagonist",
                 name=char.name,
                 persona=char.persona,
@@ -120,7 +161,7 @@ class SceneCrew:
         """群演 Agent：多个次要角色共享一个实例，用便宜模型"""
         if characters is None:
             return Agent(
-                config=self.agents_config["ensemble"],
+                config=self._config("ensemble"),
                 llm=self._llm("ensemble"),
                 verbose=True,
             )
@@ -131,7 +172,7 @@ class SceneCrew:
         )
         llm = self._llm("ensemble", label=f"ensemble:{names}")
         return Agent(
-            config=self._dynamic_config("ensemble", names=names, brief=brief),
+            config=self._config("ensemble", names=names, brief=brief),
             llm=llm,
             verbose=False,
         )
@@ -142,7 +183,7 @@ class SceneCrew:
     def director(self) -> Agent:
         """导演 Agent：用推理能力最强的模型，只产出结构化场景意图包"""
         return Agent(
-            config=self.agents_config["director"],
+            config=self._config("director"),
             llm=self._llm("director"),
             verbose=True,
         )
@@ -151,7 +192,7 @@ class SceneCrew:
     def outline(self) -> Agent:
         """大纲 Agent：章节级 / 卷级结构规划，需要长上下文"""
         return Agent(
-            config=self.agents_config["outline"],
+            config=self._config("outline"),
             llm=self._llm("outline"),
             verbose=True,
         )
@@ -166,7 +207,7 @@ class SceneCrew:
         而 GPT-4o 的工具调用 / JSON 模式最可靠
         """
         return Agent(
-            config=self.agents_config["consistency"],
+            config=self._config("consistency"),
             llm=self._llm("consistency"),
             verbose=True,
         )
@@ -176,13 +217,13 @@ class SceneCrew:
         """润色 Agent：用文学表现力最强的模型"""
         if style is None:
             return Agent(
-                config=self.agents_config["prose"],
+                config=self._config("prose"),
                 llm=self._llm("prose"),
                 verbose=True,
             )
         llm = self._llm("prose", label=f"prose:{style}")
         return Agent(
-            config=self._dynamic_config("prose", style=style),
+            config=self._config("prose", style=style),
             llm=llm,
             verbose=False,
         )
@@ -202,7 +243,7 @@ class SceneCrew:
         模型选择：用有创意的模型（如 Claude），因为需要跳出常规思维
         """
         return Agent(
-            config=self.agents_config["surprise"],
+            config=self._config("surprise"),
             llm=self._llm("surprise"),
             verbose=True,
         )
@@ -220,7 +261,7 @@ class SceneCrew:
         模型选择：用推理能力强的模型，因为需要维护复杂的状态追踪
         """
         return Agent(
-            config=self.agents_config["foreshadowing"],
+            config=self._config("foreshadowing"),
             llm=self._llm("foreshadowing"),
             verbose=True,
         )

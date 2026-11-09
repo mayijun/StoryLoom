@@ -52,11 +52,15 @@ agent_model_mapping:  # Agent → 模型
 
 strategy:
   mode: "balanced"        # cost_optimized / quality_first / balanced
+  # 预留字段：当前路由代码未读取
   auto_fallback: true
   max_cost_per_scene: 0.50
 ```
 
 用户无需改代码，只改 YAML 即可调整分配策略。
+
+注意：`auto_fallback` 与 `max_cost_per_scene` 目前只是配置占位，代码并未读取——
+降级始终启用，也没有单场景成本上限；实际参与选型的只有 `mode`。
 
 ---
 
@@ -73,8 +77,16 @@ primary 不可用 → fallback 可用 → 用 fallback 并打印降级日志
 
 `strategy.mode` 的影响：
 - `balanced`：优先 primary
-- `quality_first`：优先 primary
+- `quality_first`：优先 primary（当前与 balanced 行为一致）
 - `cost_optimized`：在 primary / fallback 中选每千 token 成本更低者
+
+补充：
+- 角色未在 `agent_model_mapping` 中配置时，primary / fallback 都回落到 `deepseek.flash`，
+  temperature 默认 `0.8`；
+- API Key 从 `providers.*.env_key` 指向的环境变量读取；模型映射本身只读
+  `model_config.yaml`，不读环境变量、不落数据库；
+- 回合请求体可带 `provider_api_keys`，运行时覆盖内存注册表中的 Key，
+  优先级高于环境变量；进程内持续生效，直到重启或被再次覆盖，不写盘、不回显。
 
 ---
 

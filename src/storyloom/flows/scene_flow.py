@@ -178,6 +178,31 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
         # 重跑同一编号场景时：不递增 scene_count，不推进伏笔沉睡计数
         self.is_regenerate = is_regenerate
 
+    def _director_constraints(self) -> str:
+        """提取导演已采纳的伏笔/意外，供一致性与润色步骤使用
+
+        导演输出本应是 JSON 意图包；解析失败时退回原文，
+        保证后续步骤仍能拿到导演意图而不是空串。
+        """
+        intent = self.state.director_intent or ""
+        try:
+            data = parse_json_block(intent)
+        except (ValueError, TypeError):
+            return intent
+
+        parts = []
+        surprise = data.get("adopted_surprise")
+        if surprise:
+            parts.append(
+                "意外事件: " + json.dumps(surprise, ensure_ascii=False)
+            )
+        ops = data.get("adopted_foreshadow_ops") or []
+        if ops:
+            parts.append(
+                "伏笔操作: " + json.dumps(ops, ensure_ascii=False)
+            )
+        return "\n".join(parts)
+
     # ============================================================
     # Step 0a: SurpriseAgent 提出意外事件提案
     # ============================================================
@@ -217,35 +242,19 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
         )
 
         surprise_agent = self.crew.surprise()
-        task = Task(
-            description=(
-                f"故事: {project.title}\n"
-                f"{self.state.memory.as_prompt_block()}\n"
-                f"本场景要求: {self.state.scene_brief}\n"
-                f"{cooldown_hint}\n\n"
-                f"当前活跃伏笔（可尝试关联）:\n"
-                f"{foreshadow_context}\n\n"
-                "请评估本场景是否需要意外元素。\n"
-                "如果需要，输出 JSON 提案，字段:\n"
-                "- surprise_type: character/information/environment/"
-                "relationship/temporal\n"
-                "- description: 意外事件描述\n"
-                "- justification: 为什么合理\n"
-                "- impact_on_plot: 对后续剧情影响\n"
-                "- linked_foreshadow_id: 可关联的伏笔 ID(可为 null)\n"
-                "- severity: minor/moderate/major\n\n"
-                '如果不需要，输出: {"no_surprise": true, '
-                '"reason": "原因说明"}'
-            ),
-            expected_output="JSON 意外事件提案或不需要意外的声明",
-            agent=surprise_agent,
+        # 单 Agent 单任务：Flow 已负责时序，直接用 Agent.kickoff 省掉 Crew 开销。
+        # 提示词来自数据库中的 surprise_proposal 任务，与标准 Crew 共用一份。
+        output = surprise_agent.kickoff(
+            self.crew.task_prompt(
+                "surprise_proposal",
+                project_title=project.title,
+                memory_block=self.state.memory.as_prompt_block(),
+                scene_brief=self.state.scene_brief,
+                cooldown_hint=cooldown_hint,
+                active_foreshadowings=foreshadow_context,
+            )
         )
-        crew = Crew(
-            agents=[surprise_agent],
-            tasks=[task],
-            process=Process.sequential,
-        )
-        result = str(crew.kickoff())
+        result = str(output.raw)
         self.state.surprise_proposal = result
         return result
 
@@ -303,35 +312,19 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
         foreshadowing_agent = (
             self.crew.foreshadowing()
         )
-        task = Task(
-            description=(
-                f"故事: {project.title}\n"
-                f"{self.state.memory.as_prompt_block()}\n"
-                f"本场景: {self.state.scene_brief}\n"
-                f"在场角色: {', '.join(self.present_characters)}\n\n"
-                f"===== 当前伏笔状态表 =====\n{foreshadow_status}\n\n"
-                f"===== 紧急提醒 =====\n{alerts}\n\n"
-                f"===== SurpriseAgent 的意外提案 =====\n"
-                f"{surprise_proposal}\n\n"
-                "请输出 JSON 格式的伏笔操作建议列表，每项包含:\n"
-                "- action: plant/reinforce/activate/resolve/subvert/alert\n"
-                "- foreshadow_id: 操作的伏笔 ID(新建时为 null)\n"
-                "- description: 具体操作描述\n"
-                "- new_foreshadow: 若 action=plant，填写新伏笔详情\n"
-                "  (description, target_revelation, "
-                "linked_characters, max_dormant_scenes)\n"
-                "- link_to_surprise: 是否与意外提案联动(bool)\n\n"
-                '输出格式: {"operations": [...]}'
-            ),
-            expected_output="JSON 伏笔操作建议列表",
-            agent=foreshadowing_agent,
+        output = foreshadowing_agent.kickoff(
+            self.crew.task_prompt(
+                "foreshadowing_ops",
+                project_title=project.title,
+                memory_block=self.state.memory.as_prompt_block(),
+                scene_brief=self.state.scene_brief,
+                present_characters=", ".join(self.present_characters),
+                foreshadow_table=foreshadow_status,
+                urgent_alerts=alerts,
+                surprise_proposal=surprise_proposal,
+            )
         )
-        crew = Crew(
-            agents=[foreshadowing_agent],
-            tasks=[task],
-            process=Process.sequential,
-        )
-        result = str(crew.kickoff())
+        result = str(output.raw)
         self.state.foreshadowing_ops = result
         return result
 
@@ -349,36 +342,17 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
         导演做最终裁决：采纳 / 修改 / 否决各提案
         """
         director = self.crew.director()
-        task = Task(
-            description=(
-                f"故事: {self.state.project.title}\n"
-                f"{self.state.memory.as_prompt_block()}\n"
-                f"用户场景要求: {self.state.scene_brief}\n\n"
-                f"===== 意外 Agent 提案 =====\n"
-                f"{self.state.surprise_proposal}\n\n"
-                f"===== 伏笔 Agent 建议 =====\n"
-                f"{foreshadowing_ops}\n\n"
-                "作为导演，请综合以上所有信息，输出最终的"
-                "'场景意图包' JSON:\n"
-                "- goal: 戏剧目标\n"
-                "- conflict: 冲突/伏笔\n"
-                "- emotion_arc: 情绪曲线\n"
-                "- forbidden: 禁止发生的事\n"
-                "- adopted_surprise: 采纳的意外（null 表示不采纳）\n"
-                "- adopted_foreshadow_ops: 采纳的伏笔操作列表\n"
-                "- rejection_reasons: 否决某提案的理由（如有）\n\n"
-                "你有权否决任何提案，但必须给出理由。"
-            ),
-            expected_output="JSON 场景意图包",
-            agent=director,
+        output = director.kickoff(
+            self.crew.task_prompt(
+                "director_plan",
+                project_title=self.state.project.title,
+                memory_block=self.state.memory.as_prompt_block(),
+                scene_brief=self.state.scene_brief,
+                surprise_proposal=self.state.surprise_proposal,
+                foreshadowing_ops=foreshadowing_ops,
+            )
         )
-        crew = Crew(
-            agents=[director],
-            tasks=[task],
-            process=Process.sequential,
-        )
-        result = crew.kickoff()
-        self.state.director_intent = str(result)
+        self.state.director_intent = str(output.raw)
         return self.state.director_intent
 
     # ============================================================
@@ -422,16 +396,21 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
             agent = self.crew.protagonist(char)
             agents.append(agent)
             tasks.append(Task(
-                description=(
-                    f"导演意图(仅供参考，不要直接复述):\n"
-                    f"{self.state.director_intent}\n\n"
-                    f"背景资料:\n{rag_context}\n\n"
-                    f"{self.state.memory.as_prompt_block()}\n\n"
-                    f"请以【{char.name}】的身份，给出这一刻的"
-                    f"内心想法、台词和行动。\n"
-                    f"简洁、符合人设，只写行动日志式的描述。"
+                description=self.crew.task_prompt(
+                    "actor_interaction",
+                    focus_instruction=(
+                        f"请以【{char.name}】的身份，给出这一刻的"
+                        f"内心想法、台词和行动。\n"
+                        f"简洁、符合人设，只写行动日志式的描述。"
+                    ),
+                    director_intent=self.state.director_intent,
+                    rag_context=rag_context,
+                    memory_block=self.state.memory.as_prompt_block(),
+                    character_name=char.name,
                 ),
-                expected_output=f"{char.name}的行动与台词记录",
+                expected_output=self.crew.task_expected_output(
+                    "actor_interaction", character_name=char.name
+                ),
                 agent=agent,
             ))
 
@@ -441,14 +420,22 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
             agents.append(ensemble)
             for char in secondary_chars:
                 tasks.append(Task(
-                    description=(
-                        f"现在请代入次要角色【{char.name}】。\n"
-                        f"导演意图(仅供参考):\n"
-                        f"{self.state.director_intent}\n\n"
-                        f"{self.state.memory.as_prompt_block()}\n\n"
-                        f"给出{char.name}在这一刻的简短反应/台词。"
+                    description=self.crew.task_prompt(
+                        "actor_interaction",
+                        focus_instruction=(
+                            f"现在请代入次要角色【{char.name}】。\n"
+                            f"只写这一个角色的台词与动作，"
+                            f"不要替其他角色发言。\n"
+                            f"给出{char.name}在这一刻的简短反应/台词。"
+                        ),
+                        director_intent=self.state.director_intent,
+                        rag_context=rag_context,
+                        memory_block=self.state.memory.as_prompt_block(),
+                        character_name=char.name,
                     ),
-                    expected_output=f"{char.name}的简短反应",
+                    expected_output=self.crew.task_expected_output(
+                        "actor_interaction", character_name=char.name
+                    ),
                     agent=ensemble,
                 ))
 
@@ -481,35 +468,29 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
             ensure_ascii=False,
             default=str,
         )
-        task = Task(
-            description=(
-                f"检查以下角色行动记录:\n{actor_log}\n\n"
-                f"角色设定:\n{char_data}\n\n"
-                f"活跃伏笔:\n{foreshadow_data}\n\n"
-                "检查项：\n"
-                "1. 角色行为是否符合人设\n"
-                "2. 时间线是否合理\n"
-                "3. 已采纳的意外事件是否'合理但意外'而非'莫名其妙'\n"
-                "4. 伏笔操作是否与已有设定冲突\n\n"
-                "输出 JSON: {passed, conflicts, severity}"
+        # 结构化输出交给 CrewAI 的 response_format，避免手工截取 JSON
+        output = agent.kickoff(
+            self.crew.task_prompt(
+                "consistency_check",
+                actor_log=actor_log,
+                character_data=char_data,
+                foreshadow_data=foreshadow_data,
+                director_constraints=(
+                    self._director_constraints() or "（无）"
+                ),
             ),
-            expected_output="JSON 一致性报告",
-            agent=agent,
+            response_format=ConsistencyReport,
         )
-        crew = Crew(
-            agents=[agent],
-            tasks=[task],
-            process=Process.sequential,
-        )
-        raw = str(crew.kickoff())
 
-        # 容错解析：推理模型结构化输出不稳定时兜底
-        try:
-            report = ConsistencyReport(**parse_json_block(raw))
-        except Exception:
-            report = ConsistencyReport(
-                passed=True, conflicts=[], severity="none"
-            )
+        # 转换失败时退回手工解析，仍失败则放行，避免卡死 Flow
+        report = output.pydantic
+        if not isinstance(report, ConsistencyReport):
+            try:
+                report = ConsistencyReport(**parse_json_block(str(output.raw)))
+            except Exception:
+                report = ConsistencyReport(
+                    passed=True, conflicts=[], severity="none"
+                )
 
         self.state.consistency_report = report
         return report
@@ -557,26 +538,17 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
         prose_agent = self.crew.prose(
             self.state.project.style
         )
-        task = Task(
-            description=(
-                f"请把以下角色行动日志，改写成统一风格"
-                f"('{self.state.project.style}')的正式小说正文。\n"
-                f"像一个隐形在场的叙述者一样，融合对话、动作、"
-                f"心理与环境描写。\n\n"
-                "注意：如果有伏笔暗示，要自然地织入叙事中，"
-                "不能让读者觉得刻意。如果有意外事件，"
-                "要用节奏感和氛围烘托其冲击力。\n\n"
-                f"角色行动日志:\n{self.state.actor_log}"
-            ),
-            expected_output="一段完整的小说正文",
-            agent=prose_agent,
+        output = prose_agent.kickoff(
+            self.crew.task_prompt(
+                "prose_polish",
+                style=self.state.project.style,
+                director_constraints=(
+                    self._director_constraints() or "（无）"
+                ),
+                actor_log=self.state.actor_log,
+            )
         )
-        crew = Crew(
-            agents=[prose_agent],
-            tasks=[task],
-            process=Process.sequential,
-        )
-        result = str(crew.kickoff())
+        result = str(output.raw)
         self.state.final_prose = result
         return result
 

@@ -22,8 +22,14 @@
 | ✍️ 润色 prose | 行动日志 → 文学化正式正文 | Claude Sonnet | 🟡 MEDIUM |
 | 📋 大纲 outline | 章节级结构规划 | DeepSeek V4 Pro | 🟡 MEDIUM |
 
-- **YAML 种子**：`crews/scene_crew/config/agents.yaml` + `tasks.yaml` 首次运行导入数据库，
+- **YAML 种子**：`crews/scene_crew/config/agents.default.yaml` + `tasks.default.yaml` 首次运行导入数据库，
   之后数据库是唯一事实来源；
+- **任务模板单一来源**：Flow 内的单 Agent 步骤直接 `Agent.kickoff()`，提示词按 key 从
+  数据库 `task_configs` 读取（`task_prompt()` / `task_expected_output()`），与标准 Crew
+  共用同一份 description / expected_output，避免两处各写一遍导致漂移；
+- **迭代上限兜底**：无工具的单次创作 Agent 由 `AGENT_DEFAULTS` 收紧 `max_iter`
+  （主角 6、群演 4、导演 6、大纲 8、一致性 6、润色 4、意外 6、伏笔 6），
+  数据库里配置的同名字段优先；
 - **可配置**：每个项目可独立增删改 Agent / Task、调整执行顺序、启停。
 
 ### 🔀 多模型路由 + 自动降级
@@ -60,7 +66,14 @@ PLANTED ──→ REINFORCED ──→ ACTIVATED ──→ RESOLVED
 ### 🧠 记忆（分层 v2）
 
 - **分层核心记忆**（`memory/core.py`）：`working → short_term → long_term → canon`，
-  `archive` 作为按需检索库；层数由 `config/memory_config.yaml` 的有序列表定义；
+  `archive` 作为按需检索库；核心三层固定（层名受 `MemoryTier` 枚举约束），
+  各层容量 / 压缩由 `tiers` 有序列表定义，降级 / 回温由 `demotion` 配置；
+  默认种子来自 `config/memory_config.default.yaml`，每个项目可独立覆盖；
+- **按项目配置**：记忆配置落 SQLite `memory_configs` 表（`MemoryConfigRow`），
+  新建项目时自动从 YAML 播种，旧项目首次读取或运行迁移脚本时补种；
+  `GET /api/projects/{id}/memory` 返回生效中的 `settings`；`PATCH` 按字段更新，
+  `canon` / `demotion` / `retrieval` 递归合并、`tiers` 整体替换，合并结果经
+  `MemorySettings` 校验后整体落库；`scripts/migrate_config_store.py` 可为已有项目补种或重置；
 - **生命周期**：短期超 `max_items` 取最旧 `compress_batch` 条压缩进长期；
   长期超限压缩进 canon；长期记忆与历史事件都可按各自阈值冷却到 archive：
   `demotion.long_term` / `demotion.canon` 分别配置 `importance_threshold` 与
@@ -97,20 +110,21 @@ demotion:
 
 SQLite 默认（`data/storyloom.db`），设 `STORYLOOM_DATABASE_URL` 可切 PostgreSQL/MySQL。
 
-当前 8 张表：
+当前 9 张表（另有 M0 的 `memory_items`）：
 
 | 表 | 作用 |
 |---|---|
 | `projects` | 项目元数据 |
 | `agent_configs` | 每项目 Agent 配置 |
 | `task_configs` | 每项目 Task 配置 |
+| `memory_configs` | 每项目记忆层配置（tiers / canon / demotion / retrieval） |
 | `chapters` | 章节目录 |
 | `scenes` | 已生成场景（brief / prose / 质量分 / 耗时 / 章节归属） |
 | `characters` | 角色资产 |
 | `locations` | 地点资产 |
 | `foreshadowings` | 伏笔资产与状态 |
 
-- `agent_configs` / `task_configs` 对 `projects.project_id` 外键 `ON DELETE CASCADE`；
+- `agent_configs` / `task_configs` / `memory_configs` 对 `projects.project_id` 外键 `ON DELETE CASCADE`；
 - SQLite 连接自动 `PRAGMA foreign_keys = ON`；
 - 旧库自动迁移（缺 `project_id` 列或缺外键 → 重建补全，数据不丢）。
 
@@ -145,6 +159,42 @@ uv run storyloom-config set agent director backstory "新的背景"
 uv run storyloom-config set task prose_polish enabled false
 uv run storyloom-config seed --overwrite
 ```
+
+存储迁移与重置：
+
+```bash
+# 为已有项目补种记忆配置、同步任务模板（默认 dry-run）
+uv run python scripts/migrate_config_store.py
+uv run python scripts/migrate_config_store.py --apply
+
+# 清空数据库 / 存档 / 向量库（默认交互确认）
+uv run python scripts/reset_data.py --dry-run
+```
+
+#### 配置加载优先级
+
+不同配置的来源不同，运行时从低到高遵循同一原则：**代码兜底 → YAML 种子 → 数据库**。
+
+| 配置 | 1. 代码兜底 | 2. YAML 种子 | 3. 运行时权威 |
+|---|---|---|---|
+| Agent | `AGENT_DEFAULTS`（如 `max_iter`） | `agents.default.yaml` | 数据库 `agent_configs` |
+| Task | `_DEFAULT_TASK_WIRING`（任务的 agent / context） | `tasks.default.yaml` | 数据库 `task_configs` |
+| 记忆 | `MemorySettings` 内置默认值 | `memory_config.default.yaml` | 数据库 `memory_configs`（每项目一份） |
+| 模型 | 路由兜底 `deepseek.flash`、temperature 0.8 | `model_config.yaml` | —（运行时直接读取，无数据库层） |
+
+要点：
+
+- **数据库非空字段优先**：`null` 字段不会覆盖代码兜底，例如 `max_iter` 为空时使用 `AGENT_DEFAULTS`；
+- **种子只在首次生效**：项目还没有任何 Agent 行时才导入 YAML；已有项目改 YAML 不会自动生效，
+  需 `storyloom-config seed --overwrite`、配置导入导出，或用迁移脚本（仅同步任务模板与记忆种子）；
+- **记忆按项目覆盖**：新建项目自动播种，旧项目首次读取时补种；`PATCH` 写数据库，
+  重置接口用 YAML 覆盖数据库；`STORYLOOM_MEMORY_*` 环境变量当前未接入；
+- **模型是例外**：`model_config.yaml` 不落库，修改后需重启后端（或重建 registry）生效；
+  环境变量只提供各 provider 的 API Key，不改变模型映射；
+- **模型 Key 的优先级**：请求体 `provider_api_keys`（仅内存，进程内生效）> `.env` / 环境变量；
+  两者都没有时该模型不可用；
+- **基础设施配置**：`STORYLOOM_DATABASE_URL`、`STORYLOOM_SAVE_DIR`、`DISABLE_CHROMADB`
+  由环境变量读取，项目根目录 `.env` 在启动时加载。
 
 ---
 
@@ -182,16 +232,17 @@ StoryLoom/
 │   │       ├── scenes.py        # /api/projects/{id}/scenes
 │   │       ├── chapters.py      # /api/projects/{id}/chapters
 │   │       ├── config.py        # /api/projects/{id}/config（导入导出 / 跨项目复制）
+│   │       ├── templates.py     # /api/templates（列出 / 应用试用模板）
 │   │       └── runtime_v1.py    # /runtime/v1 版本化入口（复用 game/extensions/memory）
 │   ├── db/
-│   │   ├── models.py            # 当前 8 张表的 ORM 模型
+│   │   ├── models.py            # 当前 10 张表的 ORM 模型
 │   │   ├── base.py              # 引擎 + SQLite PRAGMA foreign_keys
 │   │   ├── repository.py        # CRUD + 旧库迁移
 │   │   ├── config_source.py     # CrewAI 配置描述符（从 DB 加载）
 │   │   └── cli.py               # storyloom-config
 │   ├── crews/scene_crew/
 │   │   ├── crew.py              # @CrewBase SceneCrew
-│   │   └── config/              # agents.yaml / tasks.yaml（种子）
+│   │   └── config/              # agents.default.yaml / tasks.default.yaml（种子）
 │   ├── llm/                     # providers.py + router.py
 │   ├── flows/                   # scene_flow.py（导演模式单场景）
 │   ├── control/                 # feedback_loop · robustness · hierarchy
@@ -211,7 +262,9 @@ StoryLoom/
 │       ├── stores/              # project / agent / task / asset / generation
 │       └── composables/useApi.ts
 ├── scripts/
-│   └── bench_m0.py              # M0 性能基线压测
+│   ├── bench_m0.py              # M0 性能基线压测
+│   ├── migrate_config_store.py  # 记忆配置 / 任务模板迁移（默认 dry-run）
+│   └── reset_data.py            # 清空数据库 / 存档 / 向量库
 ├── tests/
 ├── data/                        # SQLite（已 git 忽略）
 └── app.py                       # 启动器
@@ -226,7 +279,7 @@ M0 已新增（均已实现）：
 ├── narrative/    # arc.py
 ├── flows/        # scene_flow.py（导演模式） + turn_flow.py（双模式 TurnLoop）
 ├── saves/        # service.py（文件快照 + 回放）
-├── config/memory_config.yaml    # 记忆层数 / 压缩 / 降级 / 检索后端
+├── config/memory_config.default.yaml    # 记忆分层 / 压缩 / 降级 / 检索后端（默认种子）
 ├── examples/                    # 扩展 manifest 扫描目录（可空）
 ├── templates/xianxia_system.py  # 试用模板：资产 + 内嵌 map/skill 扩展
 └── frontend/src/components/GamePanel.vue   # 游戏模式面板
@@ -252,18 +305,12 @@ DEEPSEEK_API_KEY=sk-xxx
 OPENAI_API_KEY=sk-xxx
 ANTHROPIC_API_KEY=sk-ant-xxx
 
-# 以下记忆 v2 选项通过 config/memory_config.yaml 与
-# PATCH /api/projects/{id}/memory 配置；环境变量暂不读取
-
-# 可选：记忆检索后端（fts / vector / hybrid），默认 fts
-# STORYLOOM_MEMORY_BACKEND=fts
-# 可选：向量后端 embedding（不配置则 vector 不可用，hybrid 自动退化为 fts）
-# STORYLOOM_EMBEDDING_PROVIDER=openai
-# STORYLOOM_EMBEDDING_MODEL=text-embedding-3-small
-# 或 Ollama：
-# STORYLOOM_EMBEDDING_PROVIDER=ollama
-# STORYLOOM_EMBEDDING_MODEL=bge-m3
-# OLLAMA_BASE_URL=http://localhost:11434
+# 记忆配置不走环境变量：默认种子见 config/memory_config.default.yaml，
+# 运行时按项目存于 memory_configs，通过
+# PATCH /api/projects/{id}/memory 调整。
+# 向量检索需要显式注入 embedding 函数；未注入时 vector 不可用，
+# hybrid 会自动退化为 fts。
+# Ollama 的 base_url 在 config/model_config.yaml 的 providers.ollama 中配置
 ```
 
 ### 3. 启动后端
@@ -313,6 +360,8 @@ python -m storyloom.main                # 基础版
 | GET | `/api/projects/{id}/config/export` | 导出 Agent / Task 配置快照（JSON，不含库内字段） |
 | POST | `/api/projects/{id}/config/import` | 导入配置（`merge` 逐条 upsert / `overwrite` 先清后写；overwrite 不允许空 Agent 列表） |
 | POST | `/api/projects/{id}/config/copy_from` | 从同库另一项目复制配置（默认 overwrite） |
+| GET | `/api/templates/` | 列出可用试用模板 |
+| POST | `/api/templates/{template_id}/apply` | 应用模板生成可删除的普通项目 |
 
 M0 已交付（**全部 async**）：
 
@@ -320,12 +369,13 @@ M0 已交付（**全部 async**）：
 |---|---|---|
 | POST | `/game/{pid}/turn` | 提交一次玩家行动，返回演出指令 / 状态增量 |
 | GET | `/game/{pid}/state` | 当前世界状态（玩家视图） |
+| GET | `/game/{pid}/opening` | 生成开场（世界卡 + 初始选项） |
 | POST/GET | `/game/{pid}/saves` | 创建存档 / 列出存档 |
 | POST | `/game/{pid}/saves/{save_id}/load` | 读档并回放（不重新生成） |
 | POST | `/game/{pid}/mode` | 切换游戏 / 导演模式（切换前落 checkpoint） |
 | POST | `/extensions/resolve` | 解析并加载扩展包 manifest |
-| GET | `/api/projects/{id}/memory` | 记忆层级与后端状态（只读调试） |
-| PATCH | `/api/projects/{id}/memory` | 切换记忆检索后端（`fts` / `vector` / `hybrid`） |
+| GET | `/api/projects/{id}/memory` | 记忆层级、后端与生效配置（`settings` / `items` / `prompt_block`） |
+| PATCH | `/api/projects/{id}/memory` | 按字段更新记忆配置（`canon` / `demotion` / `retrieval` 递归合并，`tiers` 整体替换；`backend` 兼容旧写法） |
 
 **版本化入口**：以上运行端点同时挂在 `/runtime/v1/*`（推荐新接入使用）：
 
@@ -333,6 +383,7 @@ M0 已交付（**全部 async**）：
 |---|---|
 | POST | `/runtime/v1/{pid}/turn` |
 | GET | `/runtime/v1/{pid}/state` |
+| GET | `/runtime/v1/{pid}/opening` |
 | POST/GET | `/runtime/v1/{pid}/saves` |
 | POST | `/runtime/v1/{pid}/saves/{save_id}/load` |
 | POST | `/runtime/v1/{pid}/mode` |
@@ -353,9 +404,10 @@ uv run pytest -q
 ```
 
 覆盖：项目落库与外键、Agent/Task API、迁移与幂等回归、资产模型、场景与章节持久化、
-记忆基础版、控制论模块、Flow。共 **176 个用例**，逐条清单见 [TESTS.md](TESTS.md)。
+记忆基础版、记忆分层压缩与按层阈值配置、控制论模块、Flow。共 **189 个用例**，
+逐条清单见 [TESTS.md](TESTS.md)。
 
-M0 覆盖（`tests/test_m0*.py`）：GM 裁决与守卫拦截、移动可达性、`Fact` 可见性、
+M0 覆盖（`tests/test_m0*.py` + `test_memory_compression.py`）：GM 裁决与守卫拦截、移动可达性、`Fact` 可见性、
 存档回放、manifest 校验与 map mod 旅行覆盖、导演改写审计回滚、idle NPC 事件、
 模式切换 checkpoint、记忆分层 / 压缩 / 降级回温 / 三后端检索 / 历史回填 / secrets、
 意图路由、超时与配额、`/game/*` 与 `/memory` `/extensions` API、版本化入口与 Key 注入。

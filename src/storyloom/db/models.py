@@ -123,7 +123,7 @@ class TaskConfigRow(Base):
     description: Mapped[str] = mapped_column(Text)
     expected_output: Mapped[str] = mapped_column(Text)
 
-    # 对应 tasks.yaml 的 agent / context 字段
+    # 对应 tasks.default.yaml 的 agent / context 字段
     agent_key: Mapped[Optional[str]] = mapped_column(
         String(64), nullable=True
     )
@@ -131,6 +131,34 @@ class TaskConfigRow(Base):
 
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     position: Mapped[int] = mapped_column(Integer, default=0)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class MemoryConfigRow(Base):
+    """项目级记忆层配置（memory_config.default.yaml 的数据库版本）
+
+    每个项目一份，payload 与 YAML 结构一致（tiers / canon / demotion /
+    retrieval），便于按项目单独调节记忆策略。
+    """
+
+    __tablename__ = "memory_configs"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["project_id"],
+            ["projects.project_id"],
+            name="fk_memory_config_project",
+            ondelete="CASCADE",
+        ),
+    )
+
+    project_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    payload: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()

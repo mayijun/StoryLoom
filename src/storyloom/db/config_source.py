@@ -32,7 +32,7 @@ class DbConfig:
     def __get__(self, obj: Optional[Any], owner: Optional[type] = None):
         # 类访问：CrewBase 用它推导 original_*_config_path（YAML 种子路径）
         if obj is None:
-            return f"config/{self.kind}.yaml"
+            return f"config/{self.kind}.default.yaml"
 
         project_id = getattr(obj, "project_id", DEFAULT_PROJECT_ID)
         cache: Dict[Tuple[str, str], Dict[str, Any]] = obj.__dict__.setdefault(

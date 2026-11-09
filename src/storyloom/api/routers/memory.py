@@ -25,8 +25,12 @@ async def patch_memory(project_id: str, data: MemoryPatchRequest):
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"项目不存在: {project_id}",
         )
+    patch = data.model_dump(exclude_none=True)
+    backend = patch.pop("backend", None)
+    if backend is not None:
+        patch.setdefault("retrieval", {})["backend"] = backend
     try:
-        return engine.set_memory_backend(project_id, data.backend)
+        return engine.update_memory_config(project_id, patch)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)

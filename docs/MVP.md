@@ -44,7 +44,7 @@
 ## 2. M0：双模式动态世界纵切（含分层记忆 v2）（已完成）
 
 > M0-1 ~ M0-14 全部落地，A1 ~ A15 验收由 `tests/test_m0*.py` 覆盖；
-> 后端合计 **176 项测试全部通过**（完整清单见 [TESTS.md](TESTS.md)），
+> 后端合计 **189 项测试全部通过**（完整清单见 [TESTS.md](TESTS.md)），
 > 作者模式 `scene_brief → prose` 不回归。
 
 ### 2.1 目标
@@ -71,11 +71,11 @@
 | M0-7 | API（**全部 async**） | `POST /game/{pid}/turn` · `GET /game/{pid}/state` · `POST/GET /game/{pid}/saves` · `POST /extensions/resolve` · `PATCH/GET /api/projects/{pid}/memory` | ✅ `api/routers/game.py` · `extensions.py` · `memory.py` |
 | M0-8 | 前端扩展 | 游戏模式：对话框 / 选项 / backlog / 存档读取 | ✅ `frontend/src/components/GamePanel.vue` |
 | M0-9 | Demo | `src/storyloom/templates/xianxia_system.py`：角色/地点/伏笔/章节 + 内嵌 map mod 与 skill；Web 界面「试用模板」一键生成可删除项目 | ✅ `src/storyloom/templates/` |
-| M0-10 | 测试 | GM 裁决、`Fact` 过滤、存档回放、manifest 校验、导演模式回归、记忆分层 / 压缩 / 降级、三后端检索 | ✅ `tests/test_m0.py` · `test_m0_api.py` |
+| M0-10 | 测试 | GM 裁决、`Fact` 过滤、存档回放、manifest 校验、导演模式回归、记忆分层 / 压缩 / 降级、三后端检索 | ✅ `tests/test_m0.py` · `test_m0_api.py` · `test_memory_compression.py` |
 | M0-11 | `world/authority.py` | `GameAuthority` / `DirectorAuthority` 策略 · 模式切换 checkpoint · `FactOverride` 审计与回滚 | ✅ `world/authority.py` |
 | M0-12 | `narrative/arc.py` | 起承转合节拍 · 张力目标 · 信息预算 | ✅ `narrative/arc.py` |
 | M0-13 | `world/autonomous_agent.py` | NPC 记忆 → 反思 → 计划 → 提案 | ✅ `world/autonomous_agent.py` |
-| M0-14 | `memory/` 分层记忆 v2 | 核心层 `working → short_term → long_term → canon`（层数可配）· 短期超阈值压缩进长期 · 长期低重要性且与活跃伏笔无关时降级到检索库 · 命中后可回温 · `fts` 默认 / `vector` / `hybrid` 同级可选 · 历史场景与资产回填 · 重启恢复 · `secrets` 可见性过滤 | ✅ `memory/` 包 + `config/memory_config.yaml` |
+| M0-14 | `memory/` 分层记忆 v2 | 核心层 `working → short_term → long_term → canon`（三层策略可配）· 短期超阈值压缩进长期 · 长期低重要性且与活跃伏笔无关时降级到检索库 · 命中后可回温 · `fts` 默认 / `vector` / `hybrid` 同级可选 · 历史场景与资产回填 · 重启恢复 · `secrets` 可见性过滤 | ✅ `memory/` 包 + `config/memory_config.default.yaml`（默认种子）+ 每项目 `memory_configs` |
 
 > M0-13 的 NPC 自主消费 M0-14 的分层记忆；M0-14 可与 W1/W2 并行，但必须在 NPC 自主之前完成。
 
@@ -93,8 +93,8 @@
 - 长期超过 `max_items`（默认 8）→ 压缩为 canon / arc；
 - 长期重要性低于 0.35、连续 10 场景未命中、无活跃伏笔、非 pinned → 降级到 L4；
 - 降级记忆被检索并采用 2 次 → 回温为 `long_term`；
+- 核心三层（`short_term` / `long_term` / `canon`）的容量、压缩与降级策略默认来自 `memory_config.default.yaml`，每项目可独立覆盖并落库到 `memory_configs`；
 - 检索后端 `fts` 默认，`vector` / `hybrid` 同级可选；无 embedding 时自动降级；
-- 层数由 `memory_config.yaml` 的有序列表定义，可在短期与长期之间继续加层。
 
 ### 2.3 运行时架构预留（M0 就留对，不大手术）
 
@@ -228,7 +228,7 @@
 | `TECHNICAL.md` | **已实现**的技术细节；M0 内容已同步为已实现 | ✅ |
 | `CONTROL_THEORY.md` | 控制论原理映射与 M0 最小闭环边界 | ✅ |
 | `MODEL_SELECTION.md` | 模型分配策略，含 `memory` 压缩角色与 M0 新角色预留 | ✅ |
-| `TESTS.md` | 后端测试用例清单（176 项，按 P0 / P1 / M0 验收分组） | ✅ |
+| `TESTS.md` | 后端测试用例清单（189 项，按 P0 / P1 / M0 验收分组） | ✅ |
 
 ---
 

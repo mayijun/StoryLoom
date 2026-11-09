@@ -65,7 +65,13 @@ _FORESHADOW_TRANSITIONS: dict[str, tuple[set[ForeshadowStatus], ForeshadowStatus
         ForeshadowStatus.PLANTED,
     ),
 }
-from storyloom.memory import CoreMemory, LayeredMemory, MemoryIndexer, SimpleRAGMemory
+from storyloom.memory import (
+    CoreMemory,
+    LayeredMemory,
+    MemoryIndexer,
+    MemorySettings,
+    SimpleRAGMemory,
+)
 from storyloom.flows.scene_flow import SceneGenerationFlow
 from storyloom.flows.turn_flow import TurnBoot, TurnLoop, TurnResult
 from storyloom.extensions.host import ExtensionRegistry
@@ -80,6 +86,17 @@ from storyloom.api.schemas import (
     GenerateSceneRequest, GenerationStepUpdate,
     GenerateSceneResponse, ForeshadowingView,
 )
+
+def _deep_merge(base: dict, patch: dict) -> dict:
+    """递归合并配置补丁：字典逐层合并，其他类型直接覆盖"""
+    merged = dict(base)
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
 
 class NovelEngine:
     """
@@ -554,6 +571,12 @@ class NovelEngine:
     # 双模式运行时（M0）
     # ================================================================
 
+    def _memory_settings_for(self, project_id: str) -> MemorySettings:
+        """从数据库读取项目级记忆配置（首次访问自动播种 YAML 默认值）"""
+        return MemorySettings.from_dict(
+            get_repository().load_memory_config(project_id)
+        )
+
     def memory_for(
         self,
         project_id: str,
@@ -571,6 +594,7 @@ class NovelEngine:
         memory = LayeredMemory(
             project_id,
             repo=repo,
+            settings=self._memory_settings_for(project_id),
             backend=backend,
             compress_fn=self._memory_compress_fn,
         )
@@ -844,6 +868,7 @@ class NovelEngine:
                 project_id,
                 record.memory_snapshot,
                 repo=get_repository(),
+                settings=self._memory_settings_for(project_id),
                 compress_fn=self._memory_compress_fn,
             )
         # 同步「最近一回合」，保证读档后立即存档能保存读档时点的场景与选项
@@ -877,6 +902,7 @@ class NovelEngine:
             "project_id": project_id,
             "backend": memory.backend_name,
             "counts": memory.counts(),
+            "settings": memory.settings.to_dict(),
             "tiers": [spec.model_dump(mode="json") for spec in memory.settings.tiers],
             "canon": {
                 "max_items": memory.settings.canon_max_items,
@@ -895,7 +921,17 @@ class NovelEngine:
     def set_memory_backend(self, project_id: str, backend: str) -> dict:
         if backend not in ("fts", "vector", "hybrid"):
             raise ValueError(f"不支持的检索后端: {backend}")
-        self.memory_for(project_id, backend=backend)
+        return self.update_memory_config(
+            project_id, {"retrieval": {"backend": backend}}
+        )
+
+    def update_memory_config(self, project_id: str, patch: dict) -> dict:
+        """按项目局部更新记忆配置（构建校验通过后整体落库）"""
+        repo = get_repository()
+        merged = _deep_merge(repo.load_memory_config(project_id), patch)
+        settings = MemorySettings.from_dict(merged)
+        repo.save_memory_config(project_id, settings.to_dict())
+        self.game_memories.pop(project_id, None)
         return self.memory_overview(project_id)
 
     def resolve_extensions(
