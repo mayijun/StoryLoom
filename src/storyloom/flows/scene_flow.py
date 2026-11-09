@@ -469,18 +469,28 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
             default=str,
         )
         # 结构化输出交给 CrewAI 的 response_format，避免手工截取 JSON
-        output = agent.kickoff(
-            self.crew.task_prompt(
-                "consistency_check",
-                actor_log=actor_log,
-                character_data=char_data,
-                foreshadow_data=foreshadow_data,
-                director_constraints=(
-                    self._director_constraints() or "（无）"
+        try:
+            output = agent.kickoff(
+                self.crew.task_prompt(
+                    "consistency_check",
+                    actor_log=actor_log,
+                    character_data=char_data,
+                    foreshadow_data=foreshadow_data,
+                    director_constraints=(
+                        self._director_constraints() or "（无）"
+                    ),
                 ),
-            ),
-            response_format=ConsistencyReport,
-        )
+                response_format=ConsistencyReport,
+            )
+        except Exception as exc:
+            # 部分模型不支持 json_schema 响应格式（如 DeepSeek 返回 400），
+            # 一致性检测属于附加校验，失败时放行，避免整个场景生成失败。
+            print(f"⚠️ 一致性检测调用失败，放行本场景: {exc}")
+            report = ConsistencyReport(
+                passed=True, conflicts=[], severity="none"
+            )
+            self.state.consistency_report = report
+            return report
 
         # 转换失败时退回手工解析，仍失败则放行，避免卡死 Flow
         report = output.pydantic

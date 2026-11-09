@@ -1,5 +1,6 @@
 """FastAPI 入口"""
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -26,11 +27,22 @@ from storyloom.api.routers import (
     templates,
 )
 from storyloom.api.engine import engine
+from storyloom.api.task_manager import start_cleanup_loop
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 启动长任务后台清理线程（每 60s 扫一次，TTL 默认 600s）
+    start_cleanup_loop()
+    yield
+    # 关闭时 ThreadPoolExecutor 等资源在进程退出时回收，无需额外处理
+
 
 app = FastAPI(
     title="多Agent小说生成系统 API",
     version="3.0",
     description="Multi-Agent Novel Generation System",
+    lifespan=lifespan,
 )
 
 app.add_middleware(

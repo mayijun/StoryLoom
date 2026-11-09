@@ -531,6 +531,25 @@ class NovelEngine:
             foreshadowing_count=len(project.foreshadowings),
         )
 
+        # ------- 同步到分层记忆（LayeredMemory）-------
+        # 导演写作流程用 CoreMemory 供 CrewAI 拼 prompt，
+        # 但游戏模式 / 记忆面板读 LayeredMemory（game_memories）。
+        # 这里把本次生成结果追加到 LayeredMemory，保证两套记忆互通，
+        # 玩家切回游戏模式时能看到刚写的那幕。
+        try:
+            layer = self.memory_for(request.project_id)
+            layer.add_scene(
+                scene_index=project.scene_count if not scene_id else int(scene_id.split("_")[-1]),
+                prose=str(final_text),
+                brief=request.scene_brief,
+                present_characters=request.present_character_names,
+                active_foreshadow=bool(project.foreshadowings),
+                key=target_scene_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # 记忆同步属于附加功能，失败不应阻断主流程
+            print(f"  ℹ️ 分层记忆同步跳过: {exc}")
+
         # 构建伏笔视图
         fs_views = [
             ForeshadowingView(

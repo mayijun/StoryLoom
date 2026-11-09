@@ -478,15 +478,31 @@ function toggleCharSelection(name: string) {
 async function handleGenerate() {
   if (!projectStore.currentProjectId || !canGenerate.value) return
   const pid = projectStore.currentProjectId
-  await genStore.generateScene(pid, sceneBrief.value, selectedChars.value)
+
+  // 后端会根据选中的章节自动归属（GenerateSceneRequest.chapter_id），
+  // 不再需要生成后再单独 assignScene。这里仍把 targetChapterId 传透，
+  // 让后端 scene 落库时 chapter_id 直接正确。
+  await genStore.generateScene(
+    pid,
+    sceneBrief.value,
+    selectedChars.value,
+    targetChapterId.value || undefined,
+  )
 
   const sid = genStore.currentSceneId
   if (!sid) return
 
   // 刷新场景列表，让新场景进入章节树 / 未归属区
   await sceneStore.fetchScenes(pid)
+
+  // 理论上后端已自动归属，这里再 assign 一次做幂等 fallback
+  // （兼容旧后端 / 直接调 API 生成的场景）
   if (targetChapterId.value) {
-    await sceneStore.assignScene(pid, sid, targetChapterId.value)
+    try {
+      await sceneStore.assignScene(pid, sid, targetChapterId.value)
+    } catch {
+      /* 已归属时 assign 可能报错，忽略 */
+    }
   }
 
   const scene = sceneStore.scenes.find(s => s.scene_id === sid)
