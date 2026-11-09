@@ -119,8 +119,18 @@ export function useApi() {
   const regenerateScene = (pid: string, sid: string) =>
     api.post(`/projects/${pid}/scenes/${sid}/regenerate`)
 
-  // ---- Generation ----
-  const generateScene = (data: any) => api.post('/generate/scene', data)
+  // ---- Generation（异步任务 + 轮询） ----
+  // 场景生成是 8 步串行 Agent 流程，每步 30-90 秒；
+  // 前端不能用普通 axios timeout 等它——HTTP client 会被截断。
+  // 后端提供 submit + poll 模式：submit 立即返回 task_id，
+  // 前端轮询 /tasks/{id} 读取 progress / result。
+  // 默认 axios timeout 300s 对 submit / poll 都绰绰有余。
+  const submitSceneGenerate = (data: any) =>
+    api.post<{ task_id: string }>('/generate/scene/submit', data)
+  const getGenerateTask = (taskId: string) => api.get(`/generate/tasks/${taskId}`)
+  const deleteGenerateTask = (taskId: string) => api.delete(`/generate/tasks/${taskId}`)
+  // 同步 /scene 保留给 CLI / 测试；前端不要直接调
+  const generateScene = (data: any) => api.post('/generate/scene', data, { timeout: 900000 })
 
   // ---- 双模式运行时（M0） ----
   const playTurn = (pid: string, data: any) => runtime.post(`/${pid}/turn`, data)
@@ -192,7 +202,7 @@ export function useApi() {
     listTasks, createTask, updateTask, deleteTask,
     listChapters, createChapter, updateChapter, deleteChapter,
     listScenes, getScene, updateScene, assignSceneToChapter, deleteScene, regenerateScene,
-    generateScene, generateSceneStream,
+    submitSceneGenerate, getGenerateTask, deleteGenerateTask, generateScene, generateSceneStream,
     playTurn, getGameState, getGameOpening, createGameSave, listGameSaves, loadGameSave,
     switchGameMode, getMemory, patchMemory, resolveExtensions,
     checkHealth,
