@@ -20,14 +20,14 @@ from storyloom.memory import (
 from storyloom.models import CharacterAsset, LocationAsset, NovelProject
 from storyloom.runtime.intent import IntentRouter, PlayerIntent
 from storyloom.runtime.renderer import SceneRenderer
-from storyloom.saves.service import SaveService, state_from_save
+from storyloom.memory.checkpoint import SaveService, state_from_save
 from storyloom.world.authority import (
     AuthorityController,
     DirectorAuthority,
     FactOverride,
     GameAuthority,
 )
-from storyloom.world.game_master import ActionProposal, GameMaster
+from storyloom.crews.scene_crew.deterministic.gm import ActionProposal, GameMaster
 from storyloom.world.state import Fact, WorldState
 
 

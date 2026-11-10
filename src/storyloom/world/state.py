@@ -354,3 +354,84 @@ class WorldState(BaseModel):
             summary=summary,
             data=data,
         )
+
+    def allowed_actions(self, actor: str) -> List[Dict[str, str]]:
+        """地点 + 在场角色 → 可用行动列表（纯查询，不修改状态）"""
+        char = self.characters.get(actor)
+        if char is None:
+            return []
+        actions: List[Dict[str, str]] = [
+            {"kind": "wait", "target": "", "label": "原地等待"}
+        ]
+        loc = self.locations.get(char.location)
+        if loc:
+            for dest in loc.exits:
+                actions.append({
+                    "kind": "move", "target": dest, "label": f"前往{dest}",
+                })
+        for other in self.characters_at(char.location):
+            if other == actor:
+                continue
+            actions.append({
+                "kind": "talk", "target": other, "label": f"与{other}交谈",
+            })
+            actions.append({
+                "kind": "attack", "target": other, "label": f"攻击{other}",
+            })
+        return actions
+
+
+# ============================================================
+# Layer 0 公共协议：裁决与渲染数据类
+# 这些是 runtime / memory / crews 各层共享的纯数据定义，
+# 统一放 world/state.py 让任何层都能安全 import，
+# 避免 runtime 反向 import crews、memory 反向 import runtime。
+# ============================================================
+
+
+class ActionProposal(BaseModel):
+    """行动提案：玩家 / NPC / 导演都能提出，GM 来裁定"""
+
+    actor: str
+    kind: Literal[
+        "move", "attack", "talk", "use", "wait", "observe", "other"
+    ] = "other"
+    target: Optional[str] = None
+    detail: str = ""
+    params: Dict[str, Any] = Field(default_factory=dict)
+    source: Literal["player", "npc", "director"] = "player"
+
+
+class AdjudicationResult(BaseModel):
+    """GM 裁决的结构化结果"""
+
+    success: bool
+    outcome: str = "ok"
+    narrative: str = ""
+    state_delta: StateDelta = Field(default_factory=StateDelta)
+    error_code: Optional[str] = None
+    available: List[str] = Field(default_factory=list)
+    quality_flag: Optional[str] = None
+    rule: str = ""
+
+
+DirectiveKind = Literal[
+    "say", "show", "hide", "bg", "bgm", "se",
+    "wait", "shake", "flash", "cg", "choice",
+    "move", "effect", "end",
+]
+
+
+class StageDirective(BaseModel):
+    """一条舞台指令（全部可 JSON 序列化）"""
+
+    kind: DirectiveKind
+    params: Dict[str, Any] = Field(default_factory=dict)
+
+
+class StageScene(BaseModel):
+    """一次渲染的完整指令序列（也用于 Checkpoint 回放）"""
+
+    directives: List[StageDirective] = Field(default_factory=list)
+    text: str = ""
+    choices: List[Dict[str, Any]] = Field(default_factory=list)

@@ -12,8 +12,7 @@ import asyncio
 from typing import Any, Callable, Dict, List, Optional
 
 from storyloom.runtime.directive import StageDirective, StageScene
-from storyloom.world.game_master import AdjudicationResult, GameMaster
-from storyloom.world.state import WorldState
+from storyloom.world.state import AdjudicationResult, WorldState
 
 
 class TextAdapter:
@@ -222,8 +221,7 @@ class SceneRenderer:
                 )
             )
 
-        gm = GameMaster()
-        options = gm.allowed_actions(state_after, actor)
+        options = state_after.allowed_actions(actor)
         choices = [
             {
                 "index": i,

@@ -14,7 +14,7 @@ from typing import Any, Dict, Optional, Protocol, Tuple
 
 from pydantic import BaseModel, Field
 
-from storyloom.world.game_master import (
+from storyloom.crews.scene_crew.deterministic.gm import (
     ActionProposal,
     AdjudicationResult,
     GameMaster,

@@ -11,6 +11,9 @@ GM 从 world/game_master.py 迁入此处，成为 Crew 协作单元的一员。
 - LLM Agents 只出提案，GM 用 WorldState 复核；
 - 时间、随机、算术、配额都在代码层确定性完成；
 - 规则缺口按 gap_policy 处理：reject | llm_referee | human_review。
+
+ActionProposal / AdjudicationResult 是 Layer 0 公共协议，
+已迁至 storyloom.world.state，这里从那里 import。
 """
 
 from typing import Callable, Dict, List, Literal, Optional
@@ -18,6 +21,8 @@ from typing import Callable, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 from storyloom.world.state import (
+    ActionProposal,
+    AdjudicationResult,
     CharState,
     Fact,
     StateDelta,
@@ -27,33 +32,6 @@ from storyloom.world.state import (
 
 GUARD_KEYWORDS = ("护卫", "侍卫", "卫兵", "守卫", "骑士", "guard")
 PRISON_LOCATION = "地牢"
-
-
-class ActionProposal(BaseModel):
-    """行动提案：玩家 / NPC / 导演都能提出，但只有 GM 能裁定"""
-
-    actor: str
-    kind: Literal[
-        "move", "attack", "talk", "use", "wait", "observe", "other"
-    ] = "other"
-    target: Optional[str] = None
-    detail: str = ""
-    params: Dict[str, object] = Field(default_factory=dict)
-    source: Literal["player", "npc", "director"] = "player"
-
-
-class AdjudicationResult(BaseModel):
-    """结构化裁决结果"""
-
-    success: bool
-    outcome: str = "ok"
-    narrative: str = ""
-    state_delta: StateDelta = Field(default_factory=StateDelta)
-    error_code: Optional[str] = None
-    available: List[str] = Field(default_factory=list)
-    quality_flag: Optional[str] = None
-    # 裁决链路上的确定性信息，供渲染与调试使用
-    rule: str = ""
 
 
 class GameMaster:
@@ -101,33 +79,8 @@ class GameMaster:
     def allowed_actions(
         self, state: WorldState, actor: str
     ) -> List[Dict[str, str]]:
-        """地点 + 在场角色 → 可用行动列表"""
-        char = state.characters.get(actor)
-        if char is None:
-            return []
-        actions: List[Dict[str, str]] = [
-            {"kind": "wait", "target": "", "label": "原地等待"}
-        ]
-        loc = state.locations.get(char.location)
-        if loc:
-            for dest in loc.exits:
-                actions.append(
-                    {
-                        "kind": "move",
-                        "target": dest,
-                        "label": f"前往{dest}",
-                    }
-                )
-        for other in state.characters_at(char.location):
-            if other == actor:
-                continue
-            actions.append(
-                {"kind": "talk", "target": other, "label": f"与{other}交谈"}
-            )
-            actions.append(
-                {"kind": "attack", "target": other, "label": f"攻击{other}"}
-            )
-        return actions
+        """地点 + 在场角色 → 可用行动列表（委托给 WorldState）"""
+        return state.allowed_actions(actor)
 
     # ---------------- 裁决 ----------------
 

@@ -15,8 +15,7 @@ from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from storyloom.world.game_master import ActionProposal
-from storyloom.world.state import WorldState
+from storyloom.world.state import ActionProposal, WorldState
 
 
 class PlayerIntent(BaseModel):

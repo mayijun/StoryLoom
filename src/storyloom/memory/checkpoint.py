@@ -19,8 +19,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from storyloom.runtime.directive import StageScene
-from storyloom.world.state import WorldState
+from storyloom.world.state import StageScene, WorldState
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 

@@ -12,7 +12,7 @@ from storyloom.api.schemas import (
     TurnRequest,
 )
 from storyloom.db import get_repository, reset_engines, reset_repositories
-from storyloom.saves.service import SaveService
+from storyloom.memory.checkpoint import SaveService
 
 
 def _fake_prose(prompt: str, state) -> str:

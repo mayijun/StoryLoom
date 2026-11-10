@@ -78,9 +78,9 @@ from storyloom.extensions.host import ExtensionRegistry
 from storyloom.runtime.directive import StageDirective, StageScene
 from storyloom.runtime.intent import PlayerIntent
 from storyloom.runtime.renderer import SceneRenderer
-from storyloom.saves.service import SaveService, state_from_save
+from storyloom.memory.checkpoint import SaveService, state_from_save
 from storyloom.world.authority import AuthorityController
-from storyloom.world.game_master import AdjudicationResult
+from storyloom.crews.scene_crew.deterministic.gm import AdjudicationResult
 from storyloom.world.state import StateDelta, WorldState
 from storyloom.api.schemas import (
     GenerateSceneRequest, GenerationStepUpdate,

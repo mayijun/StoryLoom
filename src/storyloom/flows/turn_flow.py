@@ -44,7 +44,7 @@ from storyloom.runtime.intent import (
     PlayerIntent,
 )
 from storyloom.runtime.renderer import SceneRenderer
-from storyloom.saves.service import SaveService
+from storyloom.memory.checkpoint import SaveService
 from storyloom.world.autonomous_agent import autonomous_tick
 from storyloom.world.authority import (
     AuthorityController,
@@ -52,7 +52,7 @@ from storyloom.world.authority import (
     FactOverride,
     GameAuthority,
 )
-from storyloom.world.game_master import (
+from storyloom.crews.scene_crew.deterministic.gm import (
     ActionProposal,
     AdjudicationResult,
     GameMaster,

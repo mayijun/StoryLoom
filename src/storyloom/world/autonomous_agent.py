@@ -13,7 +13,7 @@ NPC 自主：记忆 → 反思 → 计划 → 提案。
 from typing import List, Optional, Tuple
 
 from storyloom.memory.core import LayeredMemory
-from storyloom.world.game_master import ActionProposal
+from storyloom.crews.scene_crew.deterministic.gm import ActionProposal
 from storyloom.world.state import WorldState
 
 IDLE_THRESHOLD = 3

@@ -15,7 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from storyloom.db import reset_engines, reset_repositories
-from storyloom.saves.service import SaveService
+from storyloom.memory.checkpoint import SaveService
 
 TEMPLATE_ID = "xianxia_system"
 
