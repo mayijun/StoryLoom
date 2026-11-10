@@ -1,4 +1,7 @@
 # Python
+.trae-html-share-packages/
+.archify/
+.agents/
 __pycache__/
 *.py[cod]
 *$py.class
