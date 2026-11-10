@@ -98,15 +98,18 @@ def _deep_merge(base: dict, patch: dict) -> dict:
     return merged
 
 
-class NovelEngine:
+class StoryEngine:
     """
-    小说引擎：封装CrewAI后端，提供API友好的接口
-    支持多项目管理和SSE实时推送
+    StoryLoom 运行时引擎：封装 CrewAI 后端 + 双模式 TurnLoop，
+    提供 API 友好的统一入口。
 
     项目元数据落库（SQLite/PostgreSQL，projects 表），
     Agent / Task 配置也从属于项目（外键引用），
     运行时状态（characters / foreshadowings）暂存内存，
     重启后重新进入项目时会从 DB 元数据重建。
+
+    统一入口：生成小说场景（导演模式） / 跑游戏回合（TurnLoop） /
+    管理 Checkpoint / 管理扩展加载。
     """
 
     def __init__(self):
@@ -967,4 +970,4 @@ class NovelEngine:
 
 
 # 全局引擎实例
-engine = NovelEngine()
+engine = StoryEngine()

@@ -215,7 +215,7 @@ def test_foreshadowing_cascades_with_project(repo):
 
 def test_engine_rebuilds_assets_from_db(tmp_path):
     """模拟服务重启：新建 repository 实例后，资产仍可从 DB 读出。"""
-    from storyloom.api.engine import NovelEngine, engine as global_engine
+    from storyloom.api.engine import StoryEngine, engine as global_engine
     # 避免污染全局 engine：直接测 repository 的 _build_project 等价路径
     reset_repositories()
     reset_engines()

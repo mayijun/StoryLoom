@@ -9,7 +9,11 @@
 
 ## ✅ 已实现功能
 
-### 🤖 多 Agent 协作引擎（CrewAI）
+### 🤖 Crew 协作引擎（CrewAI）
+
+Crew 是整个 StoryLoom 的核心协作单元，包含两种角色：
+
+**LLM Agents**（需要模型调用）：
 
 | Agent | 职责 | 默认模型 | 灵敏度 |
 |-------|------|---------|--------|
@@ -21,6 +25,17 @@
 | ✅ 一致性 consistency | 校验人设/时间线/设定冲突 | GPT-4o | 🔴 CRITICAL |
 | ✍️ 润色 prose | 行动日志 → 文学化正式正文 | Claude Sonnet | 🟡 MEDIUM |
 | 📋 大纲 outline | 章节级结构规划 | DeepSeek V4 Pro | 🟡 MEDIUM |
+
+**Deterministic Agents**（纯代码，不调用 LLM，永远可用）：
+
+| Agent | 职责 | 位置 |
+|-------|------|------|
+| 🎲 GM GameMaster | 行动裁决：存在性、在场性、资源、世界规则 | `world/game_master.py` → 将迁入 `crews/scene_crew/deterministic/gm.py` |
+| ✅ ConsistencyChecker | 冲突校验（已在 Crew 内，确定性子检查 + LLM 语义辅助） | `crews/scene_crew/` 内 |
+| 🛡️ ModerationGate | 内容审核闸门 | 接口预留，默认 passthrough |
+
+> 这些 deterministic agents 不占 API Key，不受模型质量波动影响。
+> ExtensionHost 是 Crew 的 Tool Loader，把 mod/skill/policy 注册为 Crew 可用的工具。
 
 - **YAML 种子**：`crews/scene_crew/config/agents.default.yaml` + `tasks.default.yaml` 首次运行导入数据库，
   之后数据库是唯一事实来源；
@@ -133,11 +148,13 @@ M0 新增：
 | 表 / 存储 | 作用 |
 |---|---|
 | `memory_items` | 分层记忆条目（层 / 重要性 / 命中 / 可见性 / 来源） |
-| `data/saves/*.json` | 存档快照（世界状态 + 已渲染指令 + 文本，不走 DB） |
+| `data/saves/*.json` | Checkpoint 快照（WorldState + 渲染历史 + memory_snapshot，**规划中合并进 memory/checkpoint.py**） |
 
 > `WorldState` 不落库：每回合由请求传入、返回 `state_delta`；
 > 导演改写审计写在 `WorldState.overrides` 中，回滚只恢复被改字段。
-> `turn_logs` 与 `world_states` 表留到 M0 之后按需引入。
+> Checkpoint 与 `memory_items` 统一为 SessionState 的快照机制：
+> 玩家手动存档、模式切换前自动 checkpoint、事实改写前快照，
+> 都是 WorldState + Memory + 渲染历史的冻结状态，和分层记忆共用持久化后端。
 
 ### 🌐 Web 界面（Vue 3 单页）
 
@@ -221,69 +238,65 @@ StoryLoom/
 ├── src/storyloom/
 │   ├── api/
 │   │   ├── main.py              # FastAPI 入口 + CORS
-│   │   ├── engine.py            # NovelEngine：项目/资产运行时 + 场景生成桥接
+│   │   ├── engine.py            # StoryEngine：项目/资产/双模式运行时
 │   │   ├── schemas.py           # Pydantic 数据契约
-│   │   └── routers/
-│   │       ├── projects.py      # /api/projects
-│   │       ├── agents.py        # /api/agents
-│   │       ├── tasks.py         # /api/tasks
-│   │       ├── assets.py        # /api/projects/{id}/assets
-│   │       ├── generation.py    # /api/generate
-│   │       ├── scenes.py        # /api/projects/{id}/scenes
-│   │       ├── chapters.py      # /api/projects/{id}/chapters
-│   │       ├── config.py        # /api/projects/{id}/config（导入导出 / 跨项目复制）
-│   │       ├── templates.py     # /api/templates（列出 / 应用试用模板）
-│   │       └── runtime_v1.py    # /runtime/v1 版本化入口（复用 game/extensions/memory）
-│   ├── db/
-│   │   ├── models.py            # 当前 10 张表的 ORM 模型
-│   │   ├── base.py              # 引擎 + SQLite PRAGMA foreign_keys
-│   │   ├── repository.py        # CRUD + 旧库迁移
-│   │   ├── config_source.py     # CrewAI 配置描述符（从 DB 加载）
-│   │   └── cli.py               # storyloom-config
+│   │   └── routers/             # 版本化 API：/runtime/v1/* + /api/*
+│   ├── db/                      # ORM + Repository
 │   ├── crews/scene_crew/
 │   │   ├── crew.py              # @CrewBase SceneCrew
+│   │   ├── deterministic/      # GM / ConsistencyChecker / ModerationGate（规划中）
+│   │   ├── tools/               # ExtensionHost 注册的 mod/skill 工具（规划中）
 │   │   └── config/              # agents.default.yaml / tasks.default.yaml（种子）
-│   ├── llm/                     # providers.py + router.py
-│   ├── flows/                   # scene_flow.py（导演模式单场景）
-│   ├── control/                 # feedback_loop · robustness · hierarchy
-│   ├── memory/                  # 分层记忆 v2 + 旧版兼容
+│   ├── world/
+│   │   ├── state.py             # WorldState + Fact + CharState + LocationState + ArcState
+│   │   ├── game_master.py       # GM Agent 裁决（将迁入 crews/scene_crew/deterministic/）
+│   │   ├── authority.py         # GameAuthority / DirectorAuthority 策略
+│   │   └── autonomous_agent.py # NPC 自主（记忆 → 反思 → 计划 → 提案）
+│   ├── runtime/
+│   │   ├── intent.py            # PlayerIntent + IntentRouter
+│   │   ├── directive.py         # StageDirective
+│   │   └── renderer.py          # SceneRenderer
+│   ├── extensions/
+│   │   ├── manifest.py          # manifest schema + 校验
+│   │   └── host.py              # ExtensionHost = Crew 的 Tool Loader
+│   ├── narrative/
+│   │   └── arc.py               # 起承转合节拍 + 张力 + 信息预算
+│   ├── flows/
+│   │   ├── scene_flow.py        # 导演模式单场景
+│   │   └── turn_flow.py         # 双模式 TurnLoop
+│   ├── memory/
 │   │   ├── core.py              # LayeredMemory：分层 / 压缩 / 降级 / 回温
-│   │   ├── lexical.py           # fts 后端（SQLite LIKE + 中文二元组）
-│   │   ├── vector.py            # vector 后端（需显式注入 embedding）
-│   │   ├── hybrid.py            # hybrid 后端（RRF 融合，向量不可用退化为 fts）
-│   │   ├── indexer.py           # 历史场景 / 资产回填
+│   │   ├── checkpoint.py        # Checkpoint：快照 + 恢复（原 saves/service.py，规划中合并）
+│   │   ├── lexical.py           # fts 后端
+│   │   ├── vector.py            # vector 后端
+│   │   ├── hybrid.py            # hybrid 后端
+│   │   ├── indexer.py           # 历史回填
 │   │   └── legacy.py            # CoreMemory + SimpleRAGMemory（作者模式）
+│   ├── llm/                     # providers.py + router.py
+│   ├── control/                 # feedback_loop · robustness · hierarchy
 │   ├── models.py                # 资产模型 / 伏笔 / 意外 / NovelProject
 │   ├── media/                   # render_adapter.py（表现层雏形）
 │   └── config/model_config.yaml
 ├── frontend/                    # Vue 3 + Vite + Pinia
-│   └── src/
-│       ├── App.vue
-│       ├── stores/              # project / agent / task / asset / generation
-│       └── composables/useApi.ts
 ├── scripts/
-│   ├── bench_m0.py              # M0 性能基线压测
-│   ├── migrate_config_store.py  # 记忆配置 / 任务模板迁移（默认 dry-run）
-│   └── reset_data.py            # 清空数据库 / 存档 / 向量库
 ├── tests/
 ├── data/                        # SQLite（已 git 忽略）
 └── app.py                       # 启动器
 ```
 
-M0 已新增（均已实现）：
+M0 已新增（均已实现，结构按新架构描述）：
 
 ```
-├── world/        # state.py · game_master.py · authority.py · autonomous_agent.py
-├── runtime/      # intent.py · directive.py · renderer.py
-├── extensions/   # manifest.py · host.py
-├── narrative/    # arc.py
-├── flows/        # scene_flow.py（导演模式） + turn_flow.py（双模式 TurnLoop）
-├── saves/        # service.py（文件快照 + 回放）
 ├── config/memory_config.default.yaml    # 记忆分层 / 压缩 / 降级 / 检索后端（默认种子）
 ├── examples/                    # 扩展 manifest 扫描目录（可空）
 ├── templates/xianxia_system.py  # 试用模板：资产 + 内嵌 map/skill 扩展
 └── frontend/src/components/GamePanel.vue   # 游戏模式面板
 ```
+
+> 架构演进中的模块移动计划：
+> - `world/game_master.py` → `crews/scene_crew/deterministic/gm.py`（GM 成为 Crew Deterministic Agent）
+> - `saves/service.py` → `memory/checkpoint.py`（SaveService 合并进记忆系统的 Checkpoint 机制）
+> - `api/engine.py` `NovelEngine` → `StoryEngine`（运行时引擎改名，更直观）
 
 ---
 
@@ -425,10 +438,15 @@ uv run python scripts/bench_m0.py
 
 ## 🎯 下一步
 
-M0 双模式动态世界纵切已完成：`WorldState` / `GameMaster`、`PlayerIntent` /
+M0 双模式动态世界纵切已完成：`WorldState` / GM Agent、`PlayerIntent` /
 `StageDirective` 双总线、双模式 `TurnLoop`、`FactOverride` 审计回滚、NPC 自主、
-叙事节拍、分层记忆 v2、Mod v1 与存档回放均已落地，作者模式 `scene_brief → prose`
-流程保持不回归。
+叙事节拍、分层记忆 v2 + Checkpoint、Mod v1 与 Checkpoint 回放均已落地，作者模式
+`scene_brief → prose` 流程保持不回归。
+
+架构演进方向（不破坏现有代码、先文档后实现）：
+- **GM → Crew Deterministic Agent**：`world/game_master.py` 迁入 `crews/scene_crew/deterministic/`，GM 成为 Crew 协作单元的一员
+- **SaveService → memory/checkpoint**：`saves/service.py` 合并进 `memory/`，Checkpoint 与分层记忆统一为 SessionState 快照机制
+- **NovelEngine → StoryEngine**：`api/engine.py` 类名从 `NovelEngine` 改为 `StoryEngine`，更直观表达「整个 StoryLoom 运行时入口」
 
 下一阶段 M1 面向玩法与审核（详见 [MVP.md](MVP.md) §3.2）：
 

@@ -15,6 +15,16 @@ from storyloom.memory.base import (
     TierSpec,
     WorkingMemory,
 )
+from storyloom.memory.checkpoint import (
+    CheckpointRecord,
+    CheckpointStore,
+    CheckpointSummary,
+    SaveRecord,
+    SaveService,
+    SaveSummary,
+    state_from_checkpoint,
+    state_from_save,
+)
 from storyloom.memory.core import LayeredMemory
 from storyloom.memory.hybrid import HybridBackend
 from storyloom.memory.indexer import MemoryIndexer
@@ -23,6 +33,9 @@ from storyloom.memory.lexical import LexicalBackend
 from storyloom.memory.vector import VectorBackend
 
 __all__ = [
+    "CheckpointRecord",
+    "CheckpointStore",
+    "CheckpointSummary",
     "CoreMemory",
     "DemotionRule",
     "HybridBackend",
@@ -32,8 +45,13 @@ __all__ = [
     "MemoryItem",
     "MemorySettings",
     "MemoryTier",
+    "SaveRecord",
+    "SaveService",
+    "SaveSummary",
     "SimpleRAGMemory",
     "TierSpec",
     "VectorBackend",
     "WorkingMemory",
+    "state_from_checkpoint",
+    "state_from_save",
 ]
