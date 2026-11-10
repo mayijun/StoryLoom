@@ -803,7 +803,7 @@ class NovelEngine:
     async def play_turn(
         self, project_id: str, boot: TurnBoot
     ) -> TurnResult:
-        """执行一个双模式回合"""
+        """执行一个双模式回合（可选集成 SceneCrew 多 Agent 叙事链）"""
         project = self._get_or_load_project(project_id)
         if boot.world_state is None:
             boot = boot.model_copy(
@@ -819,6 +819,8 @@ class NovelEngine:
             self.registry.apply_provider_keys(boot.provider_api_keys)
 
         memory = self.memory_for(project_id, backend=boot.memory_backend)
+        crew = self._crew_for(project_id)
+        rag = self.rags.get(project_id)
         loop = TurnLoop(
             project,
             instance_id=boot.instance_id,
@@ -826,6 +828,8 @@ class NovelEngine:
             extensions=self.extension_registry,
             save_service=self.save_service,
             renderer=SceneRenderer(prose_fn=self._game_prose_fn),
+            crew=crew,
+            rag=rag,
         )
         result = await loop.run(boot)
         key = (project_id, boot.instance_id)

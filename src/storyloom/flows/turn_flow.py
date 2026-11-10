@@ -2,29 +2,39 @@
 Copyright (C) 2026 Ma Yijun (ma.yijun@outlook.com)
 This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 
-双模式 TurnLoop：游戏 / 扮演与导演模式共用同一套世界状态与渲染链。
+双模式 TurnLoop：游戏 / 扮演与导演模式共用同一套世界状态与 SceneCrew 多 Agent 链。
 
     boot → perceive → classify_input → interpret_*
          → director_frame → actor_round → adjudicate
-         → consistency_check → moderation_gate
+         → [scene_crew_narrative]  ← SceneCrew: Surprise + Foreshadow + Director +
+         → consistency_check           Consistency + Prose
+         → moderation_gate
          → render_scene → commit → plan_next
+
+SceneCrew 策略（避免每回合都跑全套 agent 的成本）：
+- 游戏模式：每回合跑 Consistency + Prose；每 3~5 回合抽样触发 Surprise + Foreshadow + Director
+- 导演模式：每回合全跑（Surprise + Foreshadow + Director + Consistency + Prose）
+- crew=None：退回原简化路径（硬编码一致性 + narrator 单模型润色），兼容旧测试
 
 纪律：
 - 全部 async，支持 max_duration_ms 超时与 max_turns / max_retries / max_cost 配额；
-- 状态只经 GM / Authority 写入；
+- 状态只经 GM / Authority 写入；SceneCrew 只产出叙事层文本，不修改 WorldState；
 - 质量下降不阻塞玩家，打质量标记继续；
 - 日志携带 instance_id / work_id / turn_id / trace_id。
 """
 
 import asyncio
+import json
 import time
 import uuid
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
+from storyloom.crews.scene_crew.crew import SceneCrew
 from storyloom.extensions.host import ExtensionHost, ExtensionRegistry
 from storyloom.memory.core import LayeredMemory
+from storyloom.memory.legacy import SimpleRAGMemory
 from storyloom.models import NovelProject
 from storyloom.narrative.arc import ArcDirector, DirectorFrame
 from storyloom.runtime.directive import StageScene
@@ -119,7 +129,11 @@ def merge_deltas(target: StateDelta, patch: StateDelta) -> StateDelta:
 
 
 class TurnLoop:
-    """双模式回合循环"""
+    """双模式回合循环（可选集成 SceneCrew 多 Agent 链）
+
+    crew / rag 都为 None 时退回原简化路径，保证旧测试通过。
+    传入后游戏模式与导演模式共用同一套 SceneCrew 的叙事能力。
+    """
 
     def __init__(
         self,
@@ -130,6 +144,8 @@ class TurnLoop:
         save_service: Optional[SaveService] = None,
         renderer: Optional[SceneRenderer] = None,
         gap_policy: str = "reject",
+        crew: Optional[SceneCrew] = None,
+        rag: Optional[SimpleRAGMemory] = None,
     ):
         self.project = project
         self.instance_id = instance_id
@@ -141,6 +157,10 @@ class TurnLoop:
         self.router = IntentRouter()
         self.arc_director = ArcDirector()
         self._rrf_counter = 0
+        self.crew = crew
+        self.rag = rag
+        # 用于游戏模式下抽样触发高成本 agent（surprise / foreshadow / director）
+        self._crew_turn_counter = 0
 
     # ---------------- 入口 ----------------
 
@@ -351,6 +371,13 @@ class TurnLoop:
                 proposals, state, controller, actor, frame
             )
             issues = self._consistency_check(before, working_state)
+            # SceneCrew LLM 级一致性检测（有 crew 时叠加）
+            if self.crew is not None:
+                crew_issues = await self._crew_consistency_check(
+                    working_state, before, results, actor,
+                    director_mode=(boot.mode == "director"),
+                )
+                issues.extend(crew_issues)
             if not issues or retry_count >= boot.max_retries:
                 break
             retry_count += 1
@@ -367,10 +394,25 @@ class TurnLoop:
             }
         )
 
+        # 7.5 SceneCrew 叙事增强：Surprise + Foreshadow + Director + Prose（可选）
+        crew_narrative = ""
+        crew_trace: Dict[str, Any] = {}
+        if self.crew is not None and any(r.success for r in results):
+            self._crew_turn_counter += 1
+            crew_narrative, crew_trace = await self._crew_narrative_round(
+                boot.mode, working_state, before, results, actor, frame,
+                action_text,
+            )
+            trace.append({"stage": "scene_crew_narrative", **crew_trace})
+
         # 8. moderation_gate（M0 默认 passthrough）
         quality_flags = self._quality_flags(results, issues, retry_count)
+        if crew_trace.get("crew_issues"):
+            quality_flags.extend(
+                f"crew_issue:{i}" for i in crew_trace["crew_issues"]
+            )
 
-        # 9. render_scene（注入分层记忆：核心层常驻 + 检索库按需召回）
+        # 9. render_scene（注入分层记忆 + SceneCrew 叙事文本）
         primary = results[0] if results else AdjudicationResult(
             success=True, outcome="idle", narrative="你静静地站着，等待下一刻。"
         )
@@ -382,17 +424,13 @@ class TurnLoop:
             memory_context = "\n".join(
                 part for part in (core, retrieved) if part
             )
-        scene = await self.renderer.arender(
-            before,
-            working_state,
-            primary,
-            actor,
-            context=memory_context,
-            style=self.project.style,
-            description=self.project.description,
-            world_book=self._world_context(working_state, actor),
+        # crew 叙事文本作为可选的 prose 输入，优先于 renderer.prose_fn
+        scene = await self._render_with_crew_prose(
+            before, working_state, primary, actor,
+            memory_context, crew_narrative, boot.mode,
         )
-        trace.append({"stage": "render_scene", "chars": len(scene.text)})
+        trace.append({"stage": "render_scene", "chars": len(scene.text),
+                      "crew_prose": bool(crew_narrative)})
 
         # 10. commit（内存分层记忆 + arc）
         # 只记录真正推进了世界的回合：被拒绝 / 一致性失败 / 空转的回合不写记忆，
@@ -604,6 +642,287 @@ class TurnLoop:
         if interpreted.mode == "meta":
             return "ok", "stop"
         return "ok", "next_turn"
+
+    # ---------------- SceneCrew 叙事增强 ----------------
+
+    async def _run_crew_agent(
+        self, agent, prompt: str, timeout_s: float = 60.0,
+    ) -> Optional[str]:
+        """同步 kickoff 的异步包装；LLM 不可用或超时返回 None 让上层兜底
+
+        默认 60 秒足够推理型模型（deepseek-v4-pro / claude-sonnet）返回；
+        快模型（flash）一般 5-10 秒。超时不是错误，只是说明叙事增强层本次
+        不可用，主流程继续跑 GM + 硬编码一致性 + narrator 单模型。
+        """
+        loop = asyncio.get_event_loop()
+
+        def _kickoff():
+            return agent.kickoff(prompt)
+
+        try:
+            output = await asyncio.wait_for(
+                loop.run_in_executor(None, _kickoff),
+                timeout=timeout_s,
+            )
+            return str(output.raw).strip() if output else None
+        except asyncio.TimeoutError:
+            return None
+        except Exception:
+            return None
+
+    async def _crew_consistency_check(
+        self,
+        after: WorldState,
+        before: WorldState,
+        results: List[AdjudicationResult],
+        actor: str,
+        director_mode: bool = False,
+    ) -> List[str]:
+        """SceneCrew ConsistencyAgent 做 LLM 级人设/时间线/设定一致性检测
+
+        与硬编码 _consistency_check 叠加；LLM 失败时返回空列表放行，
+        避免阻塞回合。
+        """
+        issues: List[str] = []
+        if self.crew is None:
+            return issues
+
+        present = after.characters_at(
+            (after.characters.get(actor).location
+             if after.characters.get(actor) else "")
+        )
+        char_summaries = []
+        for name in present:
+            cs = after.characters.get(name)
+            if cs is None:
+                continue
+            profile = self.project.get_character(name)
+            persona = profile.persona if profile else ""
+            motivation = profile.motivation if profile else ""
+            char_summaries.append(
+                f"- {name}: {persona}；动机: {motivation}；"
+                f"状态: {cs.status}；情绪: {cs.emotion}"
+            )
+        foreshadow_context = "\n".join(
+            f"- [{f.foreshadow_id}] {f.description} (状态: {f.status.value})"
+            for f in self.project.foreshadowings
+            if f.status.value not in ("resolved", "subverted", "abandoned")
+        ) or "（无活跃伏笔）"
+
+        director_constraints = ""
+        if director_mode:
+            director_constraints = "导演模式：本回合内容为作者指令的直接产出，请重点检查人设与设定一致性。"
+
+        prompt = self.crew.task_prompt(
+            "consistency_check",
+            actor_log="\n".join(r.narrative for r in results),
+            character_data="\n".join(char_summaries) or "- （在场无角色）",
+            foreshadow_data=foreshadow_context,
+            director_constraints=director_constraints or "（无）",
+        )
+        raw = await self._run_crew_agent(self.crew.consistency(), prompt)
+        if raw is None:
+            return issues
+
+        try:
+            # 尝试解析 JSON（ConsistencyAgent 的结构化输出）
+            start = raw.find("{")
+            end = raw.rfind("}") + 1
+            if start >= 0 and end > start:
+                data = json.loads(raw[start:end])
+                if not data.get("passed", True):
+                    issues.extend(data.get("conflicts", []))
+            else:
+                # 纯文本格式：每行一个冲突
+                for line in raw.splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("- ") or stripped.startswith("* "):
+                        issues.append(stripped[2:])
+        except (ValueError, TypeError):
+            pass
+        return issues
+
+    async def _crew_narrative_round(
+        self,
+        mode: Literal["game", "director"],
+        working_state: WorldState,
+        before: WorldState,
+        results: List[AdjudicationResult],
+        actor: str,
+        frame: DirectorFrame,
+        action_text: str,
+    ) -> Tuple[str, Dict[str, Any]]:
+        """SceneCrew 叙事层增强（Surprise + Foreshadow + Director + Prose）
+
+        游戏模式：每 3 回合抽样运行 Surprise + Foreshadow + Director（控制成本），
+        Prose 每回合都跑；导演模式每回合全跑。
+        """
+        trace: Dict[str, Any] = {
+            "surprise": False, "foreshadow": False, "director": False,
+            "prose": False, "mode": mode,
+        }
+        project = self.project
+        primary = results[0] if results else None
+
+        # 构建本回合的场景简报
+        present_chars = working_state.characters_at(
+            (working_state.characters.get(actor).location
+             if working_state.characters.get(actor) else "")
+        )
+        location = (
+            working_state.characters[actor].location
+            if actor in working_state.characters else ""
+        )
+        scene_brief = (
+            f"时间: {working_state.format_time()}\n"
+            f"地点: {location}\n"
+            f"在场: {', '.join(present_chars) if present_chars else '无'}\n"
+            f"玩家意图: {action_text or '（空转）'}\n"
+            f"GM裁决: {primary.narrative if primary else '无'}"
+        )
+
+        # RAG 上下文
+        rag_context = ""
+        if self.rag is not None:
+            try:
+                docs = self.rag.query(action_text or scene_brief, n_results=3)
+                rag_context = "\n".join(docs) if docs else ""
+            except Exception:
+                rag_context = ""
+
+        # 记忆上下文（用 LayeredMemory 的 prompt_block）
+        memory_block = ""
+        if self.memory is not None:
+            memory_block = self.memory.prompt_block(viewer=actor)
+
+        # ---------- 抽样策略 ----------
+        run_full = (
+            mode == "director"
+            or self._crew_turn_counter % 3 == 0  # 游戏模式每 3 回合全跑一次
+        )
+
+        # 0. SurpriseAgent
+        surprise_text = ""
+        if run_full and self.crew is not None:
+            cooldown_hint = ""
+            scenes_since = (
+                project.scene_count - project.last_major_surprise_scene
+            )
+            if scenes_since < project.surprise_cooldown:
+                cooldown_hint = (
+                    f"\n⚠️ 距上次重大意外仅过了{scenes_since}个场景，"
+                    f"建议本回合只给 minor 级别的小意外。"
+                )
+            prompt = self.crew.task_prompt(
+                "surprise_proposal",
+                project_title=project.title,
+                memory_block=memory_block,
+                scene_brief=scene_brief,
+                cooldown_hint=cooldown_hint,
+                active_foreshadowings="（active_foreshadowings 在简化调用里省略）",
+            )
+            surprise_text = await self._run_crew_agent(
+                self.crew.surprise(), prompt
+            ) or ""
+            trace["surprise"] = bool(surprise_text)
+
+        # 0b. ForeshadowingAgent
+        foreshadow_text = ""
+        if run_full and self.crew is not None:
+            active_foreshadowings = [
+                f"- [{f.foreshadow_id}] {f.description} "
+                f"(状态: {f.status.value}, 已{f.scenes_since_last_mention}场景未提及)"
+                for f in project.foreshadowings
+                if f.status.value in ("planted", "reinforced")
+            ]
+            prompt = self.crew.task_prompt(
+                "foreshadowing_ops",
+                project_title=project.title,
+                memory_block=memory_block,
+                scene_brief=scene_brief,
+                present_characters=", ".join(present_chars),
+                foreshadow_table="\n".join(active_foreshadowings) or "（无活跃伏笔）",
+                urgent_alerts="（无紧急提醒）",
+                surprise_proposal=surprise_text or "（无）",
+            )
+            foreshadow_text = await self._run_crew_agent(
+                self.crew.foreshadowing(), prompt
+            ) or ""
+            trace["foreshadow"] = bool(foreshadow_text)
+
+        # 1. DirectorAgent（回合意图包）
+        director_intent = ""
+        if run_full and self.crew is not None:
+            prompt = self.crew.task_prompt(
+                "director_plan",
+                project_title=project.title,
+                memory_block=memory_block,
+                scene_brief=scene_brief,
+                surprise_proposal=surprise_text or "（无）",
+                foreshadowing_ops=foreshadow_text or "（无）",
+            )
+            director_intent = await self._run_crew_agent(
+                self.crew.director(), prompt
+            ) or ""
+            trace["director"] = bool(director_intent)
+
+        # 2. ProseAgent（文学化润色，每回合必跑）
+        prose_text = ""
+        if self.crew is not None:
+            # 从 GM 裁决结果构建行动日志
+            actor_log = "\n".join(
+                f"[{r.outcome}] {r.narrative}" for r in results
+            )
+            director_constraints_parts = []
+            if surprise_text:
+                director_constraints_parts.append(f"意外事件: {surprise_text[:200]}")
+            if foreshadow_text:
+                director_constraints_parts.append(f"伏笔操作: {foreshadow_text[:200]}")
+            if director_intent:
+                director_constraints_parts.append(f"导演意图: {director_intent[:200]}")
+            director_constraints = (
+                "\n".join(director_constraints_parts) or "（无）"
+            )
+            prompt = self.crew.task_prompt(
+                "prose_polish",
+                style=project.style,
+                director_constraints=director_constraints,
+                actor_log=actor_log,
+            )
+            prose_text = await self._run_crew_agent(
+                self.crew.prose(project.style), prompt
+            ) or ""
+            trace["prose"] = bool(prose_text)
+
+        return prose_text, trace
+
+    async def _render_with_crew_prose(
+        self,
+        state_before: WorldState,
+        state_after: WorldState,
+        adjudication: AdjudicationResult,
+        actor: str,
+        memory_context: str,
+        crew_prose: str,
+        mode: Literal["game", "director"],
+    ) -> StageScene:
+        """优先使用 SceneCrew ProseAgent 的润色文本；无 crew_prose 时走 renderer.arender"""
+        if crew_prose:
+            # SceneCrew ProseAgent 的产出直接喂给 renderer 的 _build 组装器
+            return self.renderer._build(
+                state_before, state_after, adjudication, actor, crew_prose
+            )
+        # 退回原有路径
+        return await self.renderer.arender(
+            state_before,
+            state_after,
+            adjudication,
+            actor,
+            context=memory_context,
+            style=self.project.style,
+            description=self.project.description,
+            world_book=self._world_context(state_after, actor),
+        )
 
 
 def _ms(started: float) -> int:
