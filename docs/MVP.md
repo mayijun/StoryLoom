@@ -21,9 +21,9 @@
 | 5 | 章节结构 + 场景归属 | ✅ | `chapters` 表 + `/chapters` `/scenes/{id}/chapter` |
 | 6 | 场景编辑 / 删除 / 单场景重跑 | ✅ | `/scenes` 路由 |
 | 7 | 一致性校验失败回退重试 | ✅ | `scene_flow.py` |
-| 8 | 伏笔状态机（种植 / 强化 / 揭示 / 回收 / 颠覆） | ✅ | `models.py` + Flow 内 `apply_foreshadow_ops` |
+| 8 | 伏笔状态机（种植 / 强化 / 揭示 / 回收 / 颠覆） | ✅ | `memory/models.py` + Flow 内 `apply_foreshadow_ops` |
 | 9 | 多模型路由 + 自动降级 | ✅ | `llm/router.py` |
-| 10 | 控制论质量管控 | ✅ | `control/` |
+| 10 | 控制论质量管控 | ✅ | `frontend/src/components/flow/controls.ts`（Flow 控制配置） |
 | 11 | 记忆基础版 | ✅ | `memory/legacy.py`（平铺 `CoreMemory` + Chroma；分层 v2 见 M0-14） |
 | 12 | Vue 作者工作台 | ✅ | `frontend/` |
 
@@ -44,7 +44,7 @@
 ## 2. M0：双模式动态世界纵切（含分层记忆 v2）（已完成）
 
 > M0-1 ~ M0-14 全部落地，A1 ~ A15 验收由 `tests/test_m0*.py` 覆盖；
-> 后端合计 **189 项测试全部通过**（完整清单见 [TESTS.md](TESTS.md)），
+> 后端合计 **194 项测试全部通过**（完整清单见 [TESTS.md](TESTS.md)），
 > 作者模式 `scene_brief → prose` 不回归。
 
 ### 2.1 目标
@@ -62,18 +62,18 @@
 
 | # | 模块 | 交付 | 状态 |
 |---|---|---|---|
-| M0-1 | `world/state.py` | `WorldState` + `Fact` + `CharState` + `LocationState` + `ArcState` · 可序列化 · 支持 `state_delta` 合并 · 世界时间 | ✅ `world/state.py` |
-| M0-2 | `world/state.py` + `crews/scene_crew/crew.py` | 行动裁决由导演 Agent 输出统一 JSON（`allow / reject / direct` + `state_delta`）· 存在性 / 在场性 / 死亡态由运行时前置拦截 | ✅ `crews/scene_crew/crew.py` · `packet.py` |
+| M0-1 | `memory/state.py` | `WorldState` + `Fact` + `CharState` + `LocationState` + `ArcState` · 可序列化 · 支持 `state_delta` 合并 · 世界时间 | ✅ `memory/state.py` |
+| M0-2 | `memory/state.py` + `crews/scene_crew/crew.py` | 行动裁决由导演 Agent 输出统一 JSON（`allow / reject / direct` + `state_delta`）· 存在性 / 在场性 / 死亡态由运行时前置拦截 | ✅ `crews/scene_crew/crew.py` · `packet.py` |
 | M0-3 | `crews/scene_crew/packet.py` | 自由文本输入 · `StageDirective` · `compose_scene` · 全部可 JSON 序列化 | ✅ `flows/turn_flow.py` · `crews/scene_crew/packet.py` |
 | M0-4 | `flows/turn_flow.py` | 双模式 TurnLoop：`boot → perceive → freeform_input → director_frame → actor_round → adjudicate → consistency_check → moderation_gate → render_scene → commit → plan_next` · **async** · retry ≤ N · 四个出口 · **超时控制** | ✅ `flows/turn_flow.py` |
 | M0-5 | `extensions/` | 统一 manifest · `ExtensionHost` · `skill` 注入 · `mod` 规则注册 · `policy`/`asset` 解析 · **per-instance 隔离** · 状态变更必须走 builtin handler，LLM 工具一律 `read_only` | ✅ `extensions/manifest.py` · `host.py` |
-| M0-6 | `saves` | `SaveService` · 本地快照 + 回放（先文件，M0 后接 DB） | ✅ `saves/service.py`（`data/saves/*.json`） |
+| M0-6 | `saves` | `CheckpointStore` · 本地快照 + 回放（先文件，M0 后接 DB） | ✅ `memory/checkpoint.py`（`data/saves/*.json`） |
 | M0-7 | API（**全部 async**） | `POST /game/{pid}/turn` · `GET /game/{pid}/state` · `POST/GET /game/{pid}/saves` · `POST /extensions/resolve` · `PATCH/GET /api/projects/{pid}/memory` | ✅ `api/routers/game.py` · `extensions.py` · `memory.py` |
 | M0-8 | 前端扩展 | 游戏模式：对话框 / 选项 / backlog / 存档读取 | ✅ `frontend/src/components/GamePanel.vue` |
 | M0-9 | Demo | `src/storyloom/templates/xianxia_system.py`：角色/地点/伏笔/章节 + 内嵌 map mod 与 skill；Web 界面「试用模板」一键生成可删除项目 | ✅ `src/storyloom/templates/` |
 | M0-10 | 测试 | 导演 Agent 裁决、`Fact` 过滤、存档回放、manifest 校验、导演模式回归、记忆分层 / 压缩 / 降级、三后端检索 | ✅ `tests/test_m0.py` · `test_m0_api.py` · `test_memory_compression.py` |
-| M0-11 | `world/state.py` | `WorldState.switch_mode` / `apply_override` / `rollback_override` · 模式切换 checkpoint · `FactOverride` 审计与回滚 | ✅ `world/state.py` |
-| M0-12 | `narrative/arc.py` | 起承转合节拍 · 张力目标 · 信息预算 | ✅ `narrative/arc.py` |
+| M0-11 | `memory/state.py` | `WorldState.switch_mode` / `apply_override` / `rollback_override` · 模式切换 checkpoint · `FactOverride` 审计与回滚 | ✅ `memory/state.py` |
+| M0-12 | `crews/scene_crew/arc.py` | 起承转合节拍 · 张力目标 · 信息预算 | ✅ `crews/scene_crew/arc.py`（Crew 生成参数） |
 | M0-13 | `crews/scene_crew/crew.py` | NPC 自主：记忆 → 反思 → 计划 → 提案（EnsembleAgent 输出 `npc_actions`） | ✅ `SceneCrew.npc_actions` |
 | M0-14 | `memory/` 分层记忆 v2 | 核心层 `working → short_term → long_term → canon`（三层策略可配）· 短期超阈值压缩进长期 · 长期低重要性且与活跃伏笔无关时降级到检索库 · 命中后可回温 · `fts` 默认 / `vector` / `hybrid` 同级可选 · 历史场景与资产回填 · 重启恢复 · `secrets` 可见性过滤 | ✅ `memory/` 包 + `config/memory_config.default.yaml`（默认种子）+ 每项目 `memory_configs` |
 
@@ -182,20 +182,20 @@
 
 | 模块 | 结果 | 落点 | 优先级 |
 |---|---|---|---|
-| 世界状态 | `WorldState` / `Fact` / 时间 / 地点 / 角色状态，可序列化 + `state_delta` 合并 | `world/state.py` | P0 ✅ |
+| 世界状态 | `WorldState` / `Fact` / 时间 / 地点 / 角色状态，可序列化 + `state_delta` 合并 | `memory/state.py` | P0 ✅ |
 | 裁决 | 导演 Agent：`decision` / `state_delta` / `available`，统一 JSON 输出 | `crews/scene_crew/crew.py` | P0 ✅ |
 | 输入 | 原始 `text` + `wait`；推荐选项与手动输入同链，核心不做动作分类 | `flows/turn_flow.py` | P0 ✅ |
 | 输出 | `StageDirective` + `compose_scene` + `TextAdapter`，全部可序列化 | `crews/scene_crew/packet.py` | P0 ✅ |
 | 循环 | `TurnLoop` 回环 + 四个出口 + 上限保护 + async + 超时 | `flows/turn_flow.py` | P0 ✅ |
 | 扩展 | 统一 manifest + `ExtensionHost` + 四类扩展加载 · per-instance | `extensions/manifest.py` / `host.py` | P0 ✅ |
-| 存档 | `SaveService`（文件快照 + 回放） | `saves/service.py` | P0 ✅ |
-| 信息隔离 | `view(agent_id)` 按 `known_by` 过滤 | `world/state.py` | P0 ✅ |
+| 存档 | `CheckpointStore`（文件快照 + 回放） | `memory/checkpoint.py` | P0 ✅ |
+| 信息隔离 | `view(agent_id)` 按 `known_by` 过滤 | `memory/state.py` | P0 ✅ |
 | 记忆生命周期 | 分层核心记忆 / 压缩 / 降级回温 / 三后端检索 | `memory/` | P0 ✅ |
 | 记忆隐私 | `visibility` + `include_private_for` | `memory/base.py` / `indexer.py` | P0 ✅ |
 | API | `/game/...` 端点 + `/extensions/resolve` + `/memory`，全部 async | `api/routers/` | P0 ✅ |
 | 前端 | 游戏模式：对话框 / 选项 / backlog / 存档 | `frontend/src/components/GamePanel.vue` | P0 ✅ |
-| 双模式策略 | `SceneCrew.adjudicate(mode=)` / 模式切换 checkpoint / `FactOverride` 回滚 | `world/state.py` | P0 ✅ |
-| 叙事节拍 | `ArcState`：起承转合 + 张力目标 + 信息预算 | `narrative/arc.py` | P0 ✅ |
+| 双模式策略 | `SceneCrew.adjudicate(mode=)` / 模式切换 checkpoint / `FactOverride` 回滚 | `memory/state.py` | P0 ✅ |
+| 叙事节拍 | `ArcState`：起承转合 + 张力目标 + 信息预算 | `crews/scene_crew/arc.py` | P0 ✅ |
 | NPC 自主 | `SceneCrew.npc_actions`：记忆 → 反思 → 计划 → 提案 | `crews/scene_crew/crew.py` | P0 ✅ |
 | Demo | 试用模板 | `src/storyloom/templates/xianxia_system.py` | P1 ✅ |
 
@@ -228,7 +228,7 @@
 | `TECHNICAL.md` | **已实现**的技术细节；M0 内容已同步为已实现 | ✅ |
 | `CONTROL_THEORY.md` | 控制论原理映射与 M0 最小闭环边界 | ✅ |
 | `MODEL_SELECTION.md` | 模型分配策略，含 `memory` 压缩角色与 M0 新角色预留 | ✅ |
-| `TESTS.md` | 后端测试用例清单（189 项，按 P0 / P1 / M0 验收分组） | ✅ |
+| `TESTS.md` | 后端测试用例清单（194 项，按 P0 / P1 / M0 验收分组） | ✅ |
 
 ---
 

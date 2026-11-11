@@ -142,7 +142,7 @@ def test_regenerate_nonexistent_scene_404(tmp_path, monkeypatch):
 def test_regenerate_flow_skips_scene_count_increment():
     """is_regenerate=True 时，update_memory_and_foreshadowings 不应调用
     advance_scene_counters，因此 project.scene_count 不变。"""
-    from storyloom.models import NovelProject
+    from storyloom.memory.models import NovelProject
     from storyloom.flows.scene_flow import SceneGenerationFlow, advance_scene_counters
     from storyloom.memory import CoreMemory, SimpleRAGMemory
 
@@ -175,7 +175,7 @@ def test_regenerate_flow_skips_scene_count_increment():
 
 def test_normal_flow_increments_scene_count():
     """is_regenerate=False（默认）时，scene_count 应递增。"""
-    from storyloom.models import NovelProject
+    from storyloom.memory.models import NovelProject
     from storyloom.flows.scene_flow import SceneGenerationFlow, advance_scene_counters
     from storyloom.memory import CoreMemory, SimpleRAGMemory
 

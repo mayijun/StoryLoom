@@ -1,6 +1,8 @@
 # 系统控制论与 StoryLoom
 
 > 本文档整理"钱学森系统控制论如何改进多 Agent 小说系统"这一设计结论。
+> 控制不是独立后端模块：调整灵敏度 / 采样 / 闸门本质上就是修改 Flow，
+> 配置落点为 `frontend/src/components/flow/controls.ts`。
 
 ---
 
@@ -31,13 +33,13 @@
 
 | # | 原理 | 原文依据 | 系统实现 | 代码位置 |
 |---|------|---------|---------|---------|
-| ① | 反馈闭环 > 开环 | "反馈系统要比开环系统强" | 生成→批评→修正多轮循环 | `control/feedback_loop.py` `FeedbackLoop` |
-| ② | 冗余与统计滤波 | "存在噪声时用统计滤波" | 多次采样 + 评分/投票聚合 | `StatisticalFilter`、一致性投票 |
-| ③ | 整体优化 > 局部最优 | "追求总体合理性" | 端到端质量评分 | `EndToEndEvaluator` |
-| ④ | 鲁棒性与灵敏度分析 | "误差传播系数" | 识别高杠杆 Agent 加强校验 | `control/robustness.py` `SensitivityAnalyzer` |
-| ⑤ | 解耦/非互相影响控制 | "不互相影响的控制" | 结构化中间格式 + 依赖声明 | `AgentOutput`、`DecouplingValidator` |
-| ⑥ | 分层大系统组织 | "总设计师 + 行政指挥两条线" | Orchestrator 分层管控 | `control/hierarchy.py` `SystemOrchestrator` |
-| ⑦ | 人机结合综合集成 | "以人为主、人机结合" | 关键节点人工审核闸门 | `human_review_gate` |
+| ① | 反馈闭环 > 开环 | "反馈系统要比开环系统强" | 生成→批评→修正多轮循环 | Flow `feedback_loop` 节点 |
+| ② | 冗余与统计滤波 | "存在噪声时用统计滤波" | 多次采样 + 评分/投票聚合 | Flow `multi_sample` / `nSamples` + `SceneCrew` 一致性投票 |
+| ③ | 整体优化 > 局部最优 | "追求总体合理性" | 端到端质量评分与趋势追踪 | `crews/scene_crew/crew.py` |
+| ④ | 鲁棒性与灵敏度分析 | "误差传播系数" | 识别高杠杆 Agent 加强校验 | `controls.ts` `AGENT_CONTROL_PROFILES` |
+| ⑤ | 解耦/非互相影响控制 | "不互相影响的控制" | 结构化中间格式 + 依赖声明 | `crews/scene_crew/packet.py` `AgentPacket` |
+| ⑥ | 分层大系统组织 | "总设计师 + 行政指挥两条线" | Flow 图分层编排 | `frontend/src/components/flow/` |
+| ⑦ | 人机结合综合集成 | "以人为主、人机结合" | 关键节点人工审核闸门 | Flow `human_review` 节点 |
 
 ---
 
@@ -52,8 +54,8 @@
 🟢 LOW       ensemble               → 单次直接通过
 ```
 
-对应 `SensitivityAnalyzer.PROFILES`。控制策略由 `SystemOrchestrator`
-在运行时按角色查询，决定 `ControlDecision`。
+对应 `AGENT_CONTROL_PROFILES`。控制策略由 `decideControlStrategy`
+在 Flow 节点上按角色计算，决定 `ControlDecision`。
 
 ---
 

@@ -16,7 +16,7 @@ from storyloom.extensions.manifest import (
     discover,
     load_manifest,
 )
-from storyloom.world.state import LocationState, WorldState
+from storyloom.memory.state import LocationState, WorldState
 
 
 class ExtensionHost:

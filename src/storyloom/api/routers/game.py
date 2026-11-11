@@ -9,8 +9,7 @@ from storyloom.api.schemas import (
     TurnRequest,
 )
 from storyloom.flows.turn_flow import TurnBoot
-from storyloom.world.state import FactOverride
-from storyloom.world.state import WorldState
+from storyloom.memory.state import FactOverride, WorldState
 
 router = APIRouter(prefix="/game", tags=["game"])
 

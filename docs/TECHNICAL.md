@@ -53,17 +53,20 @@ Crew 是整个 StoryLoom 的核心协作单元，包含两种角色：
 - 支持 DeepSeek / OpenAI / Anthropic / Ollama（本地）；
 - 主模型不可用时自动切到 fallback。
 
-### 🎛️ 系统控制论质量管控
+### 🎛️ Flow 控制配置（前端）
+
+控制不再是独立后端模块：灵敏度、采样次数与质量闸门作为 Flow 节点 / 连线参数维护，
+位于 `frontend/src/components/flow/controls.ts`。调整控制策略 = 修改 Flow。
 
 | 原理 | 实现 |
 |------|------|
-| 反馈闭环 | 生成→批评→修正多轮（`control/feedback_loop.py`） |
-| 统计滤波 | 多次采样 + 投票聚合 |
-| 整体优化 | 端到端质量评分 |
-| 灵敏度分析 | 按 Agent 风险等级分配采样次数与闭环强度（`control/robustness.py`） |
+| 反馈闭环 | Flow 节点 `decision='feedback_loop'` + 导演裁决 / 一致性检查 / 审核闸门 |
+| 统计滤波 | Flow 节点 `nSamples` / `decision='multi_sample'` |
+| 整体优化 | `SceneCrew` 端到端质量评分与趋势追踪 |
+| 灵敏度分析 | `AGENT_CONTROL_PROFILES` 按 Agent 风险等级分配控制策略 |
 | 解耦控制 | 结构化中间格式防级联误差 |
-| 分层管控 | Orchestrator 层级化管控（`control/hierarchy.py`） |
-| 人机结合 | 关键节点人工审核闸门（接口预留） |
+| 分层管控 | Flow 图分层编排 Agent / 资产 / 控制节点 |
+| 人机结合 | Flow 节点 `decision='human_review'` |
 
 ### 📌 伏笔生命周期管理
 
@@ -148,7 +151,7 @@ M0 新增：
 | 表 / 存储 | 作用 |
 |---|---|
 | `memory_items` | 分层记忆条目（层 / 重要性 / 命中 / 可见性 / 来源） |
-| `data/saves/*.json` | Checkpoint 快照（WorldState + 渲染历史 + memory_snapshot，**规划中合并进 memory/checkpoint.py**） |
+| `data/saves/*.json` | Checkpoint 快照（WorldState + 渲染历史 + memory_snapshot，**已合并进 `memory/checkpoint.py`**） |
 
 > `WorldState` 不落库：每回合由请求传入、返回 `state_delta`；
 > 导演改写审计写在 `WorldState.overrides` 中，回滚只恢复被改字段。
@@ -245,32 +248,30 @@ StoryLoom/
 │   ├── crews/scene_crew/
 │   │   ├── crew.py              # @CrewBase SceneCrew：Agent + 世界裁决 + NPC 自主
 │   │   ├── packet.py            # 统一 Agent JSON 契约 + 场景装配
+│   │   ├── arc.py               # 导演帧：起承转合 + 张力 + 信息预算（Crew 生成参数）
 │   │   ├── tools/               # ExtensionHost 注册的 mod/skill 工具（规划中）
 │   │   └── config/              # agents.default.yaml / tasks.default.yaml（种子）
-│   ├── world/
-│   │   └── state.py             # WorldState + Fact + FactOverride + 裁决协议
-│   ├── extensions/
-│   │   ├── manifest.py          # manifest schema + 校验
-│   │   └── host.py              # ExtensionHost = Crew 的 Tool Loader
-│   ├── narrative/
-│   │   └── arc.py               # 起承转合节拍 + 张力 + 信息预算
-│   ├── flows/
-│   │   ├── scene_flow.py        # 导演模式单场景
-│   │   └── turn_flow.py         # 双模式 TurnLoop
 │   ├── memory/
+│   │   ├── models.py            # 资产模型 / 伏笔 / 意外 / NovelProject
+│   │   ├── state.py             # WorldState + Fact + FactOverride + 裁决协议
 │   │   ├── core.py              # LayeredMemory：分层 / 压缩 / 降级 / 回温
-│   │   ├── checkpoint.py        # Checkpoint：快照 + 恢复（原 saves/service.py，规划中合并）
+│   │   ├── checkpoint.py        # Checkpoint：快照 + 恢复（原 saves/service.py）
 │   │   ├── lexical.py           # fts 后端
 │   │   ├── vector.py            # vector 后端
 │   │   ├── hybrid.py            # hybrid 后端
 │   │   ├── indexer.py           # 历史回填
 │   │   └── legacy.py            # CoreMemory + SimpleRAGMemory（作者模式）
+│   ├── extensions/
+│   │   ├── manifest.py          # manifest schema + 校验
+│   │   └── host.py              # ExtensionHost = Crew 的 Tool Loader
+│   ├── flows/
+│   │   ├── scene_flow.py        # 导演模式单场景
+│   │   └── turn_flow.py         # 双模式 TurnLoop
 │   ├── llm/                     # providers.py + router.py
-│   ├── control/                 # feedback_loop · robustness · hierarchy
-│   ├── models.py                # 资产模型 / 伏笔 / 意外 / NovelProject
 │   ├── media/                   # render_adapter.py（表现层雏形）
 │   └── config/model_config.yaml
 ├── frontend/                    # Vue 3 + Vite + Pinia
+│   └── src/components/flow/controls.ts   # Flow 控制配置（灵敏度 / 采样 / 闸门）
 ├── scripts/
 ├── tests/
 ├── data/                        # SQLite（已 git 忽略）
@@ -291,6 +292,10 @@ M0 已新增（均已实现，结构按新架构描述）：
 > - `runtime/directive.py` / `runtime/renderer.py` 已删除，由 `crews/scene_crew/packet.py` 的 `compose_scene` 接管
 > - `saves/service.py` → `memory/checkpoint.py`（SaveService 合并进记忆系统的 Checkpoint 机制）
 > - `api/engine.py` `NovelEngine` → `StoryEngine`（运行时引擎改名，更直观）
+> - `models.py` → `memory/models.py`：资产模型随世界状态一起归入 `memory/`
+> - `world/state.py` → `memory/state.py`：世界状态与分层记忆统一为 `memory/` 的状态容器
+> - `narrative/arc.py` → `crews/scene_crew/arc.py`：导演帧作为 `SceneCrew.adjudicate(frame=...)` 的生成参数
+> - `control/` 已删除：灵敏度 / 采样 / 闸门策略改为 `frontend/src/components/flow/controls.ts` 的 Flow 配置
 
 ---
 
@@ -405,7 +410,7 @@ uv run pytest -q
 ```
 
 覆盖：项目落库与外键、Agent/Task API、迁移与幂等回归、资产模型、场景与章节持久化、
-记忆基础版、记忆分层压缩与按层阈值配置、控制论模块、Flow。共 **189 个用例**，
+记忆基础版、记忆分层压缩与按层阈值配置、Flow。共 **194 个用例**，
 逐条清单见 [TESTS.md](TESTS.md)。
 
 M0 覆盖（`tests/test_m0*.py` + `test_memory_compression.py`）：GM 裁决与守卫拦截、移动可达性、`Fact` 可见性、

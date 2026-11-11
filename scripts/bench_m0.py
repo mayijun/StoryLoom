@@ -48,7 +48,7 @@ def measure_cold_start_ms() -> float:
 
 
 def build_project():
-    from storyloom.models import CharacterAsset, LocationAsset, NovelProject
+    from storyloom.memory.models import CharacterAsset, LocationAsset, NovelProject
 
     return NovelProject(
         project_id="bench",
@@ -77,7 +77,7 @@ def build_project():
 
 async def bench_turns(rounds: int) -> list[float]:
     from storyloom.flows.turn_flow import TurnBoot, TurnLoop
-    from storyloom.world.state import WorldState
+    from storyloom.memory.state import WorldState
 
     project = build_project()
     state = WorldState.from_project(project)
@@ -103,7 +103,7 @@ async def bench_turns(rounds: int) -> list[float]:
 
 async def bench_concurrency(count: int) -> tuple[int, float]:
     from storyloom.flows.turn_flow import TurnBoot, TurnLoop
-    from storyloom.world.state import WorldState
+    from storyloom.memory.state import WorldState
 
     async def one(index: int) -> bool:
         project = build_project()

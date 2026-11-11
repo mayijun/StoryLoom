@@ -40,9 +40,9 @@ from storyloom.extensions.host import ExtensionHost, ExtensionRegistry
 from storyloom.memory.checkpoint import SaveService
 from storyloom.memory.core import LayeredMemory
 from storyloom.memory.legacy import SimpleRAGMemory
-from storyloom.models import NovelProject
-from storyloom.narrative.arc import ArcDirector, DirectorFrame
-from storyloom.world.state import (
+from storyloom.memory.models import NovelProject
+from storyloom.crews.scene_crew.arc import ArcDirector, DirectorFrame
+from storyloom.memory.state import (
     ActionProposal,
     AdjudicationResult,
     FactOverride,

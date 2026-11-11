@@ -2,7 +2,7 @@
 
 import pytest
 
-from storyloom.models import (
+from storyloom.memory.models import (
     ForeshadowStatus,
     Foreshadowing,
     NovelProject,

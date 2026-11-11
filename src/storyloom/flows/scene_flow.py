@@ -21,7 +21,7 @@ from crewai.flow.flow import Flow, listen, router, start
 from pydantic import BaseModel, Field
 
 from storyloom.crews.scene_crew.crew import SceneCrew
-from storyloom.models import (
+from storyloom.memory.models import (
     Foreshadowing,
     ForeshadowStatus,
     NovelProject,

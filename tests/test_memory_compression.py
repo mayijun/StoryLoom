@@ -22,7 +22,7 @@ from storyloom.memory import (
     TierSpec,
 )
 from storyloom.memory.scoring import score_compressed_importance
-from storyloom.models import CharacterAsset, LocationAsset, NovelProject
+from storyloom.memory.models import CharacterAsset, LocationAsset, NovelProject
 
 
 class FakeCompressor:

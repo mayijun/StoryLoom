@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from storyloom.world.state import (
+from storyloom.memory.state import (
     ActionProposal,
     AdjudicationResult,
     StageDirective,

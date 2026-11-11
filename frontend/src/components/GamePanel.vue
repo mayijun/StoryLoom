@@ -237,18 +237,18 @@ async function play(text: string, label: string, isIdle = false) {
     if (data.quality_flags?.length) {
       statusText.value = `质量标记：${data.quality_flags.join('、')}`
     }
-    const text = (data.text || '').trim()
+    const replyText = (data.text || '').trim()
     if (data.status === 'timeout') {
       statusText.value = '本回合超时，世界保持原状。'
     }
     backlog.value.push({
-      role: text ? 'narrator' : 'system',
+      role: replyText ? 'narrator' : 'system',
       text:
-        text ||
+        replyText ||
         (data.status === 'timeout'
           ? '本回合生成超时，世界未推进；请重试一次，或把行动写得更短一些。'
           : '本回合没有产生叙述，世界保持原状。'),
-      directives: text ? data.scene?.directives || [] : [],
+      directives: replyText ? data.scene?.directives || [] : [],
     })
     // 通过响应式数组取回这条记录，后续写入记忆快照才能触发界面更新
     const entry = backlog.value[backlog.value.length - 1]

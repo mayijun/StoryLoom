@@ -17,7 +17,7 @@ from storyloom.memory import (
     MemoryIndexer,
     VectorBackend,
 )
-from storyloom.models import CharacterAsset, LocationAsset, NovelProject
+from storyloom.memory.models import CharacterAsset, LocationAsset, NovelProject
 from storyloom.crews.scene_crew.packet import (
     AgentPacket,
     compose_scene,
@@ -25,7 +25,7 @@ from storyloom.crews.scene_crew.packet import (
     parse_agent_packet,
 )
 from storyloom.memory.checkpoint import SaveService, state_from_save
-from storyloom.world.state import (
+from storyloom.memory.state import (
     ActionProposal,
     Fact,
     FactOverride,

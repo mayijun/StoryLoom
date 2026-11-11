@@ -1,29 +1,28 @@
 # 后端测试用例清单
 
 > 运行：`uv run pytest -q`（根目录）。
-> 当前基线：**17 个文件 / 189 个用例全部通过**。
+> 当前基线：**16 个文件 / 194 个用例全部通过**。
 > 进度口径见 [MVP.md](MVP.md)；性能基线见 `scripts/bench_m0.py`。
 
 | 文件 | 用例数 | 覆盖范围 |
 |---|---|---|
 | `test_project_persistence.py` | 24 | 项目落库、迁移、外键、级联 |
-| `test_templates.py` | 26 | 模板注册 / 应用 / 引擎 / 路由 |
+| `test_templates.py` | 31 | 模板注册 / 应用 / 引擎 / 路由 |
 | `test_scene_asset_persistence.py` | 17 | 场景与资产持久化 |
 | `test_author_p1.py` | 16 | P1：伏笔流转 / 导出 / 指标 / 配置迁移 |
 | `test_templates_integration.py` | 14 | 模板端到端集成 |
 | `test_chapter_structure.py` | 13 | 章节结构与场景归属 |
-| `test_m0.py` | 19 | M0 验收 A1–A15 + 运行时保护 |
+| `test_m0.py` | 23 | M0 验收 A1–A15 + 运行时保护 |
 | `test_memory_compression.py` | 13 | 记忆分层压缩 / 降级回温 / 按层阈值 |
-| `test_m0_api.py` | 7 | M0 API（game / memory / extensions） |
+| `test_m0_api.py` | 8 | M0 API（game / memory / extensions） |
 | `test_db_config.py` | 7 | Agent/Task 配置种子与迁移 |
 | `test_flow.py` | 6 | 作者模式 Flow 与伏笔操作 |
 | `test_scene_edit_regenerate.py` | 6 | 场景编辑与单场景重跑 |
 | `test_api_tasks.py` | 5 | Task 配置 API |
-| `test_control.py` | 5 | 控制论模块 |
 | `test_api_agents.py` | 4 | Agent 配置 API |
 | `test_assets.py` | 4 | 资产模型默认值 |
 | `test_memory.py` | 3 | 记忆基础版（CoreMemory + RAG） |
-| **合计** | **189** | |
+| **合计** | **194** | |
 
 ---
 
@@ -152,17 +151,7 @@
 | `test_apply_resolve_closes_foreshadow` | 回收关闭伏笔 |
 | `test_advance_scene_counters_increments` | 场景计数推进 |
 
-### 1.8 控制论质量管控 — `test_control.py`（5）
-
-| 用例 | 验证点 |
-|---|---|
-| `test_sensitivity_profiles` | 灵敏度档位 |
-| `test_orchestrator_decisions` | 编排决策 |
-| `test_quality_gate` | 质量门 |
-| `test_decoupling_validator_detects_undeclared_dependency` | 检出未声明依赖 |
-| `test_human_review_auto_mode` | 人工审核自动模式 |
-
-### 1.9 记忆基础版 — `test_memory.py`（3）
+### 1.8 记忆基础版 — `test_memory.py`（3）
 
 | 用例 | 验证点 |
 |---|---|

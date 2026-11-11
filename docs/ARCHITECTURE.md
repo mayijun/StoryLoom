@@ -56,6 +56,10 @@ LayeredMemory 的 checkpoint 机制。这样 Crew 成为整个系统的**唯一�
 
 依赖方向自上而下，扩展包只能挂在 Layer 3 定义的 Tool 接口上，不修改核心层。
 
+**模块归属**：`memory/` = 资产模型（`memory/models.py`）+ 世界状态（`memory/state.py`）+
+分层记忆与 Checkpoint；`crews/` = Agent 定义 + 导演帧（`crews/scene_crew/arc.py`）；
+`flows/` = TurnLoop；`frontend/src/components/flow/controls.ts` = 控制策略配置。
+
 ---
 
 ## 3. 核心抽象
@@ -71,7 +75,7 @@ class TurnBoot(BaseModel):
 核心运行时不做关键词解析或动作类型分类。Agent 推荐选项只是 `text` 的快捷输入，
 与玩家手动输入走同一条回合链；具体玩法需要行动约束时，由 extension 提供。
 
-### 3.2 状态容器：Fact / Belief / Memory
+### 3.2 状态容器：Fact / Belief / Memory（`memory/`）
 
 | 层 | 内容 | 维护者 | 用途 |
 |---|---|---|---|
@@ -102,6 +106,10 @@ class Fact(BaseModel):
 
 > 这里的 `Memory` 是**每个 Agent 的经历视图**；项目级的叙事记忆由 §5 的分层记忆系统维护。
 > 两者在 M0 通过 `visibility` / `known_by` 对接：叙事记忆的私有条目只有对应角色可见。
+>
+> 实现归属：`Fact` / `WorldState` / `StageDirective` 等运行时状态位于
+> `memory/state.py`；角色、地点、伏笔与项目元数据位于 `memory/models.py`。
+> 世界状态被视为一种「世界书 / 长期状态」，与叙事记忆统一放在 `memory/` 包内。
 
 ### 3.3 Crew：统一的协作单元
 
@@ -318,9 +326,24 @@ boot
 
 ---
 
-## 5. 世界状态与记忆
+## 5. 记忆：资产、世界状态与叙事记忆
 
-### 5.1 运行时状态
+`memory/` 是 Layer 2 的统一状态包，按职责拆成多个文件：
+
+| 文件 | 内容 | 对应抽象 |
+|---|---|---|
+| `memory/models.py` | 角色 / 地点 / 伏笔 / 意外提案 / 项目 | 项目资产 |
+| `memory/state.py` | `WorldState` / `Fact` / `CharState` / `LocationState` / `ArcState` / `StageDirective` / `FactOverride` | 运行时世界状态 |
+| `memory/core.py` | `LayeredMemory` | 分层叙事记忆 |
+| `memory/checkpoint.py` | `CheckpointStore`（原 `SaveService` 合并进来） | SessionState 快照 |
+| `memory/lexical.py` / `vector.py` / `hybrid.py` | 检索后端 | 记忆召回 |
+| `memory/indexer.py` | `MemoryIndexer` | 历史回填 |
+| `memory/legacy.py` | `CoreMemory` / `SimpleRAGMemory` | 作者模式兼容 |
+
+导演帧不在 `memory/`：它是 Crew 的生成参数，位于 `crews/scene_crew/arc.py`。
+控制策略不在后端：它是 Flow 配置，位于 `frontend/src/components/flow/controls.ts`。
+
+### 5.1 运行时状态（`memory/state.py`）
 
 ```
 WorldState
@@ -335,7 +358,7 @@ WorldState
 
 `WorldEvent` 记录已发生事件，`Promise` 记录承诺与期限。
 
-### 5.2 叙事记忆分层 + Checkpoint
+### 5.2 叙事记忆分层 + Checkpoint（`memory/core.py` + `memory/checkpoint.py`）
 
 项目级叙事记忆分为 5 层：核心层常驻 prompt，检索层按需召回；
 **Checkpoint 作为 SessionState（WorldState + LayeredMemory + 渲染历史）的快照机制**，
@@ -420,10 +443,12 @@ Checkpoint 合并进记忆系统的设计理由：
 | `crews/scene_crew/` | Layer 3 Crew：LLM Agents（统一 JSON 输出）+ Tools | 保留 + 扩展 |
 | `flows/scene_flow.py` | 导演模式的单场景子流程 | 保留 |
 | `flows/turn_flow.py` | 双模式 TurnLoop | 保留 |
-| `control/` | 全层质量控制 | 保留 |
-| `memory.py` → `memory/` | Layer 2 分层记忆 + Checkpoint（原 SaveService 合并进来） | 重构 + 合并 |
+| `control/` | 前端 Flow 控制配置：灵敏度 / 采样 / 质量闸门 | 删除后端，迁移到 `frontend/src/components/flow/controls.ts` |
+| `memory.py` → `memory/` | Layer 2 资产模型 + 世界状态 + 分层记忆 + Checkpoint | 重构 + 合并 |
+| `world/state.py` | Layer 2 世界状态：WorldState + Fact + 裁决协议 | 并入 `memory/state.py` |
+| `narrative/arc.py` | 导演帧：Crew 生成参数 | 并入 `crews/scene_crew/arc.py` |
 | `llm/router.py` | Layer 0 模型路由 | 复用 |
-| `models.py` | 资产模型 | 复用 |
+| `models.py` | 资产模型 | 并入 `memory/models.py` |
 | `db/repository.py` | Layer 0 持久化 | 复用 + Checkpoint 记录 |
 | `media/render_adapter.py` | Layer 5 表现层雏形 | 重构为 `PresentationAdapter` |
 
@@ -468,14 +493,15 @@ src/storyloom/
 │   └── scene_crew/
 │       ├── crew.py          # @CrewBase SceneCrew：Agent + 裁决 + NPC + 质检
 │       ├── packet.py        # AgentPacket 统一 JSON 契约 + 场景装配
+│       ├── arc.py           # 导演帧：起承转合 + 张力 + 信息预算（Crew 生成参数）
 │       ├── tools/           # ExtensionHost 注册的 mod/skill 工具
 │       └── config/          # agents.default.yaml / tasks.default.yaml
-├── world/
-│   └── state.py             # WorldState + Fact + FactOverride + 模式切换
 ├── extensions/
 │   ├── manifest.py          # manifest schema + 校验
 │   └── host.py              # ExtensionHost = Crew 的 Tool Loader
 ├── memory/
+│   ├── models.py            # 资产模型 / 伏笔 / 意外 / NovelProject
+│   ├── state.py             # WorldState + Fact + FactOverride + 裁决协议
 │   ├── core.py              # LayeredMemory：分层 / 压缩 / 降级 / 回温
 │   ├── checkpoint.py        # Checkpoint：快照 + 恢复（**原 saves/service.py 合并进来**）
 │   ├── lexical.py           # fts 后端
@@ -486,27 +512,27 @@ src/storyloom/
 ├── flows/
 │   ├── scene_flow.py        # 导演模式单场景
 │   └── turn_flow.py         # 双模式 TurnLoop
-├── narrative/
-│   └── arc.py               # 起承转合节拍 + 张力 + 信息预算
-├── control/                 # 控制论：feedback_loop · robustness · hierarchy
 ├── llm/                     # providers.py + router.py
 ├── db/                      # ORM + Repository
-├── models.py                # 资产模型 / 伏笔 / 意外 / NovelProject
 ├── media/                   # render_adapter.py → PresentationAdapter
 ├── config/memory_config.default.yaml
 ├── templates/               # 试用模板 + 内嵌扩展
-└── frontend/                # Vue 3
+└── frontend/                # Vue 3（components/flow/controls.ts 为 Flow 控制配置）
 ```
 
-**删除的模块**：
+**模块归并 / 删除结果**：
 
 | 旧路径 | 去向 |
 |---|---|
 | `saves/service.py` | 合并进 `memory/checkpoint.py`，`SaveService` 改为 `CheckpointStore` |
+| `world/state.py` | 并入 `memory/state.py`（世界状态也是世界书 / 长期状态的一种） |
 | `world/game_master.py` | 删除；裁决改由导演 Agent 输出 JSON（`SceneCrew.adjudicate`） |
 | `world/authority.py` | 删除；模式策略进 `SceneCrew.adjudicate(mode=)`，改写进 `WorldState` |
 | `world/autonomous_agent.py` | 删除；NPC 自主合并进 `SceneCrew.npc_actions`（EnsembleAgent） |
-| `runtime/directive.py` | 删除；`StageDirective` 保留在 `world/state.py` |
+| `narrative/arc.py` | 并入 `crews/scene_crew/arc.py`，作为 Crew 生成参数 |
+| `models.py` | 并入 `memory/models.py` |
+| `control/` | 删除后端；灵敏度 / 闸门策略改为 `frontend/src/components/flow/controls.ts` 的 Flow 配置 |
+| `runtime/directive.py` | 删除；`StageDirective` 保留在 `memory/state.py` |
 | `runtime/renderer.py` | 删除；`compose_scene` + ProseAgent 接管 |
 | `extensions/host.py` | 保留路径不变，重新定位为 Crew 的 Tool Loader |
 
@@ -514,16 +540,17 @@ src/storyloom/
 
 ## 7. 控制论
 
-控制论层完整保留，并重新定位：
+控制论不再作为独立后端层，而是落在 **Flow 配置 + Crew 反馈闭环** 上：
+调整控制策略本质上就是修改 Flow 的节点 / 连线参数。
 
 | 原理 | 新位置 |
 |---|---|
-| 反馈闭环 | 导演 Agent 裁决 + ConsistencyChecker + ModerationGate 三重闭环 |
-| 统计滤波 | 关键裁决多次采样 / 投票（M0 后） |
-| 灵敏度分析 | 按 `importance_tier` 决定 tick 频率与审核强度 |
+| 反馈闭环 | 导演 Agent 裁决 + ConsistencyChecker + ModerationGate；Flow 中 `feedback_loop` 节点 |
+| 统计滤波 | Flow 节点 `nSamples` / `multi_sample` 策略 |
+| 灵敏度分析 | `frontend/src/components/flow/controls.ts` 的 Agent 灵敏度画像 |
 | 解耦控制 | `TurnBoot(text)` / `AgentPacket` / `StageDirective` / `Fact` 分层解耦 |
 | 分层管控 | Layer 3 Crew（LLM+Tools）+ Layer 2 状态 + Layer 1 运行时 |
-| 人机结合 | 关键裁决、审核不确定、命运收束转人工 |
+| 人机结合 | Flow 中 `human_review` 节点 |
 
 详见 [CONTROL_THEORY.md](CONTROL_THEORY.md)。
 
@@ -545,7 +572,7 @@ M0 只解析 `asset` manifest，不做媒体渲染。
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | 作者模式 MVP | 场景生成 / 资产与场景落库 / 章节 / Web 工作台 | ✅ |
-| M0 | 双模式纵切：WorldState / 导演 Agent JSON 裁决 / 双总线 / TurnLoop / 模式切换 / NPC 自主 / LayeredMemory + Checkpoint / Mod v1 / 游戏前端 | ✅ |
+| M0 | 双模式纵切：WorldState / 导演 Agent JSON 裁决 / 双总线 / TurnLoop / 模式切换 / NPC 自主 / LayeredMemory + Checkpoint / memory 统一资产·状态·记忆 / Mod v1 / 游戏前端 | ✅ |
 | M1 | TFC 五档、审核 Gate 实装、图片/音频媒体、Flag/Choice/好感度、章节化收束 | 🔲 |
 | M2 | 命运、Casting、路线图、日程、POV、Belief 全量、ADV/NVL | 🔲 |
 | M3 | 视频、生成式媒体、TTS | 🔲 |

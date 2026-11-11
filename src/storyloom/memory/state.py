@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 
 from pydantic import BaseModel, Field
 
-from storyloom.models import NovelProject
+from storyloom.memory.models import NovelProject
 
 
 def new_id(prefix: str) -> str:
@@ -511,7 +511,7 @@ class WorldState(BaseModel):
 # ============================================================
 # Layer 0 公共协议：裁决与渲染数据类
 # 这些是 runtime / memory / crews 各层共享的纯数据定义，
-# 统一放 world/state.py 让任何层都能安全 import，
+# 统一放 memory/state.py 让任何层都能安全 import，
 # 避免 runtime 反向 import crews、memory 反向 import runtime。
 # ============================================================
 

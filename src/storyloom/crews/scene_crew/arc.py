@@ -4,14 +4,15 @@ This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 
 叙事节拍：起承转合 + 张力目标 + 信息预算。
 
-M0 使用确定性策略，接口预留给 M1 的 TFC 动态计算。
+由 Flow 在 `director_frame` 阶段生成，作为 `SceneCrew.adjudicate(frame=...)`
+的输入参数；M0 使用确定性策略，接口预留给 M1 的 TFC 动态计算。
 """
 
 from typing import List
 
 from pydantic import BaseModel, Field
 
-from storyloom.world.state import ArcState, WorldState
+from storyloom.memory.state import ArcState, WorldState
 
 _PHASE_TENSION = {
     "setup": 0.25,

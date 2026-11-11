@@ -13,7 +13,7 @@ from storyloom.api.schemas import (
     LocationCreate,
 )
 from storyloom.api.engine import engine
-from storyloom.models import CharacterAsset, LocationAsset, Foreshadowing
+from storyloom.memory.models import CharacterAsset, LocationAsset, Foreshadowing
 
 router = APIRouter(prefix="/api/projects/{project_id}/assets", tags=["assets"])
 
