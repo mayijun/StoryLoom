@@ -228,8 +228,9 @@ class SceneRenderer:
                 "label": item["label"],
                 "action": item["kind"],
                 "target": item["target"],
+                "hint": item.get("hint", ""),
             }
-            for i, item in enumerate(options[:8])
+            for i, item in enumerate(options[:4])
         ]
         if choices:
             directives.append(

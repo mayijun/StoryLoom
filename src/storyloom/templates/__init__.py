@@ -156,6 +156,7 @@ def apply_template(
 
 # 注册内置模板（导入即注册，便于扩展注册表与 API 直接取用）
 from storyloom.templates import xianxia_system  # noqa: E402,F401
+from storyloom.templates import sandbox_life  # noqa: E402,F401
 
 __all__ = [
     "Template",

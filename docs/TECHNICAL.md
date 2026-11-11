@@ -340,12 +340,6 @@ npm install
 npm run dev     # http://localhost:5173
 ```
 
-### 5. CLI 演示（可选）
-
-```bash
-python -m storyloom.main                # 基础版
-```
-
 ---
 
 ## 🔌 API 一览

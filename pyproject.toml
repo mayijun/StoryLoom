@@ -27,7 +27,6 @@ dependencies = [
 dev = ["pytest"]
 
 [project.scripts]
-storyloom = "storyloom.main:run_demo"
 storyloom-config = "storyloom.db.cli:main"
 
 [tool.hatch.build.targets.wheel]

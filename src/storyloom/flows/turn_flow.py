@@ -502,57 +502,75 @@ class TurnLoop:
     # ---------------- 各阶段实现 ----------------
 
     def _world_context(self, state: WorldState, actor: str) -> str:
-        """构造渲染用世界书：只放可公开的事实与线索，不放 secrets / 真相。"""
+        """构造渲染用世界书：以 state.view(actor) 为唯一数据源。
+
+        纪律：
+        - 项目元信息（作品名/文风/设定）保留；
+        - 运行时状态全部经 view() 过滤，杜绝不在场 NPC 位置、NPC 全量动机、
+          GM 内部 flags、NPC-NPC 关系等信息越权泄漏；
+        - GM/Director 模式下 view() 自动全知，无需特殊分支。
+        """
         project = self.project
-        lines = [f"作品：{project.title}"]
+        view = state.view(actor)
+
+        lines: List[str] = [f"作品：{project.title}"]
         if project.style:
             lines.append(f"文风：{project.style}")
         if project.description:
             lines.append(f"设定：{project.description}")
 
-        arc = state.arc
         lines.append(
-            f"当前节拍：{arc.phase} / 张力目标 {arc.tension_target:.2f}"
-            f" / 剩余节拍 {arc.beats_remaining}"
+            f"当前节拍：{view['arc']['phase']} / "
+            f"张力目标 {view['arc']['tension_target']:.2f} / "
+            f"剩余节拍 {view['arc']['beats_remaining']}"
         )
+        lines.append(f"世界时间：{view['time']}（第 {view['turn']} 回合）")
 
-        if project.locations:
+        # —— 地点：只列 view 可见（非全知 actor 仅当前地点）——
+        if view["locations"]:
             lines.append("地点：")
-            for loc in project.locations:
-                desc = f"：{loc.description}" if loc.description else ""
-                lines.append(f"- {loc.name}{desc}")
+            for loc in view["locations"]:
+                desc = f"：{loc['description']}" if loc.get("description") else ""
+                exits = loc.get("exits") or {}
+                exit_str = (
+                    f"（出口：{', '.join(exits.keys())}）" if exits else ""
+                )
+                lines.append(f"- {loc['name']}{desc}{exit_str}")
 
-        actor_state = state.characters.get(actor)
-        location = actor_state.location if actor_state else ""
-        present = set(state.characters_at(location)) if location else set()
-        if state.characters:
-            lines.append("角色（公开信息）：")
-            for char in state.characters.values():
-                profile = project.get_character(char.name)
-                motivation = profile.motivation if profile else ""
-                if char.name in present:
-                    head = f"- {char.name}（在场，{char.emotion}，{char.status}）"
-                else:
-                    head = f"- {char.name}（在{char.location}）"
-                lines.append(f"{head}目标：{motivation}" if motivation else head)
+        # —— 角色：只列 view 可见（非全知 actor 仅在场角色）——
+        if view["characters"]:
+            lines.append("在场角色：")
+            for c in view["characters"]:
+                emotion = f"，{c['emotion']}" if c.get("emotion") else ""
+                lines.append(f"- {c['name']}{emotion}")
 
-        active = [
-            fs for fs in project.foreshadowings
-            if fs.status != "resolved"
-        ]
-        if active:
-            lines.append("待回收伏笔（只作线索，不得直接解释）：")
-            for fs in active:
-                lines.append(f"- {fs.description}")
+        # —— 事实：按 known_by 过滤后的条目 ——
+        if view["facts"]:
+            lines.append("已知事实：")
+            for f in view["facts"]:
+                lines.append(
+                    f"- {f['subject']} {f['predicate']} {f['object']}"
+                )
 
-        if state.flags:
-            pairs = "，".join(f"{k}={v}" for k, v in state.flags.items())
-            lines.append(f"世界标记：{pairs}")
+        # —— 关系：全知 actor 看全部，否则只列 key 含 actor 的 ——
         if state.relationships:
-            pairs = "，".join(
-                f"{k}={v}" for k, v in state.relationships.items()
+            omniscient = actor in ("gm", "director", "narrator")
+            visible = (
+                list(state.relationships.items())
+                if omniscient
+                else [(k, v) for k, v in state.relationships.items() if actor in k]
             )
-            lines.append(f"关系：{pairs}")
+            if visible:
+                lines.append("关系：")
+                for k, v in visible:
+                    lines.append(f"- {k} = {v}")
+
+        # —— 最近事件 ——
+        if view["events"]:
+            lines.append("最近发生：")
+            for e in view["events"]:
+                lines.append(f"- {e['summary']}")
+
         return "\n".join(lines)
 
     def _adjudicate(

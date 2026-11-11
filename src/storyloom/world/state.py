@@ -356,29 +356,49 @@ class WorldState(BaseModel):
         )
 
     def allowed_actions(self, actor: str) -> List[Dict[str, str]]:
-        """地点 + 在场角色 → 可用行动列表（纯查询，不修改状态）"""
+        """地点 + 在场角色 → 可用行动列表（纯查询，不修改状态）。
+
+        输出最多 4 个，按优先级排序：talk > move > wait；
+        每项附带确定性 hint（从 state 数据计算，不是 LLM 预估）。
+        attack 等低质量或高风险动作不在默认列表里，由 mod 注册追加。
+        """
         char = self.characters.get(actor)
         if char is None:
             return []
-        actions: List[Dict[str, str]] = [
-            {"kind": "wait", "target": "", "label": "原地等待"}
-        ]
+
+        actions: List[Dict[str, str]] = []
         loc = self.locations.get(char.location)
-        if loc:
-            for dest in loc.exits:
-                actions.append({
-                    "kind": "move", "target": dest, "label": f"前往{dest}",
-                })
+
+        # —— 优先级 1：与在场角色交谈 ——
         for other in self.characters_at(char.location):
             if other == actor:
                 continue
             actions.append({
-                "kind": "talk", "target": other, "label": f"与{other}交谈",
+                "kind": "talk",
+                "target": other,
+                "label": f"和{other}聊聊",
+                "hint": "好感可能+1，耗时约 3 分钟",
             })
-            actions.append({
-                "kind": "attack", "target": other, "label": f"攻击{other}",
-            })
-        return actions
+
+        # —— 优先级 2：前往相邻地点（带精确耗时）——
+        if loc and loc.exits:
+            for dest, minutes in loc.exits.items():
+                actions.append({
+                    "kind": "move",
+                    "target": dest,
+                    "label": f"前往{dest}",
+                    "hint": f"耗时约 {minutes} 分钟",
+                })
+
+        # —— 优先级 3：原地等待 ——
+        actions.append({
+            "kind": "wait",
+            "target": "",
+            "label": "原地等待",
+            "hint": "消耗少量时间",
+        })
+
+        return actions[:4]
 
 
 # ============================================================

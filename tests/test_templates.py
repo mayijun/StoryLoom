@@ -412,3 +412,91 @@ def test_router_apply_unknown_template_returns_404(templates_router):
             )
         )
     assert exc_info.value.status_code == 404
+
+
+# ---------------- sandbox_life 模板 ----------------
+
+SANDBOX_TEMPLATE_ID = "sandbox_life"
+
+
+def test_sandbox_life_template_is_registered():
+    template = get_template(SANDBOX_TEMPLATE_ID)
+    assert template is not None
+    assert template.title == "临江市 · 平行人生"
+    assert template.style == "现代都市 · 开放沙盒 · 现实后果"
+    assert template.description
+
+
+def test_sandbox_life_asset_counts_and_order():
+    template = get_template(SANDBOX_TEMPLATE_ID)
+    assert len(template.characters) == 5
+    assert len(template.locations) == 6
+    assert len(template.foreshadowings) == 3
+    assert len(template.chapters) == 1
+
+    # 前端 / WorldState 以「玩家」为视角锚点，必须排第一
+    assert template.characters[0]["name"] == "玩家"
+    # 所有角色初始放在第一个地点，第一地点必须是「合租房」
+    assert template.locations[0]["name"] == "合租房"
+    # 伏笔使用固定 ID，方便状态机测试
+    assert [f["foreshadow_id"] for f in template.foreshadowings] == [
+        "fs_layoff_list",
+        "fs_gaoyuan_debt",
+        "fs_luoqian_scheme",
+    ]
+
+
+def test_sandbox_life_extensions_are_valid_manifests():
+    template = get_template(SANDBOX_TEMPLATE_ID)
+    manifests = template.extension_manifests()
+    by_id = {m.id: m for m in manifests}
+
+    assert set(by_id) == {"map_sandbox_life", "skill_sandbox_life"}
+    assert by_id["map_sandbox_life"].kind == "mod"
+    assert by_id["skill_sandbox_life"].kind == "skill"
+    # LLM 工具必须 read_only
+    assert all(
+        t["read_only"] for t in by_id["map_sandbox_life"].contributes["tools"]
+    )
+
+
+def test_apply_sandbox_life_template(repo):
+    applied = apply_template(SANDBOX_TEMPLATE_ID, "pid_sandbox", repo)
+
+    assert applied is True
+    characters = repo.list_characters("pid_sandbox")
+    assert [c["name"] for c in characters] == [
+        "玩家",
+        "高远",
+        "马国梁",
+        "陈姨",
+        "罗倩",
+    ]
+
+    locations = repo.list_locations("pid_sandbox")
+    assert [loc["name"] for loc in locations] == [
+        "合租房",
+        "物流仓库",
+        "夜市大排档",
+        "网吧",
+        "滨江步道",
+        "银行网点",
+    ]
+
+    meta = repo.get_project("pid_sandbox")
+    assert meta["character_count"] == 5
+    assert meta["foreshadowing_count"] == 3
+
+    chapters = repo.list_chapters("pid_sandbox")
+    assert [c["title"] for c in chapters] == ["入秋 · 交租日"]
+    assert chapters[0]["position"] == 0
+    assert chapters[0]["status"] == "draft"
+
+
+def test_apply_sandbox_life_is_idempotent(repo):
+    assert apply_template(SANDBOX_TEMPLATE_ID, "pid_sandbox_twice", repo) is True
+    # 第二次应用应跳过写入
+    assert apply_template(SANDBOX_TEMPLATE_ID, "pid_sandbox_twice", repo) is False
+
+    characters = repo.list_characters("pid_sandbox_twice")
+    assert len(characters) == 5  # 不重复写入

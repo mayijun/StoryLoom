@@ -149,6 +149,70 @@ def test_a3_fact_visibility_filters_by_known_by(world):
     assert all(f["id"] != fact.id for f in guard_view["facts"])
 
 
+# ---------------- A3b / L3a：_world_context 信息迷雾修复 ----------------
+
+
+def test_a3b_world_context_fog_hides_unseeable(project, world):
+    """_world_context 对非全知 actor 只泄露 view() 可见内容。"""
+    # 布置：玩家在雾港旅店，国王和侍卫长在王宫
+    world.characters["玩家"].location = "雾港旅店"
+    world.characters["国王"].location = "王宫"
+    world.characters["侍卫长"].location = "王宫"
+    # GM 内部标记（不该进 world_book）
+    world.flags["_gm_secret_layoff"] = True
+    # NPC-NPC 关系（玩家不该知道）
+    world.relationships["国王|侍卫长"] = 10
+    world.relationships["玩家|旅店老板"] = 3
+    # 玩家不知道的 fact
+    hidden = Fact(
+        subject="国王",
+        predicate="秘密",
+        object="准备逃亡",
+        known_by={"国王", "gm"},
+    )
+    world.facts[hidden.id] = hidden
+
+    loop = TurnLoop(project)
+    book = loop._world_context(world, "玩家")
+
+    # —— 应该隐藏 ——
+    assert "王宫" not in book  # 未探索地点
+    assert "地牢" not in book
+    assert "国王" not in book.split("在场角色")[1].split("已知事实")[0] if "在场角色" in book else True  # 在场角色不含国王
+    assert "_gm_secret_layoff" not in book  # GM flags
+    assert "国王|侍卫长" not in book  # NPC-NPC 关系
+    assert "准备逃亡" not in book  # hidden fact
+
+    # —— 应该包含 ——
+    assert "雾港旅店" in book
+    assert "玩家" in book
+    assert "玩家|旅店老板" in book  # 含玩家的关系
+    assert "雾港旅店" in book
+
+
+def test_a3b_world_context_gm_sees_everything(project, world):
+    """GM actor 调用时 view() 自动全知，world_book 应包含所有信息。"""
+    world.characters["玩家"].location = "雾港旅店"
+    world.characters["国王"].location = "王宫"
+    world.relationships["国王|侍卫长"] = 10
+    hidden = Fact(
+        subject="国王",
+        predicate="秘密",
+        object="准备逃亡",
+        known_by={"国王", "gm"},
+    )
+    world.facts[hidden.id] = hidden
+
+    loop = TurnLoop(project)
+    book = loop._world_context(world, "gm")
+
+    assert "王宫" in book
+    assert "地牢" in book
+    assert "国王" in book
+    assert "国王|侍卫长" in book
+    assert "准备逃亡" in book
+
+
 # ---------------- A4：存档回放 ----------------
 
 
