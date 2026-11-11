@@ -50,7 +50,7 @@ _ATTACK_WORDS = (
     "殴打", "打斗", "打倒", "打伤", "打架",
 )
 _REST_WORDS = ("打坐", "练功", "修炼", "冥想", "调息", "运功")
-_TALK_WORDS = ("交谈", "问", "说", "告诉", "喊道", "搭话", "回应")
+_TALK_WORDS = ("交谈", "聊", "问", "说", "告诉", "喊道", "搭话", "回应")
 _LOOK_WORDS = ("观察", "环顾", "打量", "看看")
 _WAIT_WORDS = ("等待", "等等", "原地等", "休息")
 _USE_WORDS = ("使用", "拿出", "掏出", "翻开")
@@ -78,6 +78,23 @@ class IntentRouter:
             return InterpretedIntent(mode="idle", raw="")
 
         if intent.kind in ("choice", "click"):
+            # Agent 推荐行动只携带自然语言 text，与手动输入走同一套解析。
+            # 旧的规则选项仍可通过 action/kind + target 直接构造提案。
+            text = str(intent.payload.get("text", "")).strip()
+            if text:
+                proposals = self._parse_text(text, state, actor)
+                if not proposals:
+                    proposals = [
+                        ActionProposal(
+                            actor=actor,
+                            kind="other",
+                            detail=text,
+                            source="player",
+                        )
+                    ]
+                return InterpretedIntent(
+                    mode="player_action", proposals=proposals, raw=text
+                )
             proposal = self._from_payload(intent.payload, actor)
             if proposal is None:
                 return InterpretedIntent(mode="idle", raw="")

@@ -74,9 +74,15 @@ class SceneRenderer:
         adjudication: AdjudicationResult,
         actor: str = "玩家",
         prose: Optional[str] = None,
+        suggested_actions: Optional[List[Dict[str, str]]] = None,
     ) -> StageScene:
         return self._build(
-            state_before, state_after, adjudication, actor, prose
+            state_before,
+            state_after,
+            adjudication,
+            actor,
+            prose,
+            suggested_actions=suggested_actions,
         )
 
     async def arender(
@@ -176,6 +182,7 @@ class SceneRenderer:
         adjudication: AdjudicationResult,
         actor: str,
         prose: Optional[str],
+        suggested_actions: Optional[List[Dict[str, str]]] = None,
     ) -> StageScene:
         directives: List[StageDirective] = []
         location = self._actor_location(state_after)
@@ -221,17 +228,39 @@ class SceneRenderer:
                 )
             )
 
-        options = state_after.allowed_actions(actor)
-        choices = [
-            {
-                "index": i,
-                "label": item["label"],
-                "action": item["kind"],
-                "target": item["target"],
-                "hint": item.get("hint", ""),
-            }
-            for i, item in enumerate(options[:4])
-        ]
+        choices: List[Dict[str, Any]] = []
+        # Agent 建议只是自然语言快捷输入，不构成行动白名单；
+        # 点击后由 IntentRouter 按自由文本解析，GM 仍负责实际裁决。
+        for item in (suggested_actions or [])[:4]:
+            action_text = str(
+                item.get("text") or item.get("label") or ""
+            ).strip()
+            if not action_text:
+                continue
+            choices.append(
+                {
+                    "index": len(choices),
+                    "label": action_text,
+                    "text": action_text,
+                    "hint": item.get("hint", ""),
+                    "source": "agent",
+                }
+            )
+
+        # LLM 不可用、旧配置仍输出纯文本或建议为空时，保留确定性兜底。
+        if not choices:
+            options = state_after.allowed_actions(actor)
+            choices = [
+                {
+                    "index": i,
+                    "label": item["label"],
+                    "action": item["kind"],
+                    "target": item["target"],
+                    "hint": item.get("hint", ""),
+                    "source": "rules",
+                }
+                for i, item in enumerate(options[:4])
+            ]
         if choices:
             directives.append(
                 StageDirective(kind="choice", params={"options": choices})

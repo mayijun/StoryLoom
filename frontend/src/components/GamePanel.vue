@@ -279,6 +279,7 @@ function choose(option: any) {
         action: option.action,
         target: option.target,
         label: option.label,
+        text: option.text,
       },
     },
     option.label,

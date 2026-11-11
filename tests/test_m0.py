@@ -10,7 +10,7 @@ import pytest
 from storyloom.db import CrewConfigRepository, reset_engines, reset_repositories
 from storyloom.extensions.host import ExtensionHost, ExtensionRegistry
 from storyloom.extensions.manifest import ManifestError, discover, validate_manifest
-from storyloom.flows.turn_flow import TurnBoot, TurnLoop
+from storyloom.flows.turn_flow import TurnBoot, TurnLoop, parse_narrative_output
 from storyloom.memory import (
     LayeredMemory,
     LexicalBackend,
@@ -462,6 +462,65 @@ def test_intent_router_parses_player_actions(world):
 
     idle = router.route(PlayerIntent(kind="skip"), world)
     assert idle.mode == "idle"
+
+
+def test_agent_suggestions_render_and_route_as_free_text(world):
+    narrative = parse_narrative_output(
+        """{
+          "prose": "旅店老板把一张潮湿的账单推到你面前。",
+          "suggested_actions": [
+            {"text": "和旅店老板聊聊账单上的数字", "hint": "可能获得新线索"},
+            {"text": "观察账房的进出的人"},
+            {"text": "把账单悄悄收进衣袋"},
+            {"text": "和旅店老板聊聊账单上的数字", "hint": "重复项"}
+          ]
+        }"""
+    )
+    assert narrative.prose == "旅店老板把一张潮湿的账单推到你面前。"
+    assert len(narrative.suggested_actions) == 3
+
+    adjudication = GameMaster().adjudicate(
+        ActionProposal(actor="玩家", kind="observe"), world
+    )
+    after = world.apply_delta(adjudication.state_delta)
+    scene = SceneRenderer().render(
+        world,
+        after,
+        adjudication,
+        prose=narrative.prose,
+        suggested_actions=[
+            action.model_dump() for action in narrative.suggested_actions
+        ],
+    )
+
+    assert scene.choices[0]["source"] == "agent"
+    assert "action" not in scene.choices[0]
+    interpreted = IntentRouter().route(
+        PlayerIntent(
+            kind="choice",
+            payload={
+                "label": scene.choices[0]["label"],
+                "text": scene.choices[0]["text"],
+            },
+        ),
+        after,
+    )
+    assert interpreted.primary().kind == "talk"
+    assert interpreted.primary().target == "旅店老板"
+    assert interpreted.raw == scene.choices[0]["text"]
+
+
+def test_plain_prose_remains_compatible(world):
+    narrative = parse_narrative_output("门外的脚步声停了。")
+    assert narrative.prose == "门外的脚步声停了。"
+    assert narrative.suggested_actions == []
+
+    adjudication = GameMaster().adjudicate(
+        ActionProposal(actor="玩家", kind="observe"), world
+    )
+    scene = SceneRenderer().render(world, world, adjudication)
+    assert scene.choices
+    assert all(choice["source"] == "rules" for choice in scene.choices)
 
 
 def test_scene_directives_are_json_serializable(world):

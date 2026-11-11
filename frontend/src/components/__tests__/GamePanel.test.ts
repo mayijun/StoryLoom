@@ -99,6 +99,30 @@ describe('GamePanel', () => {
     expect(wrapper.find('.choices').text()).toContain('继续')
   })
 
+  it('点击 Agent 推荐行动时保留自然语言 text', async () => {
+    apiMock.playTurn.mockResolvedValue(playResponse({
+      choices: [{ index: 0, label: '问老板账单是谁留下的', text: '问老板账单是谁留下的', source: 'agent' }],
+    }))
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    await wrapper.find('textarea').setValue('观察四周')
+    await wrapper.find('.input-actions button').trigger('click')
+    await flushPromises()
+    await wrapper.find('.choice').trigger('click')
+    await flushPromises()
+
+    expect(apiMock.playTurn).toHaveBeenLastCalledWith('p1', expect.objectContaining({
+      intent: {
+        kind: 'choice',
+        payload: expect.objectContaining({
+          label: '问老板账单是谁留下的',
+          text: '问老板账单是谁留下的',
+        }),
+      },
+    }))
+  })
+
   it('等待回合：intent.kind 为 skip 且 idleTurns 自增', async () => {
     apiMock.playTurn.mockResolvedValue(playResponse({ text: '你原地等待。' }))
     const wrapper = mountPanel()

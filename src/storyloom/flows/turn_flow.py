@@ -85,6 +85,20 @@ class TurnBoot(BaseModel):
     provider_api_keys: Dict[str, str] = Field(default_factory=dict, exclude=True)
 
 
+class SuggestedAction(BaseModel):
+    """叙事 Agent 给出的自然语言行动建议，不是可执行动作白名单。"""
+
+    text: str
+    hint: str = ""
+
+
+class NarrativeOutput(BaseModel):
+    """ProseAgent 的游戏回合结构化输出。"""
+
+    prose: str = ""
+    suggested_actions: List[SuggestedAction] = Field(default_factory=list)
+
+
 class TurnResult(BaseModel):
     """一次回合的完整返回"""
 
@@ -109,6 +123,51 @@ class TurnResult(BaseModel):
     quality_flags: List[str] = Field(default_factory=list)
     frame: Optional[DirectorFrame] = None
     log: Dict[str, Any] = Field(default_factory=dict)
+
+
+def parse_narrative_output(raw: str) -> NarrativeOutput:
+    """解析游戏叙事 JSON；旧版纯文本输出仍可直接作为正文使用。"""
+    text = raw.strip()
+    if not text:
+        return NarrativeOutput()
+
+    try:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end < start:
+            raise ValueError("输出中未找到 JSON 对象")
+        data = json.loads(text[start:end + 1])
+        if not isinstance(data, dict):
+            raise ValueError("叙事输出必须是 JSON 对象")
+        prose = str(data.get("prose") or "").strip()
+        if not prose:
+            raise ValueError("叙事输出缺少 prose")
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return NarrativeOutput(prose=text)
+
+    actions: List[SuggestedAction] = []
+    seen = set()
+    raw_actions = data.get("suggested_actions") or []
+    if not isinstance(raw_actions, list):
+        raw_actions = []
+    for item in raw_actions:
+        if isinstance(item, str):
+            action_text = item.strip()
+            hint = ""
+        elif isinstance(item, dict):
+            action_text = str(
+                item.get("text") or item.get("label") or ""
+            ).strip()
+            hint = str(item.get("hint") or "").strip()
+        else:
+            continue
+        if not action_text or action_text in seen:
+            continue
+        seen.add(action_text)
+        actions.append(SuggestedAction(text=action_text, hint=hint))
+        if len(actions) == 4:
+            break
+    return NarrativeOutput(prose=prose, suggested_actions=actions)
 
 
 def merge_deltas(target: StateDelta, patch: StateDelta) -> StateDelta:
@@ -395,7 +454,7 @@ class TurnLoop:
         )
 
         # 7.5 SceneCrew 叙事增强：Surprise + Foreshadow + Director + Prose（可选）
-        crew_narrative = ""
+        crew_narrative = NarrativeOutput()
         crew_trace: Dict[str, Any] = {}
         if self.crew is not None and any(r.success for r in results):
             self._crew_turn_counter += 1
@@ -430,7 +489,7 @@ class TurnLoop:
             memory_context, crew_narrative, boot.mode,
         )
         trace.append({"stage": "render_scene", "chars": len(scene.text),
-                      "crew_prose": bool(crew_narrative)})
+                      "crew_prose": bool(crew_narrative.prose)})
 
         # 10. commit（内存分层记忆 + arc）
         # 只记录真正推进了世界的回合：被拒绝 / 一致性失败 / 空转的回合不写记忆，
@@ -769,7 +828,7 @@ class TurnLoop:
         actor: str,
         frame: DirectorFrame,
         action_text: str,
-    ) -> Tuple[str, Dict[str, Any]]:
+    ) -> Tuple[NarrativeOutput, Dict[str, Any]]:
         """SceneCrew 叙事层增强（Surprise + Foreshadow + Director + Prose）
 
         游戏模式：每 3 回合抽样运行 Surprise + Foreshadow + Director（控制成本），
@@ -907,12 +966,35 @@ class TurnLoop:
                 director_constraints=director_constraints,
                 actor_log=actor_log,
             )
+            if mode == "game":
+                prompt += """
+
+===== 游戏回合输出契约 =====
+只输出一个 JSON 对象，不要 Markdown 代码围栏或额外说明：
+{
+  "prose": "正式小说正文，不要把行动建议写进正文",
+  "suggested_actions": [
+    {"text": "玩家下一步可尝试的完整自然语言行动", "hint": "一句可选的代价或风险提示"}
+  ]
+}
+suggested_actions 必须包含 3-4 项，并遵守：
+1. 紧扣正文结束时的具体处境，各项应有实质差异；除了常规应对，也可建议冒险、试探或非常规做法。
+2. text 是可以直接作为玩家自由输入的自然语言，不使用 move/talk 等枚举，不替玩家决定已经采取该行动。
+3. 这些只是推荐，不是行动范围或成功承诺；玩家仍可输入任何其他行动。
+4. hint 只作可能性提示，不虚构精确数值或保证结果，实际后果由世界裁决。
+"""
             prose_text = await self._run_crew_agent(
                 self.crew.prose(project.style), prompt
             ) or ""
-            trace["prose"] = bool(prose_text)
 
-        return prose_text, trace
+        narrative = (
+            parse_narrative_output(prose_text)
+            if mode == "game" and prose_text
+            else NarrativeOutput(prose=prose_text)
+        )
+        trace["prose"] = bool(narrative.prose)
+        trace["suggested_actions"] = len(narrative.suggested_actions)
+        return narrative, trace
 
     async def _render_with_crew_prose(
         self,
@@ -921,14 +1003,21 @@ class TurnLoop:
         adjudication: AdjudicationResult,
         actor: str,
         memory_context: str,
-        crew_prose: str,
+        crew_narrative: NarrativeOutput,
         mode: Literal["game", "director"],
     ) -> StageScene:
-        """优先使用 SceneCrew ProseAgent 的润色文本；无 crew_prose 时走 renderer.arender"""
-        if crew_prose:
-            # SceneCrew ProseAgent 的产出直接喂给 renderer 的 _build 组装器
+        """优先使用 SceneCrew 结构化叙事；无产出时走 renderer.arender。"""
+        if crew_narrative.prose:
             return self.renderer._build(
-                state_before, state_after, adjudication, actor, crew_prose
+                state_before,
+                state_after,
+                adjudication,
+                actor,
+                crew_narrative.prose,
+                suggested_actions=[
+                    action.model_dump()
+                    for action in crew_narrative.suggested_actions
+                ],
             )
         # 退回原有路径
         return await self.renderer.arender(
@@ -948,8 +1037,11 @@ def _ms(started: float) -> int:
 
 
 __all__ = [
+    "NarrativeOutput",
+    "SuggestedAction",
     "TurnBoot",
     "TurnLoop",
     "TurnResult",
     "merge_deltas",
+    "parse_narrative_output",
 ]
