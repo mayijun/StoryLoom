@@ -1,6 +1,7 @@
 """游戏 / 扮演模式 API（M0，全部 async）"""
 
 from fastapi import APIRouter, HTTPException, status
+from pydantic import ValidationError
 
 from storyloom.api.engine import engine
 from storyloom.api.schemas import (
@@ -24,17 +25,34 @@ def _ensure_project(project_id: str):
         )
 
 
+def _parse_intent(data: TurnRequest) -> PlayerIntent:
+    """把请求体解析为 PlayerIntent；不合法时返回 422 而不是 500"""
+    if data.intent is None:
+        return PlayerIntent(kind="text", payload={"text": data.text})
+    try:
+        return PlayerIntent.model_validate(data.intent)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "intent 格式不合法",
+                "expected": {
+                    "kind": "text | choice | click | qte | skip | save | load | meta",
+                    "payload": {"text": "自由文本", "action": "选项动作"},
+                },
+                "errors": exc.errors(
+                    include_url=False, include_context=False, include_input=False
+                ),
+            },
+        ) from exc
+
+
 @router.post("/{project_id}/turn", deprecated=True)
 async def play_turn(project_id: str, data: TurnRequest):
     """执行一个回合：游戏输入或导演指令"""
     _ensure_project(project_id)
 
-    if data.intent is not None:
-        intent = PlayerIntent.model_validate(data.intent)
-    else:
-        intent = PlayerIntent(
-            kind="text", payload={"text": data.text}
-        )
+    intent = _parse_intent(data)
 
     boot = TurnBoot(
         project_id=project_id,
@@ -97,7 +115,7 @@ async def create_save(project_id: str, data: SaveCreateRequest):
         label=data.label,
         backlog=data.backlog,
     )
-    return record.model_dump(mode="json")
+    return record.model_dump(mode="json", by_alias=True)
 
 
 @router.get("/{project_id}/saves", deprecated=True)
@@ -105,7 +123,7 @@ async def list_saves(project_id: str):
     _ensure_project(project_id)
     return {
         "saves": [
-            item.model_dump(mode="json")
+            item.model_dump(mode="json", by_alias=True)
             for item in engine.list_saves(project_id)
         ]
     }
@@ -122,7 +140,7 @@ async def load_save(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
         )
-    return record.model_dump(mode="json")
+    return record.model_dump(mode="json", by_alias=True)
 
 
 @router.post("/{project_id}/mode", deprecated=True)

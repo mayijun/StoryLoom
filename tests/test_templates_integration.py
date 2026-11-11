@@ -28,6 +28,11 @@ def _fake_prose(prompt: str, state) -> str:
     return ""
 
 
+async def _no_crew_agent(self, agent, prompt, timeout_s=60.0):
+    """禁用 Crew 的 LLM 增强层，直接走确定性兜底，避免测试访问网络。"""
+    return None
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     """真实 app + 独立 SQLite 文件；清空引擎运行时缓存。"""
@@ -36,12 +41,19 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv(
         "STORYLOOM_DATABASE_URL", f"sqlite:///{tmp_path / 'tpl_api.db'}"
     )
+    # RAG 退化为内存关键词检索，避免 chromadb 联网下载 embedding 模型
+    monkeypatch.setenv("DISABLE_CHROMADB", "1")
 
     from storyloom.api.engine import engine
     from storyloom.api.main import app
+    from storyloom.flows.turn_flow import TurnLoop
 
     # 游戏回合的叙述润色改为假模型返回，避免真实 LLM 调用导致超时
     monkeypatch.setattr(engine, "_game_prose_fn", _fake_prose)
+    # 记忆压缩同样走确定性兜底
+    monkeypatch.setattr(engine, "_memory_compress_fn", lambda prompt: "")
+    # Crew 叙事增强层整体关闭（一致性 / 意外 / 伏笔 / 导演 / 润色）
+    monkeypatch.setattr(TurnLoop, "_run_crew_agent", _no_crew_agent)
     engine._project_runtime.clear()
     engine.memories.clear()
     engine.rags.clear()

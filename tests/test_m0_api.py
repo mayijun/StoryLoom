@@ -23,20 +23,34 @@ def _fake_prose(prompt: str, state) -> str:
     return ""
 
 
+async def _no_crew_agent(self, agent, prompt, timeout_s=60.0):
+    """禁用 Crew 的 LLM 增强层，直接走确定性兜底，避免测试访问网络。"""
+    return None
+
+
 @pytest.fixture
 def apis(tmp_path, monkeypatch):
     monkeypatch.setenv(
         "STORYLOOM_DATABASE_URL", f"sqlite:///{tmp_path / 'api.db'}"
     )
+    # RAG 退化为内存关键词检索，避免 chromadb 联网下载 embedding 模型
+    monkeypatch.setenv("DISABLE_CHROMADB", "1")
     reset_repositories()
     reset_engines()
 
     from storyloom.api.engine import engine
     from storyloom.api.routers import extensions, game, memory
+    from storyloom.flows.turn_flow import TurnLoop
 
     # 游戏回合的叙述润色改为假模型返回，避免真实 LLM 调用导致超时
     monkeypatch.setattr(engine, "_game_prose_fn", _fake_prose)
+    # 记忆压缩同样走确定性兜底
+    monkeypatch.setattr(engine, "_memory_compress_fn", lambda prompt: "")
+    # Crew 叙事增强层整体关闭（一致性 / 意外 / 伏笔 / 导演 / 润色）
+    monkeypatch.setattr(TurnLoop, "_run_crew_agent", _no_crew_agent)
     engine._project_runtime.clear()
+    engine.memories.clear()
+    engine.rags.clear()
     engine.game_states.clear()
     engine.game_memories.clear()
     engine.last_turns.clear()
@@ -147,6 +161,37 @@ def test_provider_api_keys_injected_in_memory(apis):
     assert "sk-runtime-only" not in str(
         engine.get_available_models()
     )
+
+
+def test_invalid_intent_returns_422(apis):
+    """非法的结构化 intent 应当返回 422 并提示允许的 kind，而不是 500"""
+    from fastapi import HTTPException
+    from fastapi.testclient import TestClient
+
+    from storyloom.api.main import app
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            apis[0].play_turn(
+                "m0api",
+                TurnRequest(
+                    instance_id="i1",
+                    intent={"kind": "use", "target": "签到契"},
+                ),
+            )
+        )
+    assert excinfo.value.status_code == 422
+    assert "kind" in str(excinfo.value.detail)
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/runtime/v1/m0api/turn",
+            json={"instance_id": "i1", "intent": {"kind": "use"}},
+        )
+        assert resp.status_code == 422, resp.text
+        detail = resp.json()["detail"]
+        assert detail["message"] == "intent 格式不合法"
+        assert "text" in detail["expected"]["kind"]
 
 
 def test_runtime_v1_routes_registered(apis):
