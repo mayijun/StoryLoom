@@ -33,6 +33,11 @@ async def _no_crew_agent(self, agent, prompt, timeout_s=60.0):
     return None
 
 
+async def _fake_crew_run(self, agent, prompt, timeout_s=60.0):
+    """伪装统一 JSON Agent：裁决放行、正文为空、无一致性问题。"""
+    return '{"decision": "allow", "prose": "", "choices": [], "issues": []}'
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     """真实 app + 独立 SQLite 文件；清空引擎运行时缓存。"""
@@ -46,6 +51,7 @@ def client(tmp_path, monkeypatch):
 
     from storyloom.api.engine import engine
     from storyloom.api.main import app
+    from storyloom.crews.scene_crew.crew import SceneCrew
     from storyloom.flows.turn_flow import TurnLoop
 
     # 游戏回合的叙述润色改为假模型返回，避免真实 LLM 调用导致超时
@@ -54,6 +60,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(engine, "_memory_compress_fn", lambda prompt: "")
     # Crew 叙事增强层整体关闭（一致性 / 意外 / 伏笔 / 导演 / 润色）
     monkeypatch.setattr(TurnLoop, "_run_crew_agent", _no_crew_agent)
+    # 导演裁决与一致性检测走统一 JSON 假模型
+    monkeypatch.setattr(SceneCrew, "run_agent", _fake_crew_run)
     engine._project_runtime.clear()
     engine.memories.clear()
     engine.rags.clear()
@@ -225,7 +233,7 @@ def test_embedded_extensions_resolved_via_api(client):
     assert resolved["travel_overrides"]["地牢->演武场"] == 6
 
 
-def test_game_mode_moves_using_template_map(client):
+def test_game_mode_freeform_input_is_not_core_map_action(client):
     pid = _apply(client)["project_id"]
 
     initial = client.get(
@@ -245,9 +253,11 @@ def test_game_mode_moves_using_template_map(client):
         json={"instance_id": "g1", "actor": "玩家", "text": "观察四周"},
     )
     assert observe.status_code == 200, observe.text
-    assert observe.json()["status"] == "ok"
+    observed = observe.json()
+    assert observed["status"] == "ok"
+    assert observed["state"]["locations"]["演武场"]["exits"]["藏经阁"] == 10
 
-    # 第 2 回合：旅行耗时来自模板内嵌的地图 mod（演武场→藏经阁 10 分钟）
+    # 核心不再把“前往”解析成 move；地图移动规则需由扩展显式接入。
     move = client.post(
         f"/runtime/v1/{pid}/turn",
         json={"instance_id": "g1", "actor": "玩家", "text": "前往藏经阁"},
@@ -255,9 +265,9 @@ def test_game_mode_moves_using_template_map(client):
     assert move.status_code == 200, move.text
     moved = move.json()
     assert moved["status"] == "ok"
-    assert moved["state"]["characters"]["玩家"]["location"] == "藏经阁"
-    assert moved["state"]["time_minutes"] == 490
-    assert "路上花了10分钟" in moved["text"]
+    assert moved["state"]["characters"]["玩家"]["location"] == "演武场"
+    assert moved["state"]["time_minutes"] == 482
+    assert moved["state_delta"]["events"][-1]["summary"] == "前往藏经阁"
 
 
 # ---------------- 导出 / 记忆 ----------------

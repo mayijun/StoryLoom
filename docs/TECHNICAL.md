@@ -26,15 +26,15 @@ Crew 是整个 StoryLoom 的核心协作单元，包含两种角色：
 | ✍️ 润色 prose | 行动日志 → 文学化正式正文 | Claude Sonnet | 🟡 MEDIUM |
 | 📋 大纲 outline | 章节级结构规划 | DeepSeek V4 Pro | 🟡 MEDIUM |
 
-**Deterministic Agents**（纯代码，不调用 LLM，永远可用）：
+**裁决与质量 Agents**（统一 JSON 输出，按段消费）：
 
 | Agent | 职责 | 位置 |
 |-------|------|------|
-| 🎲 GM GameMaster | 行动裁决：存在性、在场性、资源、世界规则 | `world/game_master.py` → 将迁入 `crews/scene_crew/deterministic/gm.py` |
-| ✅ ConsistencyChecker | 冲突校验（已在 Crew 内，确定性子检查 + LLM 语义辅助） | `crews/scene_crew/` 内 |
+| 🎬 世界裁决（DirectorAgent） | 行动裁决：允许 / 拒绝 + `state_delta` | `crews/scene_crew/crew.py` |
+| ✅ ConsistencyChecker | 冲突校验（确定性子检查 + LLM 语义辅助） | `crews/scene_crew/crew.py` |
 | 🛡️ ModerationGate | 内容审核闸门 | 接口预留，默认 passthrough |
 
-> 这些 deterministic agents 不占 API Key，不受模型质量波动影响。
+> 世界裁决由导演 Agent 输出统一 JSON 完成；没有模型时退化为最小自由叙事兜底。
 > ExtensionHost 是 Crew 的 Tool Loader，把 mod/skill/policy 注册为 Crew 可用的工具。
 
 - **YAML 种子**：`crews/scene_crew/config/agents.default.yaml` + `tasks.default.yaml` 首次运行导入数据库，
@@ -243,19 +243,12 @@ StoryLoom/
 │   │   └── routers/             # 版本化 API：/runtime/v1/* + /api/*
 │   ├── db/                      # ORM + Repository
 │   ├── crews/scene_crew/
-│   │   ├── crew.py              # @CrewBase SceneCrew
-│   │   ├── deterministic/      # GM / ConsistencyChecker / ModerationGate（规划中）
+│   │   ├── crew.py              # @CrewBase SceneCrew：Agent + 世界裁决 + NPC 自主
+│   │   ├── packet.py            # 统一 Agent JSON 契约 + 场景装配
 │   │   ├── tools/               # ExtensionHost 注册的 mod/skill 工具（规划中）
 │   │   └── config/              # agents.default.yaml / tasks.default.yaml（种子）
 │   ├── world/
-│   │   ├── state.py             # WorldState + Fact + CharState + LocationState + ArcState
-│   │   ├── game_master.py       # GM Agent 裁决（将迁入 crews/scene_crew/deterministic/）
-│   │   ├── authority.py         # GameAuthority / DirectorAuthority 策略
-│   │   └── autonomous_agent.py # NPC 自主（记忆 → 反思 → 计划 → 提案）
-│   ├── runtime/
-│   │   ├── intent.py            # PlayerIntent + IntentRouter
-│   │   ├── directive.py         # StageDirective
-│   │   └── renderer.py          # SceneRenderer
+│   │   └── state.py             # WorldState + Fact + FactOverride + 裁决协议
 │   ├── extensions/
 │   │   ├── manifest.py          # manifest schema + 校验
 │   │   └── host.py              # ExtensionHost = Crew 的 Tool Loader
@@ -293,8 +286,9 @@ M0 已新增（均已实现，结构按新架构描述）：
 └── frontend/src/components/GamePanel.vue   # 游戏模式面板
 ```
 
-> 架构演进中的模块移动计划：
-> - `world/game_master.py` → `crews/scene_crew/deterministic/gm.py`（GM 成为 Crew Deterministic Agent）
+> 已完成的模块收敛：
+> - `world/game_master.py` / `world/authority.py` / `world/autonomous_agent.py` 已删除，职责分别并入 `SceneCrew.adjudicate` / `SceneCrew.npc_actions` / `WorldState`
+> - `runtime/directive.py` / `runtime/renderer.py` 已删除，由 `crews/scene_crew/packet.py` 的 `compose_scene` 接管
 > - `saves/service.py` → `memory/checkpoint.py`（SaveService 合并进记忆系统的 Checkpoint 机制）
 > - `api/engine.py` `NovelEngine` → `StoryEngine`（运行时引擎改名，更直观）
 
@@ -417,7 +411,7 @@ uv run pytest -q
 M0 覆盖（`tests/test_m0*.py` + `test_memory_compression.py`）：GM 裁决与守卫拦截、移动可达性、`Fact` 可见性、
 存档回放、manifest 校验与 map mod 旅行覆盖、导演改写审计回滚、idle NPC 事件、
 模式切换 checkpoint、记忆分层 / 压缩 / 降级回温 / 三后端检索 / 历史回填 / secrets、
-意图路由、超时与配额、`/game/*` 与 `/memory` `/extensions` API、版本化入口与 Key 注入。
+自由文本输入、超时与配额、`/game/*` 与 `/memory` `/extensions` API、版本化入口与 Key 注入。
 
 性能基线：
 
@@ -432,15 +426,15 @@ uv run python scripts/bench_m0.py
 
 ## 🎯 下一步
 
-M0 双模式动态世界纵切已完成：`WorldState` / GM Agent、`PlayerIntent` /
-`StageDirective` 双总线、双模式 `TurnLoop`、`FactOverride` 审计回滚、NPC 自主、
+M0 双模式动态世界纵切已完成：`WorldState` / 导演 Agent JSON 裁决、自由文本输入 /
+`StageDirective` 输出、双模式 `TurnLoop`、`FactOverride` 审计回滚、NPC 自主、
 叙事节拍、分层记忆 v2 + Checkpoint、Mod v1 与 Checkpoint 回放均已落地，作者模式
 `scene_brief → prose` 流程保持不回归。
 
-架构演进方向（不破坏现有代码、先文档后实现）：
-- **GM → Crew Deterministic Agent**：`world/game_master.py` 迁入 `crews/scene_crew/deterministic/`，GM 成为 Crew 协作单元的一员
+已完成的架构收敛：
+- **裁决统一为 Agent JSON**：`SceneCrew.adjudicate` 调用导演 Agent，输出 `decision / state / available`，不再有确定性 GM 规则
 - **SaveService → memory/checkpoint**：`saves/service.py` 合并进 `memory/`，Checkpoint 与分层记忆统一为 SessionState 快照机制
-- **NovelEngine → StoryEngine**：`api/engine.py` 类名从 `NovelEngine` 改为 `StoryEngine`，更直观表达「整个 StoryLoom 运行时入口」
+- **NovelEngine → StoryEngine**：`api/engine.py` 类名为 `StoryEngine`，表达「整个 StoryLoom 运行时入口」
 
 下一阶段 M1 面向玩法与审核（详见 [MVP.md](MVP.md) §3.2）：
 

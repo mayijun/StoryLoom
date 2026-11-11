@@ -1,7 +1,6 @@
 """游戏 / 扮演模式 API（M0，全部 async）"""
 
 from fastapi import APIRouter, HTTPException, status
-from pydantic import ValidationError
 
 from storyloom.api.engine import engine
 from storyloom.api.schemas import (
@@ -10,8 +9,7 @@ from storyloom.api.schemas import (
     TurnRequest,
 )
 from storyloom.flows.turn_flow import TurnBoot
-from storyloom.runtime.intent import PlayerIntent
-from storyloom.world.authority import FactOverride
+from storyloom.world.state import FactOverride
 from storyloom.world.state import WorldState
 
 router = APIRouter(prefix="/game", tags=["game"])
@@ -25,41 +23,18 @@ def _ensure_project(project_id: str):
         )
 
 
-def _parse_intent(data: TurnRequest) -> PlayerIntent:
-    """把请求体解析为 PlayerIntent；不合法时返回 422 而不是 500"""
-    if data.intent is None:
-        return PlayerIntent(kind="text", payload={"text": data.text})
-    try:
-        return PlayerIntent.model_validate(data.intent)
-    except ValidationError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "message": "intent 格式不合法",
-                "expected": {
-                    "kind": "text | choice | click | qte | skip | save | load | meta",
-                    "payload": {"text": "自由文本", "action": "选项动作"},
-                },
-                "errors": exc.errors(
-                    include_url=False, include_context=False, include_input=False
-                ),
-            },
-        ) from exc
-
-
 @router.post("/{project_id}/turn", deprecated=True)
 async def play_turn(project_id: str, data: TurnRequest):
-    """执行一个回合：游戏输入或导演指令"""
+    """执行一个回合：原始文本或导演指令直接进入流水线。"""
     _ensure_project(project_id)
-
-    intent = _parse_intent(data)
 
     boot = TurnBoot(
         project_id=project_id,
         instance_id=data.instance_id,
         actor=data.actor,
         mode=data.mode,
-        intent=intent,
+        text=data.text,
+        wait=data.wait,
         world_state=(
             WorldState.model_validate(data.world_state)
             if data.world_state

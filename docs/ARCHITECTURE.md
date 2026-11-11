@@ -12,11 +12,11 @@
 | 用户 | 作者 | 玩家 |
 | 输入 | 场景指令 / 章节意图 | 角色行动 / 选择 |
 | 主导扩展 | `skill`：类型知识、结构模板、文风 | `mod`：地图、时间、数值、系统 |
-| 权限 | 可改写事实（`FactOverride`，审计 + 快照） | 行动需 GM 裁决，可失败 |
+| 权限 | 可改写事实（`FactOverride`，审计 + 快照） | 自由文本默认进入叙事；扩展可添加行动裁决 |
 | 产物 | 小说章节 | 可交互的文字世界 |
 
 两种模式共用同一套世界状态、裁决、渲染与扩展机制。导演模式保留现有的
-`scene_brief → 场景正文` 入口；游戏模式走 `PlayerIntent → TurnLoop`。
+`scene_brief → 场景正文` 入口；游戏模式走 `text → TurnLoop`。
 
 模式切换是**存档级运行时状态**，不是项目创建属性：任意回合边界可切换，世界状态与
 记忆不重置；切换前自动打 checkpoint，切换当回合强制重走一次 `director_frame`。
@@ -30,16 +30,16 @@
 │ Layer 4  表现层        PresentationAdapter                   │
 │          TextAdapter / AdvAdapter / NvlAdapter / 未来 3D       │
 ├──────────────────────────────────────────────────────────────┤
-│ Layer 3  Crew 协作层   Crew = LLM Agents + Deterministic + Tools │
-│          LLM Agents:  director / protagonist / ensemble / ... │
-│          Deterministic Agents:  GM(裁决) / Consistency / 审核   │
+│ Layer 3  Crew 协作层   Crew = LLM Agents + Tools              │
+│          LLM Agents 全部输出统一 JSON 信封：                    │
+│          director(裁决) / consistency(质检) / prose / ensemble  │
 │          Tools:  ExtensionHost 加载的 mod/skill + builtin 工具   │
 ├──────────────────────────────────────────────────────────────┤
 │ Layer 2  共享状态层    WorldState + LayeredMemory             │
 │          Fact 真相 / Belief 认知 / 时间 / 地点 / Flag / 记忆    │
 ├──────────────────────────────────────────────────────────────┤
-│ Layer 1  运行时        IntentRouter + DirectiveBus             │
-│          PlayerIntent / StageDirective                        │
+│ Layer 1  运行时        TurnLoop                                 │
+│          自由文本输入 / Agent JSON → StageDirective             │
 ├──────────────────────────────────────────────────────────────┤
 │ Layer 0  基础设施      llm/router + db/repository              │
 │          DeepSeek / OpenAI / Anthropic / Ollama + SQLite       │
@@ -47,7 +47,8 @@
 └──────────────────────────────────────────────────────────────┘
 ```
 
-与旧架构相比，**GM 从独立的「世界层」降级为 Crew 中的一个确定性角色**，
+与旧架构相比，**裁决不再有独立的规则引擎**：裁决、一致性检查、正文、选项、NPC 动作
+全部由 Crew 中的 Agent 以同一套 JSON 信封输出，运行时按字段拆给不同消费方。
 ExtensionHost 从独立的「基座层」变为 Crew 的 Tool 加载器，Save 合并进
 LayeredMemory 的 checkpoint 机制。这样 Crew 成为整个系统的**唯一协作单元**——
 不管是创作、裁决、一致性检查，全部统一在 Crew 的概念下，架构从 6 层简化到 5 层，
@@ -59,22 +60,22 @@ LayeredMemory 的 checkpoint 机制。这样 Crew 成为整个系统的**唯一�
 
 ## 3. 核心抽象
 
-### 3.1 输入总线：`PlayerIntent`
+### 3.1 自由文本输入
 
 ```python
-class PlayerIntent(BaseModel):
-    kind: Literal["text", "choice", "click", "qte", "skip", "save", "load", "meta"]
-    payload: dict
+class TurnBoot(BaseModel):
+    text: str = ""
+    wait: bool = False
 ```
 
-选项与自由输入共存：`choice` 是传统 galgame，`text` 是动态文字世界，
-两者走同一条解析与裁决链。
+核心运行时不做关键词解析或动作类型分类。Agent 推荐选项只是 `text` 的快捷输入，
+与玩家手动输入走同一条回合链；具体玩法需要行动约束时，由 extension 提供。
 
 ### 3.2 状态容器：Fact / Belief / Memory
 
 | 层 | 内容 | 维护者 | 用途 |
 |---|---|---|---|
-| `Fact` | 客观真相 | GM Crew Agent，唯一 | 裁决 |
+| `Fact` | 客观真相 | 导演 Agent 裁决，唯一 | 裁决 |
 | `Belief` | 角色相信什么 | 每个 Agent 一份 | 决策，允许错/被骗 |
 | `Memory` | 角色经历过什么 | 每个 Agent 一份 | 叙事与回忆 |
 
@@ -93,8 +94,8 @@ class Fact(BaseModel):
 **信息隔离纪律**：
 
 - Agent 的 prompt 只注入 `view(agent_id)`，不拿全局 `WorldState`；
-- GM 只信 `Fact`，不信 Agent 转述；
-- 写入 `Belief` 走 GM 统一处理（谁告诉了谁）。
+- 裁决 Agent 只信 `Fact`，不信 Agent 转述；
+- 写入 `Belief` 走裁决统一处理（谁告诉了谁）。
 
 第一阶段只启用 `known_by` 过滤（`known_only + scoped`）；欺骗 / 误解
 （`belief_full`）在 M2 开放。
@@ -105,31 +106,67 @@ class Fact(BaseModel):
 ### 3.3 Crew：统一的协作单元
 
 Crew 不再只是「导演模式的多 Agent 编排」，而是整个 StoryLoom 的**核心协作单元**。
-一个 Crew 实例 = 一组 LLM Agents + 一组 Deterministic Agents + 一组 Tools。
+一个 Crew 实例 = 一组 LLM Agents + 一组 Tools。
 
 #### LLM Agents（需要模型调用）
 
 | Agent | 职责 | 默认模型 | 灵敏度 |
 |-------|------|---------|--------|
-| 🎬 导演 director | 场景意图规划，间接引导而非操控角色 | DeepSeek V4 Pro | 🔴 CRITICAL |
+| 🎬 导演 director | 场景意图规划；同时承担世界裁决 | DeepSeek V4 Pro | 🔴 CRITICAL |
 | 🎭 主角 protagonist | 独立人格，基于动机自主行动 | Claude Sonnet | 🟠 HIGH |
-| 👥 群演 ensemble | 多个次要角色共享 1 实例，压缩成本 | DeepSeek Flash | 🟢 LOW |
+| 👥 群演 ensemble | 多个次要角色共享 1 实例；承担 NPC 自主提案 | DeepSeek Flash | 🟢 LOW |
 | 🎲 意外 surprise | 提出「预期之外、情理之中」的事件提案 | Claude Sonnet | 🟠 HIGH |
 | 📌 伏笔 foreshadowing | 伏笔全生命周期管理 | DeepSeek V4 Pro | 🟠 HIGH |
+| ✅ 一致性 consistency | 校验人设 / 时间线 / 设定冲突 | GPT-4o | 🔴 CRITICAL |
 | ✍️ 润色 prose | 行动日志 → 文学化正式正文 | Claude Sonnet | 🟡 MEDIUM |
 | 📋 大纲 outline | 章节级结构规划 | DeepSeek V4 Pro | 🟡 MEDIUM |
 
-#### Deterministic Agents（纯代码，不需要模型调用）
+#### 统一 Agent 输出：`AgentPacket`
 
-| Agent | 职责 | 为什么是 deterministic |
-|-------|------|----------------------|
-| 🎲 **GM** (GameMaster) | 行动裁决：存在性、在场性、可见性、资源、世界规则 | 规则是确定性的，不该让 LLM 即兴发挥 |
-| ✅ **ConsistencyChecker** | 校验人设/时间线/设定冲突 | 逻辑一致性可代码化，LLM 只做语义辅助 |
-| 🛡️ **ModerationGate** | 内容审核闸门 | 合规策略是确定性规则，LLM 做分类辅助 |
-| 🔀 **IntentRouter** | 解析输入意图类型 | 分类走路由逻辑，不 LLM |
+所有 Agent 只输出**一个 JSON 对象**，字段谁用谁取；没有独立的结构化管线。
+`docs/TECHNICAL.md` 中的 `PACKET_CONTRACT` 是唯一的提示词契约来源。
 
-> 这些 deterministic agents 不占 API Key，永远可用，不随模型质量波动。
-> 它们可以被 CrewAI 的 `@tool` 或 Flow 节点包装，和 LLM agents 无缝协作。
+```python
+class AgentPacket(BaseModel):
+    prose: str = ""                        # 正文（ProseAgent / 演绎 Agent）
+    choices: list[AgentChoice] = []        # 推荐行动（3~4 条，快捷输入）
+    stage: list[dict] = []                 # 舞台指令（媒体/表现层消费）
+    decision: str = "allow"                # 裁决：allow / reject / direct
+    narrative: str = ""                    # 裁决后的世界描述
+    reason: str = ""                       # 裁决理由（调试与回放）
+    state: dict = {}                       # 结构化增量，转 StateDelta
+    available: list[str] = []              # 拒绝时可供选择的替代行动
+    npc_actions: list[AgentOperation] = [] # NPC 自主提案，转 ActionProposal
+    issues: list[str] = []                 # 一致性 / 审核问题
+```
+
+各消费方只读自己关心的字段：
+
+| 消费方 | 读取字段 | 入口 |
+|---|---|---|
+| 裁决 | `decision` / `narrative` / `reason` / `state` / `available` | `packet_to_result()` |
+| 世界状态 | `state` | `packet_to_delta()` |
+| NPC 回合 | `npc_actions` | `packet_to_proposals()` |
+| 表现层 | `prose` / `choices` / `stage` | `compose_scene()` |
+| 质量闸门 | `issues` | `SceneCrew.check_consistency()` |
+
+纯文本输出自动退化为 `prose`，旧格式（如 `suggested_actions`、
+`{"passed": false, "conflicts": [...]}`）由 `parse_agent_packet()` 兼容。
+
+> 没有模型时不再调用规则引擎，而是退化为最小自由叙事兜底：时间 +1、
+> 记录一条 `freeform` 事件，保证回合链不断。
+
+#### 裁决与质量 Agents
+
+| Agent | 职责 | 实现 |
+|-------|------|------|
+| 🎬 世界裁决（director） | 行动裁决：`allow / reject / direct` + `state_delta` | `SceneCrew.adjudicate()` |
+| ✅ ConsistencyChecker | 校验人设 / 时间线 / 设定冲突 | `SceneCrew.check_consistency()` |
+| 🛡️ ModerationGate | 内容审核闸门 | 接口预留，默认 passthrough |
+
+> 裁决不再由确定性 GM 规则完成：导演 Agent 结合世界简报输出 JSON 裁决，
+> 运行时只做 `packet_to_result` 的机械转换。规则化约束交给 extension。
+
 
 #### Tools（由 ExtensionHost 加载）
 
@@ -154,30 +191,35 @@ contributes:
 | 能力 | 谁触发 | LLM 可 function call |
 |---|---|---|
 | `read` / `simulate` | 任意 LLM Agent | ✅ |
-| `random` / `mutate` | 仅 GM Agent | ❌ |
+| `random` / `mutate` | 仅裁决 Agent（导演） | ❌ |
 | `authoring` | 仅导演模式 LLM Agents | 只出提案 |
 | `render` | 仅表现层 | ❌ |
 
-LLM 的工具结果只作提案依据，GM Agent 裁决时用 `WorldState` 复核。
+LLM 的工具结果只作提案依据，裁决 Agent 用 `WorldState` 复核。
 
-### 3.4 GM Agent：裁决
+### 3.4 导演 Agent：统一 JSON 裁决
 
-GM 现在是 Crew 中的一个 deterministic agent。它做的事情没有变，只是身份从
-「独立模块」变成了「Crew 的一员」。
+裁决不再是确定性规则引擎，而是**导演 Agent 的一次 JSON 输出**：
+`SceneCrew.adjudicate()` 把世界简报（时间 / 地点 / 在场角色 / 已知事实 / 最近事件）
+和提案一起交给导演 Agent，取回 `decision / narrative / reason / state / available`。
 
 ```
-ActionProposal
-  → 存在性 / 在场性 / 可见性
-  → allowed_actions(地点, 角色)
-  → 资源、能力、世界规则
-  → 在场 NPC 反应（只读工具）
-  → AdjudicationResult { success, outcome, state_delta, time_delta }
+ActionProposal + WorldState 简报
+  → 导演 Agent（PACKET_CONTRACT）
+  → AgentPacket { decision: allow | reject | direct, state, available, ... }
+  → packet_to_result()
+  → AdjudicationResult { success, outcome, narrative, state_delta }
+  → WorldState.apply_delta()
 ```
 
-LLM Agent 决定「想做什么」，GM Agent 决定「能不能发生」。规则缺口策略可配：
-`reject | llm_referee | human_review`。
+- `allow`：行动成立，`state` 转成 `StateDelta`；成功回合至少推进 1 分钟并留一条事件；
+- `reject`：行动不成立，`available` 给出可行替代（同时用于推荐选项）；
+- `direct`：导演模式下由导演直接给出世界走向，优先于玩家提案；
+- 角色不存在 / 已死亡由运行时前置拦截，不进入 Agent 调用；
+- 没有可用模型时走 `_narrate_fallback`，只推进时间并记录 `freeform` 事件。
 
-GM Agent 是 TurnLoop 中 `adjudicate` 阶段的执行者。
+LLM Agent 决定「想做什么」，导演 Agent 决定「能不能发生」以及「世界随之改变什么」。
+需要硬性规则（地图连通、资源扣减）时由 extension 在 `before_adjudicate` 钩子注入。
 
 ### 3.5 输出总线：`StageDirective`
 
@@ -191,22 +233,29 @@ class StageDirective(BaseModel):
     params: dict
 ```
 
-渲染层产出指令序列，`PresentationAdapter` 决定怎么演。文本只是 `say`
-的一种表现；ADV、NVL、未来的 3D / 多模态都消费同一串指令。
+`compose_scene()` 把 `AgentPacket` 的 `prose` / `choices` / `stage` 装配成指令序列，
+`PresentationAdapter` 决定怎么演。文本只是 `say` 的一种表现；ADV、NVL、
+未来的 3D / 多模态都消费同一串指令。`choices` 为空时回退
+`WorldState.allowed_actions()` 并标记 `source="rules"`。
 
 ### 3.6 双模式权限策略
 
+模式差异收敛在两处，不再有 `AuthorityPolicy` 类族：
+
 ```python
-class AuthorityPolicy(Protocol):
-    def adjudicate(self, proposal, world, frame) -> Adjudication: ...
-    def may_write_state_directly(self, actor: str) -> bool: ...
-    def apply_override(self, override, world, snapshot_id) -> WorldState: ...
+# 裁决：同一个入口，靠 mode 影响提示词
+await crew.adjudicate(proposal, state, mode="game" | "director")
+
+# 世界改写：直接落在 WorldState 上
+state.apply_override(override, snapshot_id=...)
+state.rollback_override(override_id)
+state.switch_mode("director", checkpoint_id=...)
 ```
 
-- `GameAuthority`：GM Agent 全权裁决；玩家与 NPC 同权，玩家提案来自外部输入；
-- `DirectorAuthority`：导演指令优先级最高，GM Agent 降级为事实检查器；允许带审计的改写。
+- 游戏模式：玩家与 NPC 同权，玩家提案来自外部输入；世界先于玩家意志；
+- 导演模式：导演指令优先级最高，提示词要求输出 `decision="direct"`；允许带审计的改写。
 
-模式只影响 `interpret_*`、`adjudicate`、`plan_next` 三处策略，其余阶段完全共用。
+模式只影响 `adjudicate` 的提示词与 `plan_next`，其余阶段完全共用。
 
 导演改写事实必须结构化留痕：
 
@@ -222,7 +271,7 @@ class FactOverride(BaseModel):
 ```
 
 执行前写 checkpoint，执行后写审计日志（含 before / after）；触发连带一致性扫描，
-受影响的伏笔 / 关系 / 事件标记为 `needs_review`；`rollback(override_id)` 回到
+受影响的伏笔 / 关系 / 事件标记为 `needs_review`；`rollback_override(override_id)` 回到
 `base_snapshot_id`；只允许改事实层，不允许绕过 `WorldState` 直接改渲染文本。
 
 ### 3.7 稳定钩子点
@@ -244,18 +293,15 @@ mod 抛异常只降级跳过并打质量标记，不阻断回合。
 
 ```
 boot
- → perceive
- → classify_input
-      ├─ player_action → interpret_player_action
-      ├─ directive     → interpret_director_command
-      └─ idle          → autonomous_tick
- → director_frame      （节拍 / 张力 / 信息预算 / 命运预兆）
- → actor_round         （按 detail_plan 决定实例化谁）
- → adjudicate          （GM Agent 规则、随机、时间推进）
- → consistency_check   （ConsistencyChecker Agent 冲突 → retry ≤ N）
- → moderation_gate     （ModerationGate Agent 暂存态审核）
- → render_scene        （产出 StageDirective）
- → commit              （事务转正）
+ → perceive              （自由文本，不做动作类型分类）
+ → director_frame        （节拍 / 张力 / 信息预算 / 命运预兆）
+ → actor_round           （玩家 / 指定角色行动 → ActionProposal）
+ → _npc_round            （空闲达阈值时，EnsembleAgent 输出 npc_actions）
+ → adjudicate            （导演 Agent JSON 裁决：allow / reject / direct）
+ → consistency_check     （ConsistencyAgent 输出 issues → retry ≤ N）
+ → moderation_gate       （ModerationGate 暂存态审核）
+ → render_scene          （compose_scene：prose + choices + stage）
+ → commit                （事务转正）
  → plan_next
       ├─ next_turn → perceive
       ├─ end_arc
@@ -330,8 +376,8 @@ class Checkpoint(BaseModel):
 ```
 
 Checkpoint 的产生时机：
-- **玩家主动存档**（`PlayerIntent.kind = "save"`）
-- **模式切换前**（`GameAuthority.switch_mode`）
+- **玩家主动存档**（存档 API）
+- **模式切换前**（`WorldState.switch_mode`）
 - **事实改写前**（`FactOverride.base_snapshot_id`）
 
 Checkpoint 合并进记忆系统的设计理由：
@@ -371,7 +417,7 @@ Checkpoint 合并进记忆系统的设计理由：
 | 现有模块 | 在新架构中的位置 | 状态 |
 |---|---|---|
 | `api/engine.py` | **StoryEngine**：项目 / 资产 / 两种模式运行时，改名 + 职责收窄 | 改名 + 保留 |
-| `crews/scene_crew/` | Layer 3 Crew：导演模式 LLM Agents + 扩展 Deterministic Agents (GM) + Tools | 保留 + 扩展 |
+| `crews/scene_crew/` | Layer 3 Crew：LLM Agents（统一 JSON 输出）+ Tools | 保留 + 扩展 |
 | `flows/scene_flow.py` | 导演模式的单场景子流程 | 保留 |
 | `flows/turn_flow.py` | 双模式 TurnLoop | 保留 |
 | `control/` | 全层质量控制 | 保留 |
@@ -420,18 +466,12 @@ src/storyloom/
 │   └── routers/             # 版本化 API：/runtime/v1/* + /api/*
 ├── crews/
 │   └── scene_crew/
-│       ├── crew.py          # @CrewBase SceneCrew + Deterministic Agents
-│       ├── deterministic/  # GM / ConsistencyChecker / ModerationGate
+│       ├── crew.py          # @CrewBase SceneCrew：Agent + 裁决 + NPC + 质检
+│       ├── packet.py        # AgentPacket 统一 JSON 契约 + 场景装配
 │       ├── tools/           # ExtensionHost 注册的 mod/skill 工具
 │       └── config/          # agents.default.yaml / tasks.default.yaml
 ├── world/
-│   ├── state.py             # WorldState + Fact + CharState + LocationState + ArcState
-│   ├── authority.py         # GameAuthority / DirectorAuthority 策略
-│   └── autonomous_agent.py  # NPC 自主（记忆 → 反思 → 计划 → 提案）
-├── runtime/
-│   ├── intent.py            # PlayerIntent + IntentRouter
-│   ├── directive.py         # StageDirective
-│   └── renderer.py          # SceneRenderer
+│   └── state.py             # WorldState + Fact + FactOverride + 模式切换
 ├── extensions/
 │   ├── manifest.py          # manifest schema + 校验
 │   └── host.py              # ExtensionHost = Crew 的 Tool Loader
@@ -463,7 +503,11 @@ src/storyloom/
 | 旧路径 | 去向 |
 |---|---|
 | `saves/service.py` | 合并进 `memory/checkpoint.py`，`SaveService` 改为 `CheckpointStore` |
-| `world/game_master.py` | 移进 `crews/scene_crew/deterministic/gm.py`，GM 成为 Crew Agent |
+| `world/game_master.py` | 删除；裁决改由导演 Agent 输出 JSON（`SceneCrew.adjudicate`） |
+| `world/authority.py` | 删除；模式策略进 `SceneCrew.adjudicate(mode=)`，改写进 `WorldState` |
+| `world/autonomous_agent.py` | 删除；NPC 自主合并进 `SceneCrew.npc_actions`（EnsembleAgent） |
+| `runtime/directive.py` | 删除；`StageDirective` 保留在 `world/state.py` |
+| `runtime/renderer.py` | 删除；`compose_scene` + ProseAgent 接管 |
 | `extensions/host.py` | 保留路径不变，重新定位为 Crew 的 Tool Loader |
 
 ---
@@ -474,11 +518,11 @@ src/storyloom/
 
 | 原理 | 新位置 |
 |---|---|
-| 反馈闭环 | GM Agent 裁决 + ConsistencyChecker + ModerationGate 三重闭环 |
+| 反馈闭环 | 导演 Agent 裁决 + ConsistencyChecker + ModerationGate 三重闭环 |
 | 统计滤波 | 关键裁决多次采样 / 投票（M0 后） |
 | 灵敏度分析 | 按 `importance_tier` 决定 tick 频率与审核强度 |
-| 解耦控制 | `PlayerIntent` / `StageDirective` / `Fact` 三层解耦 |
-| 分层管控 | Layer 3 Crew（LLM+Deterministic+Tools）+ Layer 2 状态 + Layer 1 运行时 |
+| 解耦控制 | `TurnBoot(text)` / `AgentPacket` / `StageDirective` / `Fact` 分层解耦 |
+| 分层管控 | Layer 3 Crew（LLM+Tools）+ Layer 2 状态 + Layer 1 运行时 |
 | 人机结合 | 关键裁决、审核不确定、命运收束转人工 |
 
 详见 [CONTROL_THEORY.md](CONTROL_THEORY.md)。
@@ -501,7 +545,7 @@ M0 只解析 `asset` manifest，不做媒体渲染。
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | 作者模式 MVP | 场景生成 / 资产与场景落库 / 章节 / Web 工作台 | ✅ |
-| M0 | 双模式纵切：WorldState / GM Agent / 双总线 / TurnLoop / Authority + 模式切换 / NPC 自主 / LayeredMemory + Checkpoint / Mod v1 / 游戏前端 | ✅ |
+| M0 | 双模式纵切：WorldState / 导演 Agent JSON 裁决 / 双总线 / TurnLoop / 模式切换 / NPC 自主 / LayeredMemory + Checkpoint / Mod v1 / 游戏前端 | ✅ |
 | M1 | TFC 五档、审核 Gate 实装、图片/音频媒体、Flag/Choice/好感度、章节化收束 | 🔲 |
 | M2 | 命运、Casting、路线图、日程、POV、Belief 全量、ADV/NVL | 🔲 |
 | M3 | 视频、生成式媒体、TTS | 🔲 |

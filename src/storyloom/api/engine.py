@@ -75,13 +75,15 @@ from storyloom.memory import (
 from storyloom.flows.scene_flow import SceneGenerationFlow
 from storyloom.flows.turn_flow import TurnBoot, TurnLoop, TurnResult
 from storyloom.extensions.host import ExtensionRegistry
-from storyloom.runtime.directive import StageDirective, StageScene
-from storyloom.runtime.intent import PlayerIntent
-from storyloom.runtime.renderer import SceneRenderer
+from storyloom.crews.scene_crew.packet import compose_scene
 from storyloom.memory.checkpoint import SaveService, state_from_save
-from storyloom.world.authority import AuthorityController
-from storyloom.crews.scene_crew.deterministic.gm import AdjudicationResult
-from storyloom.world.state import StateDelta, WorldState
+from storyloom.world.state import (
+    AdjudicationResult,
+    StageDirective,
+    StageScene,
+    StateDelta,
+    WorldState,
+)
 from storyloom.api.schemas import (
     GenerateSceneRequest, GenerationStepUpdate,
     GenerateSceneResponse, ForeshadowingView,
@@ -789,7 +791,7 @@ class StoryEngine:
         if not text:
             text = self._opening_fallback(project, state)
 
-        scene = SceneRenderer().render(
+        scene = compose_scene(
             state,
             state,
             AdjudicationResult(
@@ -830,7 +832,7 @@ class StoryEngine:
             memory=memory,
             extensions=self.extension_registry,
             save_service=self.save_service,
-            renderer=SceneRenderer(prose_fn=self._game_prose_fn),
+            prose_fn=self._game_prose_fn,
             crew=crew,
             rag=rag,
         )
@@ -845,19 +847,15 @@ class StoryEngine:
     ) -> tuple[WorldState, str]:
         """模式切换：先落 checkpoint，再更新模式"""
         state = self.get_game_state(project_id, instance_id)
-        controller = AuthorityController()
-
-        def checkpoint(world: WorldState, label: str) -> str:
-            record = self.save_service.save(
-                project_id, world, StageScene(), label=label, kind="checkpoint"
-            )
-            return record.save_id
-
-        new_state, checkpoint_id = controller.switch_mode(
-            state, target_mode, checkpoint_fn=checkpoint
+        record = self.save_service.save(
+            project_id, state, StageScene(),
+            label=f"switch_to_{target_mode}", kind="checkpoint",
+        )
+        new_state = state.switch_mode(
+            target_mode, checkpoint_id=record.save_id
         )
         self.game_states[(project_id, instance_id)] = new_state
-        return new_state, checkpoint_id
+        return new_state, record.save_id
 
     def create_save(
         self,

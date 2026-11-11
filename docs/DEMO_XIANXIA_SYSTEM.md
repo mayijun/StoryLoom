@@ -257,18 +257,22 @@
 | `state.facts` | 5 条「身份」事实 |
 | `view.facts` | 只看到「玩家」自己的 1 条（A3） |
 | `state.locations` | 本项目 6 个地点；「演武场」出口在 G1 应用地图 mod 后为 杂役院 / 藏经阁 / 后山禁地 |
-| 默认选项 | 8 条（`GameMaster.allowed_actions` 截断上限），自由输入不受限 |
+| 默认选项 | 8 条（`WorldState.allowed_actions` 截断上限），自由输入不受限 |
 
 ### 4.2 回合脚本（确定性）
 
 G1~G14 的请求统一为
 `POST /runtime/v1/<PID>/turn`，`instance_id = "xianxia_demo_001"`，`mode = "game"`，`actor = "玩家"`，
 并且**每一回合**都带 `enabled_extensions: ["map_xianxia", "skill_xianxia"]`（显式锁定期望的扩展组合）。
-文本输入用 `{"intent": {"kind": "text", "payload": {"text": "..."}}}`；跳过用 `{"kind": "skip"}`。
+自由文本直接放在 `text` 字段（如 `{"text": "观察四周"}`）；跳过用 `{"wait": true}`。
 G15 起切换为导演模式，按对应行传 `mode` 与 `overrides`。
 
 > 「裁决」列是库层 `AdjudicationResult.outcome`，HTTP 响应不直接暴露 `error_code` / `available`。
 > 断言以 `status`、`text`、`state`、`quality`、`choices` 为准。
+>
+> ⚠️ 裁决已改为导演 Agent 输出统一 JSON（`SceneCrew.adjudicate`），下表的时间增量、
+> `moved / intercepted / not_found` 等是**参考结果**而非确定性断言：需要配置模型 Key，
+> 并由 `map_xianxia` 提供地点与出口。无 Key 时只走最小兜底叙事（时间 +1、记一条 `freeform` 事件）。
 
 | # | 玩家输入 | 路由 / 裁决 | 预期结果 | 关键断言 |
 |---|---|---|---|---|
@@ -363,14 +367,15 @@ G17 请求体示例：
 
 ## 6. 已知边界（写测试时不要误判）
 
-- **系统面板没有独立机制**：游戏模式的「使用」走 `use` 通用兜底，不会真发奖励；系统感来自作者模式正文与 skill 文风。
-- **不要把「签到」当游戏输入**：「签到」包含「到」，会先命中移动动词，路由成 `move` 并报 `not_found`。测试用「使用系统面板」验证 `use`；这条本身也是一个值得记录的分词缺陷。
+- **系统面板没有独立机制**：游戏模式的「使用」不会真发奖励，系统感来自作者模式正文与 skill 文风。
 - **所有角色初始同场**：`WorldState.from_project` 把所有人放在第一地点，NPC 不会跟随玩家；这是 M0 行为，不是 bug。
 - **导演指令默认不改状态**：要改状态必须走 `overrides`（FactOverride）；纯文本指令只产出叙述。
+- **自由文本不再做动词路由**：「签到」「瞬移到王宫」这类输入整体交给导演 Agent 裁决，
+  由 `map_xianxia` 的出口信息判断可达性；不再有 `move` / `not_found` 的硬编码分词分支。
 - **默认选项上限 8 条**：由 `allowed_actions(...)[:8]` 截断；自由输入不受限制。
-- **回滚没有 HTTP 端点**：`DirectorAuthority.rollback` 在库层与 `tests/test_m0.py` 中验证。
+- **回滚没有 HTTP 端点**：`WorldState.rollback_override` 在库层与 `tests/test_m0.py` 中验证。
 - **扩展来源**：内置扩展由试用模板内嵌提供（`src/storyloom/templates/`），`ExtensionRegistry` 启动时自动注册；需要隔离时用 `enabled_extensions`。
-- **作者模式依赖模型 Key**：无 Key 时场景生成会失败；游戏模式链路是确定性的，可无 Key 跑通。
+- **作者模式依赖模型 Key**：无 Key 时场景生成会失败；游戏模式无 Key 时走最小兜底叙事，可跑通但裁决不具语义。
 
 ---
 

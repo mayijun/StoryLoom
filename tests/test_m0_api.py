@@ -28,6 +28,11 @@ async def _no_crew_agent(self, agent, prompt, timeout_s=60.0):
     return None
 
 
+async def _fake_crew_run(self, agent, prompt, timeout_s=60.0):
+    """伪装统一 JSON Agent：裁决放行、正文为空、无一致性问题。"""
+    return '{"decision": "allow", "prose": "", "choices": [], "issues": []}'
+
+
 @pytest.fixture
 def apis(tmp_path, monkeypatch):
     monkeypatch.setenv(
@@ -40,6 +45,7 @@ def apis(tmp_path, monkeypatch):
 
     from storyloom.api.engine import engine
     from storyloom.api.routers import extensions, game, memory
+    from storyloom.crews.scene_crew.crew import SceneCrew
     from storyloom.flows.turn_flow import TurnLoop
 
     # 游戏回合的叙述润色改为假模型返回，避免真实 LLM 调用导致超时
@@ -48,6 +54,8 @@ def apis(tmp_path, monkeypatch):
     monkeypatch.setattr(engine, "_memory_compress_fn", lambda prompt: "")
     # Crew 叙事增强层整体关闭（一致性 / 意外 / 伏笔 / 导演 / 润色）
     monkeypatch.setattr(TurnLoop, "_run_crew_agent", _no_crew_agent)
+    # 导演裁决与一致性检测走统一 JSON 假模型
+    monkeypatch.setattr(SceneCrew, "run_agent", _fake_crew_run)
     engine._project_runtime.clear()
     engine.memories.clear()
     engine.rags.clear()
@@ -163,35 +171,22 @@ def test_provider_api_keys_injected_in_memory(apis):
     )
 
 
-def test_invalid_intent_returns_422(apis):
-    """非法的结构化 intent 应当返回 422 并提示允许的 kind，而不是 500"""
-    from fastapi import HTTPException
-    from fastapi.testclient import TestClient
-
-    from storyloom.api.main import app
-
-    with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(
-            apis[0].play_turn(
-                "m0api",
-                TurnRequest(
-                    instance_id="i1",
-                    intent={"kind": "use", "target": "签到契"},
-                ),
-            )
+def test_freeform_api_text_does_not_require_intent(apis):
+    """任意原文都可进入游戏，不再经过结构化 intent 或动作白名单。"""
+    result = asyncio.run(
+        apis[0].play_turn(
+            "m0api",
+            TurnRequest(
+                instance_id="i1",
+                text="把签到契折成纸飞机，从窗口放飞",
+            ),
         )
-    assert excinfo.value.status_code == 422
-    assert "kind" in str(excinfo.value.detail)
-
-    with TestClient(app) as client:
-        resp = client.post(
-            "/runtime/v1/m0api/turn",
-            json={"instance_id": "i1", "intent": {"kind": "use"}},
-        )
-        assert resp.status_code == 422, resp.text
-        detail = resp.json()["detail"]
-        assert detail["message"] == "intent 格式不合法"
-        assert "text" in detail["expected"]["kind"]
+    )
+    assert result["status"] == "ok"
+    assert result["state"]["turn"] == 1
+    assert result["state_delta"]["events"][-1]["summary"] == (
+        "把签到契折成纸飞机，从窗口放飞"
+    )
 
 
 def test_runtime_v1_routes_registered(apis):

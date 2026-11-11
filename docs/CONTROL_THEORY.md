@@ -92,7 +92,7 @@
 | 反馈闭环 | 一致性检测 → 重试 | GM 裁决 → 一致性 → 审核 → 重试 |
 | 统计滤波 | 高杠杆 Agent 多次采样 | 关键裁决（攻击/命运收束）多次采样 |
 | 灵敏度分析 | 按 Agent 风险分配校验 | 按 `importance_tier` 分配 tick 频率与审核强度 |
-| 解耦控制 | 结构化中间格式 | `PlayerIntent` / `Fact` / `StageDirective` 三层解耦 |
+| 解耦控制 | 结构化中间格式 | `TurnBoot(text)` / `Fact` / `StageDirective` 三层解耦 |
 | 分层管控 | Orchestrator | 基座 / 扩展 / 导演 / 表现四层 |
 | 人机结合 | `human_review_gate` | 审核不确定、命运收束、关键 GM 裁决转人工 |
 

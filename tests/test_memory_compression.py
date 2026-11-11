@@ -23,8 +23,6 @@ from storyloom.memory import (
 )
 from storyloom.memory.scoring import score_compressed_importance
 from storyloom.models import CharacterAsset, LocationAsset, NovelProject
-from storyloom.runtime.intent import PlayerIntent
-from storyloom.runtime.renderer import SceneRenderer
 
 
 class FakeCompressor:
@@ -300,16 +298,14 @@ def test_turn_working_context_uses_player_action_text():
     loop = TurnLoop(
         project,
         memory=memory,
-        renderer=SceneRenderer(
-            prose_fn=lambda prompt, state: "你环顾四周，山风从石阶上吹过。"
-        ),
+        prose_fn=lambda prompt, state: "你环顾四周，山风从石阶上吹过。",
     )
 
     asyncio.run(
         loop.run(
             TurnBoot(
                 project_id="p_working",
-                intent=PlayerIntent(payload={"text": "观察四周"}),
+                text="观察四周",
                 max_duration_ms=5000,
             )
         )

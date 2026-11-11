@@ -201,13 +201,15 @@
 
 对应 [MVP.md](MVP.md) §2.5 验收 A1–A15 与 §2.3 运行时预留。
 
-### 3.1 验收与运行时 — `test_m0.py`（19）
+### 3.1 验收与运行时 — `test_m0.py`（23）
 
 | 用例 | 对应验收 | 验证点 |
 |---|---|---|
-| `test_a1_attack_king_with_guard_intercepts` | A1 | 护卫拦截：位置 / 情绪 / 时间正确更新 |
-| `test_a2_teleport_rejected_with_available_locations` | A2 | 非法移动拒绝 + 可去地点 + 叙事化替代 |
+| `test_a1_llm_packet_can_express_guard_intercept` | A1 | 导演 Agent JSON 可表达护卫拦截：位置 / 情绪 / 时间更新 |
+| `test_a2_llm_packet_can_reject_teleport_with_available_locations` | A2 | JSON 裁决拒绝非法移动 + `available` 给出可去地点 |
 | `test_a3_fact_visibility_filters_by_known_by` | A3 | `Fact` 按 `known_by` 过滤视图 |
+| `test_a3b_world_context_fog_hides_unseeable` | A3 | 世界简报不泄露不可见信息 |
+| `test_a3b_world_context_gm_sees_everything` | A3 | 裁决视角可读取完整世界简报 |
 | `test_a4_save_load_replay_is_identical` | A4 | 存档→读档→回放完全一致 |
 | `test_a5_demo_manifests_resolve_and_travel_override` | A5 | skill / map mod 生效，旅行耗时覆盖 |
 | `test_a5_bad_manifest_rejected` | A5 | 坏 manifest 被拒绝 |
@@ -219,7 +221,9 @@
 | `test_a13_backfill_scenes_and_chinese_proper_noun` | A13 | 历史场景回填 + 中文专名可检索 |
 | `test_a14_backends_switch_and_degrade` | A14 | fts / vector / hybrid 切换与降级 |
 | `test_a15_secrets_visibility` | A15 | secrets 只对本人可见 |
-| `test_intent_router_parses_player_actions` | M0-3 | 意图路由解析玩家行动 |
+| `test_freeform_text_enters_narrative_pipeline_without_action_parser` | M0-3 | 自由文本无需动作分类即可进入叙事流水线 |
+| `test_agent_suggestions_render_as_free_text_choices` | M0-3 | Agent JSON 的 `choices` 渲染为快捷输入 |
+| `test_plain_prose_remains_compatible` | M0-3 | 纯文本 Agent 输出退化为 `prose` |
 | `test_scene_directives_are_json_serializable` | M0-3 | StageDirective 可 JSON 序列化 |
 | `test_timeout_returns_immediately` | M0-4 | 超时控制立即返回 |
 | `test_quota_rejects_when_no_turns_left` | §2.3-5 | 请求级配额超限拒绝 |

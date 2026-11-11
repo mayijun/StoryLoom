@@ -63,18 +63,18 @@
 | # | 模块 | 交付 | 状态 |
 |---|---|---|---|
 | M0-1 | `world/state.py` | `WorldState` + `Fact` + `CharState` + `LocationState` + `ArcState` · 可序列化 · 支持 `state_delta` 合并 · 世界时间 | ✅ `world/state.py` |
-| M0-2 | `world/game_master.py` | 在场校验 / 移动 + 旅行耗时 / 简单行动判定 · 输出结构化结果 · 地图只做 Tier 1 静态图 · `gap_policy`（`reject \| llm_referee \| human_review`） | ✅ `world/game_master.py` |
-| M0-3 | `runtime/` | `PlayerIntent` · `IntentRouter` · `StageDirective` · `TextAdapter` · 全部可 JSON 序列化 | ✅ `runtime/intent.py` · `directive.py` · `renderer.py` |
-| M0-4 | `flows/turn_flow.py` | 双模式 TurnLoop：`boot → perceive → classify_input → interpret_* → director_frame → actor_round → adjudicate → consistency_check → moderation_gate → render_scene → commit → plan_next` · **async** · retry ≤ N · 四个出口 · **超时控制** | ✅ `flows/turn_flow.py` |
+| M0-2 | `world/state.py` + `crews/scene_crew/crew.py` | 行动裁决由导演 Agent 输出统一 JSON（`allow / reject / direct` + `state_delta`）· 存在性 / 在场性 / 死亡态由运行时前置拦截 | ✅ `crews/scene_crew/crew.py` · `packet.py` |
+| M0-3 | `crews/scene_crew/packet.py` | 自由文本输入 · `StageDirective` · `compose_scene` · 全部可 JSON 序列化 | ✅ `flows/turn_flow.py` · `crews/scene_crew/packet.py` |
+| M0-4 | `flows/turn_flow.py` | 双模式 TurnLoop：`boot → perceive → freeform_input → director_frame → actor_round → adjudicate → consistency_check → moderation_gate → render_scene → commit → plan_next` · **async** · retry ≤ N · 四个出口 · **超时控制** | ✅ `flows/turn_flow.py` |
 | M0-5 | `extensions/` | 统一 manifest · `ExtensionHost` · `skill` 注入 · `mod` 规则注册 · `policy`/`asset` 解析 · **per-instance 隔离** · 状态变更必须走 builtin handler，LLM 工具一律 `read_only` | ✅ `extensions/manifest.py` · `host.py` |
 | M0-6 | `saves` | `SaveService` · 本地快照 + 回放（先文件，M0 后接 DB） | ✅ `saves/service.py`（`data/saves/*.json`） |
 | M0-7 | API（**全部 async**） | `POST /game/{pid}/turn` · `GET /game/{pid}/state` · `POST/GET /game/{pid}/saves` · `POST /extensions/resolve` · `PATCH/GET /api/projects/{pid}/memory` | ✅ `api/routers/game.py` · `extensions.py` · `memory.py` |
 | M0-8 | 前端扩展 | 游戏模式：对话框 / 选项 / backlog / 存档读取 | ✅ `frontend/src/components/GamePanel.vue` |
 | M0-9 | Demo | `src/storyloom/templates/xianxia_system.py`：角色/地点/伏笔/章节 + 内嵌 map mod 与 skill；Web 界面「试用模板」一键生成可删除项目 | ✅ `src/storyloom/templates/` |
-| M0-10 | 测试 | GM 裁决、`Fact` 过滤、存档回放、manifest 校验、导演模式回归、记忆分层 / 压缩 / 降级、三后端检索 | ✅ `tests/test_m0.py` · `test_m0_api.py` · `test_memory_compression.py` |
-| M0-11 | `world/authority.py` | `GameAuthority` / `DirectorAuthority` 策略 · 模式切换 checkpoint · `FactOverride` 审计与回滚 | ✅ `world/authority.py` |
+| M0-10 | 测试 | 导演 Agent 裁决、`Fact` 过滤、存档回放、manifest 校验、导演模式回归、记忆分层 / 压缩 / 降级、三后端检索 | ✅ `tests/test_m0.py` · `test_m0_api.py` · `test_memory_compression.py` |
+| M0-11 | `world/state.py` | `WorldState.switch_mode` / `apply_override` / `rollback_override` · 模式切换 checkpoint · `FactOverride` 审计与回滚 | ✅ `world/state.py` |
 | M0-12 | `narrative/arc.py` | 起承转合节拍 · 张力目标 · 信息预算 | ✅ `narrative/arc.py` |
-| M0-13 | `world/autonomous_agent.py` | NPC 记忆 → 反思 → 计划 → 提案 | ✅ `world/autonomous_agent.py` |
+| M0-13 | `crews/scene_crew/crew.py` | NPC 自主：记忆 → 反思 → 计划 → 提案（EnsembleAgent 输出 `npc_actions`） | ✅ `SceneCrew.npc_actions` |
 | M0-14 | `memory/` 分层记忆 v2 | 核心层 `working → short_term → long_term → canon`（三层策略可配）· 短期超阈值压缩进长期 · 长期低重要性且与活跃伏笔无关时降级到检索库 · 命中后可回温 · `fts` 默认 / `vector` / `hybrid` 同级可选 · 历史场景与资产回填 · 重启恢复 · `secrets` 可见性过滤 | ✅ `memory/` 包 + `config/memory_config.default.yaml`（默认种子）+ 每项目 `memory_configs` |
 
 > M0-13 的 NPC 自主消费 M0-14 的分层记忆；M0-14 可与 W1/W2 并行，但必须在 NPC 自主之前完成。
@@ -155,7 +155,7 @@
 
 | 指标 | 目标 | 实测 |
 |---|---|---|
-| 单 turn P95 延迟 | ≤ 10s（含 LLM 调用） | 0.3ms（确定性链路，不含 LLM） |
+| 单 turn P95 延迟 | ≤ 10s（含 LLM 调用） | 0.3ms（无 LLM 兜底链路） |
 | 冷启动 | ≤ 3s | 1.54s |
 | 单实例并发 turn 数 | ≥ 100 | 100/100 成功 |
 | 记忆检索 P95 | ≤ 200ms（FTS，1k 文档/项目） | 30.3ms |
@@ -163,7 +163,7 @@
 
 ### 2.7 设计纪律
 
-- **确定性优先**：能用代码确定性完成的不交给 LLM；GM、时间、随机、算术、配额都在代码层。
+- **确定性优先**：能用代码确定性完成的不交给 LLM；时间、随机、算术、配额都在代码层，世界裁决由 Agent 输出 JSON 后机械转换。
 - **写状态只走一条路**：状态变更必须走 builtin handler；暴露给 LLM 的工具一律 `read_only`。
 - **游戏模式零交互**：质量下降走兜底叙事并打质量标记，不阻塞玩家。
 - **内化 vs 扩展**：可选的是玩法，不可选的是秩序；玩法进 `mod`，秩序留内核。
@@ -183,9 +183,9 @@
 | 模块 | 结果 | 落点 | 优先级 |
 |---|---|---|---|
 | 世界状态 | `WorldState` / `Fact` / 时间 / 地点 / 角色状态，可序列化 + `state_delta` 合并 | `world/state.py` | P0 ✅ |
-| 裁决 | `GameMaster`：合法性、`state_delta`、`time_delta`、`gap_policy` | `world/game_master.py` | P0 ✅ |
-| 输入 | `PlayerIntent` + `IntentRouter`（游戏 / 导演 / meta / idle） | `runtime/intent.py` | P0 ✅ |
-| 输出 | `StageDirective` + `SceneRenderer` + `TextAdapter`，全部可序列化 | `runtime/directive.py` / `renderer.py` | P0 ✅ |
+| 裁决 | 导演 Agent：`decision` / `state_delta` / `available`，统一 JSON 输出 | `crews/scene_crew/crew.py` | P0 ✅ |
+| 输入 | 原始 `text` + `wait`；推荐选项与手动输入同链，核心不做动作分类 | `flows/turn_flow.py` | P0 ✅ |
+| 输出 | `StageDirective` + `compose_scene` + `TextAdapter`，全部可序列化 | `crews/scene_crew/packet.py` | P0 ✅ |
 | 循环 | `TurnLoop` 回环 + 四个出口 + 上限保护 + async + 超时 | `flows/turn_flow.py` | P0 ✅ |
 | 扩展 | 统一 manifest + `ExtensionHost` + 四类扩展加载 · per-instance | `extensions/manifest.py` / `host.py` | P0 ✅ |
 | 存档 | `SaveService`（文件快照 + 回放） | `saves/service.py` | P0 ✅ |
@@ -194,9 +194,9 @@
 | 记忆隐私 | `visibility` + `include_private_for` | `memory/base.py` / `indexer.py` | P0 ✅ |
 | API | `/game/...` 端点 + `/extensions/resolve` + `/memory`，全部 async | `api/routers/` | P0 ✅ |
 | 前端 | 游戏模式：对话框 / 选项 / backlog / 存档 | `frontend/src/components/GamePanel.vue` | P0 ✅ |
-| 双模式策略 | `AuthorityPolicy` / 模式切换 checkpoint / `FactOverride` 回滚 | `world/authority.py` | P0 ✅ |
+| 双模式策略 | `SceneCrew.adjudicate(mode=)` / 模式切换 checkpoint / `FactOverride` 回滚 | `world/state.py` | P0 ✅ |
 | 叙事节拍 | `ArcState`：起承转合 + 张力目标 + 信息预算 | `narrative/arc.py` | P0 ✅ |
-| NPC 自主 | `AutonomousAgent`：记忆 → 反思 → 计划 → 提案 | `world/autonomous_agent.py` | P0 ✅ |
+| NPC 自主 | `SceneCrew.npc_actions`：记忆 → 反思 → 计划 → 提案 | `crews/scene_crew/crew.py` | P0 ✅ |
 | Demo | 试用模板 | `src/storyloom/templates/xianxia_system.py` | P1 ✅ |
 
 ### 3.2 游戏模式玩法（M1 / M2）

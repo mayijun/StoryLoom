@@ -216,7 +216,7 @@ async function scrollDown() {
   if (logEl.value) logEl.value.scrollTop = logEl.value.scrollHeight
 }
 
-async function play(intent: any, label: string, isIdle = false) {
+async function play(text: string, label: string, isIdle = false) {
   if (busy.value) return
   busy.value = true
   statusText.value = ''
@@ -225,7 +225,8 @@ async function play(intent: any, label: string, isIdle = false) {
     const res = await api.playTurn(props.projectId, {
       instance_id: INSTANCE_ID,
       mode: mode.value,
-      intent,
+      text,
+      wait: isIdle,
       idle_turns: idleTurns.value,
       max_duration_ms: 120000,
     })
@@ -268,26 +269,16 @@ function sendText() {
   const text = input.value.trim()
   if (!text) return
   input.value = ''
-  play({ kind: 'text', payload: { text } }, text)
+  play(text, text)
 }
 
 function choose(option: any) {
-  play(
-    {
-      kind: 'choice',
-      payload: {
-        action: option.action,
-        target: option.target,
-        label: option.label,
-        text: option.text,
-      },
-    },
-    option.label,
-  )
+  const text = String(option.text || option.label || '').trim()
+  if (text) play(text, option.label || text)
 }
 
 function waitTurn() {
-  play({ kind: 'skip' }, '（原地等待）', true)
+  play('', '（原地等待）', true)
 }
 
 async function switchToMode(target: 'game' | 'director'): Promise<boolean> {

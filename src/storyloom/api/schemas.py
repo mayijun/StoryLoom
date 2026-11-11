@@ -424,7 +424,7 @@ class TurnRequest(BaseModel):
     actor: str = "玩家"
     mode: Literal["game", "director"] = "game"
     text: str = ""
-    intent: Optional[Dict[str, Any]] = None
+    wait: bool = False
     world_state: Optional[Dict[str, Any]] = None
 
     max_turns: int = 1

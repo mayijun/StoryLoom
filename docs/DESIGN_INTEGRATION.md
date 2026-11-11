@@ -56,10 +56,10 @@ StoryLoom 是**作者工作台 + 世界运行时**，不是内容市场，也不
 
 | 外部参考的做法 | 为什么值得 | StoryLoom 的落法 |
 |---|---|---|
-| 世界模拟优先，NPC 有自主目标 | 这是「活世界」的核心，也是单 Agent 顺从问题的解药 | 已在 `TurnLoop` / `GameMaster` / `autonomous_tick` 中存在；模板文案强化 NPC 各自有账 |
+| 世界模拟优先，NPC 有自主目标 | 这是「活世界」的核心，也是单 Agent 顺从问题的解药 | 已在 `TurnLoop` 的 `_npc_round` / `SceneCrew.npc_actions` 中存在；模板文案强化 NPC 各自有账 |
 | 选择有真实后果 | 玩家输入不能总被奖励 | 裁决可失败、可被拦截；模板把「签到」改成有代价的契约 |
 | 状态栏 / 世界书 | 让玩家看见世界，而不是只听旁白 | 游戏面板保留「世界状态 / 世界书」，新增节拍、在场角色、标记与关系 |
-| 开放式文本输入 + 选项并存 | 兼顾自由与可玩性 | 已有 `text / choice / skip` 三种意图，不改交互模型 |
+| 开放式文本输入 + 选项并存 | 兼顾自由与可玩性 | 自由文本直接进回合链；选项是 Agent JSON 里的 `choices`，只作快捷输入 |
 | 开场用「世界卡」交代角色与处境 | 降低进入成本 | 模板的 `description + 角色 + 地点 + 章节大纲` 就是世界卡；渲染时注入作品设定 |
 | 明确「世界不会围着你转」 | 管理玩家预期 | 渲染 prompt 与模板 skill 都写明这条约束 |
 
@@ -135,7 +135,7 @@ StoryLoom 是**作者工作台 + 世界运行时**，不是内容市场，也不
 - `src/storyloom/models.py`：`NovelProject` 增加 `description`，让作品简介进入运行时。
 - `src/storyloom/api/engine.py`：构建 `NovelProject` 时从项目 meta 读取 `description`。
 - `src/storyloom/flows/turn_flow.py`：渲染阶段构造世界书上下文（不含 secrets / 真相）。
-- `src/storyloom/runtime/renderer.py`：`prompt_for` 接收 `style / description / world_book`，
+- `src/storyloom/crews/scene_crew/crew.py`：`_prose_prompt` 接收 `style / description / world_book`，
   并加入「世界先于主角、NPC 自主、不替玩家决定」的约束。
 - `frontend/src/components/GamePanel.vue`：世界状态 tab 增加节拍、在场角色、标记、关系；
   对话流增加舞台指令 chip；行动选项增加序号与类型。

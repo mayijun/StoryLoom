@@ -114,25 +114,25 @@ primary 不可用 → fallback 可用 → 用 fallback 并打印降级日志
 
 ## 6. 游戏模式基座（M0）的角色与模型
 
-M0 已落地确定性部分（GM、意图解析、叙事节拍、记忆压缩、Mod v1）；
-以下角色的模型分配按职责预留，后续接入 LLM 时沿用：
+M0 已落地叙事节拍、记忆压缩、Mod v1，以及由 LLM 完成的世界裁决；
+以下角色的模型分配按职责预留，后续接入时沿用：
 
 | 新角色 | 职责 | 是否需要 LLM | 建议模型 |
 |---|---|---|---|
 | NarrativeDirector | 节奏、张力、信息预算、命运预兆 | 是 | DeepSeek V4 Pro（结构化 JSON） |
 | PlayerInterpreter | 玩家自由输入 → 结构化 ActionProposal | 是 | Claude Sonnet / GPT-4o |
-| GameMaster | 行动合法性、状态迁移、时间推进 | **否**（规则引擎） | — |
+| WorldAdjudicator | 行动合法性、状态迁移、时间推进（统一 JSON 裁决） | 是 | DeepSeek V4 Pro（结构化 JSON） |
 | ModerationReviewer | 只审被标记的文本片段 | 是 | 便宜模型 + 结构化输出 |
 | MediaResolver | 意图 → 资源匹配 | **否**（标签检索） | — |
 | CastingAdjudicator | 配额、重名、必要性检查 | 部分 | 规则优先，LLM 只做必要性判断 |
 | FateManager | 压力计算、倒数器、收束触发 | **否** | 确定性算法 + seed |
-| AutonomousAgent | NPC 记忆 → 反思 → 计划 → 提案 | 是 | 按 `importance_tier`：关键角色用中档模型，群演合并一次调用 |
+| EnsembleAgent | NPC 记忆 → 反思 → 计划 → 提案 | 是 | 按 `importance_tier`：关键角色用中档模型，群演合并一次调用 |
 | MemoryCompressor | 批量压缩短期记忆 → 长期摘要 | 是 | DeepSeek-Flash / Ollama（低温、JSON） |
 | FactOverrideParser | 导演改写事实 → 结构化 `FactOverride` | 是 | DeepSeek V4 Pro（结构化 JSON） |
 | Mod v1 | YAML 规则与钩子注册 | **否** | — |
 
-原则不变：**能用代码确定性完成的，不交给 LLM**。GM、时间、随机、算术、
-配额都属于代码层；LLM 只负责理解、提案、叙述与判断。
+原则不变：**能用代码确定性完成的，不交给 LLM**。时间、随机、算术、
+配额都属于代码层；LLM 只负责理解、裁决、提案、叙述与判断。
 
 成本控制沿用 `detail_level`：
 
@@ -140,5 +140,5 @@ M0 已落地确定性部分（GM、意图解析、叙事节拍、记忆压缩、
 - `L2`：中档模型；
 - `L3 / L4`：便宜模型或模板，群演不单独调用。
 
-M0 的实际调用链为 `interpret_* → director_frame → actor_round → render_scene`；
-GM、时间、随机、配额全部确定性执行，非在场角色不 tick。
+M0 的实际调用链为 `perceive → director_frame → actor_round → _npc_round → adjudicate → render_scene`；
+裁决由导演 Agent 输出 JSON，时间、随机、配额全部确定性执行，非在场角色不 tick。

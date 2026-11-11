@@ -6,12 +6,14 @@ This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 
 设计纪律：
 - Runtime 无状态：WorldState 不落 DB，每回合由请求传入、返回 state_delta；
-- 只有 GameMaster 可以写 Fact；角色只能看到 view(agent_id)；
+- 世界裁决由导演 Agent 产出，Fact 只能经 WorldState 写入；
+- 角色只能看到 view(agent_id)；
 - 所有结构可 JSON 序列化。
 """
 
 import uuid
-from typing import Any, Dict, List, Literal, Optional, Set
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -400,6 +402,111 @@ class WorldState(BaseModel):
 
         return actions[:4]
 
+    # ---------------- 导演改写与模式切换 ----------------
+
+    def apply_override(
+        self, override: "FactOverride", snapshot_id: str = ""
+    ) -> Tuple["WorldState", "FactOverride"]:
+        """执行导演改写：自动记录 before / after，并标记连带复核。"""
+        new = self.model_copy(deep=True)
+        before = new._read_field(override.target, override.field)
+        record = override.model_copy(
+            update={
+                "before": before,
+                "base_snapshot_id": snapshot_id,
+            }
+        )
+        new._write_field(record.target, record.field, record.after)
+        new.overrides.append(record.model_dump(mode="json"))
+        new.flags[f"needs_review:{record.target}"] = True
+        for promise in new.pending_promises.values():
+            if record.target in promise.description:
+                promise.needs_review = True
+        new.events.append(
+            new.touch(
+                "override",
+                "director",
+                f"导演改写 {record.target}.{record.field}",
+                before=before,
+                after=record.after,
+                reason=record.reason,
+            )
+        )
+        return new, record
+
+    def rollback_override(self, override_id: str) -> "WorldState":
+        """回到 override 记录中的 before 值（只回滚字段，不重放后续）。"""
+        record = next(
+            (
+                item for item in self.overrides
+                if item.get("override_id") == override_id
+            ),
+            None,
+        )
+        if record is None:
+            raise KeyError(f"未找到改写记录: {override_id}")
+        new = self.model_copy(deep=True)
+        new._write_field(
+            record["target"], record["field"], record.get("before")
+        )
+        for item in new.overrides:
+            if item.get("override_id") == override_id:
+                item["rolled_back"] = True
+        new.events.append(
+            new.touch(
+                "rollback",
+                "director",
+                f"回滚改写 {record['target']}.{record['field']}",
+                override_id=override_id,
+            )
+        )
+        return new
+
+    def switch_mode(
+        self, target_mode: str, checkpoint_id: str = ""
+    ) -> "WorldState":
+        """切换模式：更新模式并强制下回合重走导演帧。"""
+        if target_mode not in ("game", "director"):
+            raise ValueError(f"未知模式: {target_mode}")
+        new = self.model_copy(deep=True)
+        new.mode = target_mode  # type: ignore[assignment]
+        new.flags["force_director_frame"] = True
+        new.flags["last_checkpoint_id"] = checkpoint_id
+        new.events.append(
+            new.touch(
+                "mode_switch",
+                "system",
+                f"模式切换为 {target_mode}",
+                checkpoint_id=checkpoint_id,
+            )
+        )
+        return new
+
+    # ---------------- 字段读写 ----------------
+
+    def _read_field(self, target: str, field: str) -> Any:
+        if target in self.characters:
+            return getattr(self.characters[target], field, None)
+        if target in self.locations:
+            return getattr(self.locations[target], field, None)
+        if target in ("world", "世界"):
+            return self.flags.get(field)
+        return None
+
+    def _write_field(self, target: str, field: str, value: Any) -> None:
+        if target in self.characters:
+            char = self.characters[target]
+            if field in CharState.model_fields:
+                setattr(char, field, value)
+            return
+        if target in self.locations:
+            loc = self.locations[target]
+            if field in LocationState.model_fields:
+                setattr(loc, field, value)
+            return
+        if target in ("world", "世界"):
+            self.flags[field] = value
+
 
 # ============================================================
 # Layer 0 公共协议：裁决与渲染数据类
@@ -407,6 +514,24 @@ class WorldState(BaseModel):
 # 统一放 world/state.py 让任何层都能安全 import，
 # 避免 runtime 反向 import crews、memory 反向 import runtime。
 # ============================================================
+
+
+class FactOverride(BaseModel):
+    """导演改写事实的结构化留痕。"""
+
+    override_id: str = Field(
+        default_factory=lambda: f"ovr_{uuid.uuid4().hex[:8]}"
+    )
+    target: str
+    field: str
+    before: Any = None
+    after: Any = None
+    reason: str = ""
+    base_snapshot_id: str = ""
+    created_at: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+    rolled_back: bool = False
 
 
 class ActionProposal(BaseModel):

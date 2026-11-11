@@ -90,7 +90,8 @@ describe('GamePanel', () => {
     expect(apiMock.playTurn).toHaveBeenCalledWith('p1', expect.objectContaining({
       instance_id: 'ui',
       mode: 'game',
-      intent: { kind: 'text', payload: { text: '我拔剑' } },
+      text: '我拔剑',
+      wait: false,
     }))
     const entries = wrapper.findAll('.entry')
     expect(entries[entries.length - 2].text()).toContain('我拔剑')
@@ -113,17 +114,12 @@ describe('GamePanel', () => {
     await flushPromises()
 
     expect(apiMock.playTurn).toHaveBeenLastCalledWith('p1', expect.objectContaining({
-      intent: {
-        kind: 'choice',
-        payload: expect.objectContaining({
-          label: '问老板账单是谁留下的',
-          text: '问老板账单是谁留下的',
-        }),
-      },
+      text: '问老板账单是谁留下的',
+      wait: false,
     }))
   })
 
-  it('等待回合：intent.kind 为 skip 且 idleTurns 自增', async () => {
+  it('等待回合：wait 为 true 且 idleTurns 自增', async () => {
     apiMock.playTurn.mockResolvedValue(playResponse({ text: '你原地等待。' }))
     const wrapper = mountPanel()
     await flushPromises()
@@ -133,7 +129,8 @@ describe('GamePanel', () => {
     await flushPromises()
 
     expect(apiMock.playTurn).toHaveBeenCalledWith('p1', expect.objectContaining({
-      intent: { kind: 'skip' },
+      text: '',
+      wait: true,
       idle_turns: 0,
     }))
     const kvs = wrapper.findAll('.kv')

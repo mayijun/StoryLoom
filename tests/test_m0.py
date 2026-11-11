@@ -10,7 +10,7 @@ import pytest
 from storyloom.db import CrewConfigRepository, reset_engines, reset_repositories
 from storyloom.extensions.host import ExtensionHost, ExtensionRegistry
 from storyloom.extensions.manifest import ManifestError, discover, validate_manifest
-from storyloom.flows.turn_flow import TurnBoot, TurnLoop, parse_narrative_output
+from storyloom.flows.turn_flow import TurnBoot, TurnLoop
 from storyloom.memory import (
     LayeredMemory,
     LexicalBackend,
@@ -18,17 +18,21 @@ from storyloom.memory import (
     VectorBackend,
 )
 from storyloom.models import CharacterAsset, LocationAsset, NovelProject
-from storyloom.runtime.intent import IntentRouter, PlayerIntent
-from storyloom.runtime.renderer import SceneRenderer
-from storyloom.memory.checkpoint import SaveService, state_from_save
-from storyloom.world.authority import (
-    AuthorityController,
-    DirectorAuthority,
-    FactOverride,
-    GameAuthority,
+from storyloom.crews.scene_crew.packet import (
+    AgentPacket,
+    compose_scene,
+    packet_to_result,
+    parse_agent_packet,
 )
-from storyloom.crews.scene_crew.deterministic.gm import ActionProposal, GameMaster
-from storyloom.world.state import Fact, WorldState
+from storyloom.memory.checkpoint import SaveService, state_from_save
+from storyloom.world.state import (
+    ActionProposal,
+    Fact,
+    FactOverride,
+    StageDirective,
+    StageScene,
+    WorldState,
+)
 
 
 @pytest.fixture
@@ -96,37 +100,54 @@ def world(project):
     return state
 
 
-# ---------------- A1 / A2：GM 裁决 ----------------
+# ---------------- A1 / A2：LLM 裁决 JSON ----------------
+# 裁决已并入导演 Agent：LLM 输出 decision / state / available，
+# packet_to_result 把它转成可执行的 AdjudicationResult。
 
 
-def test_a1_attack_king_with_guard_intercepts(world):
+def test_a1_llm_packet_can_express_guard_intercept(world):
     world.characters["玩家"].location = "王宫"
     world.characters["国王"].location = "王宫"
     world.characters["侍卫长"].location = "王宫"
     before_time = world.time_minutes
 
-    gm = GameMaster()
-    result = gm.adjudicate(
-        ActionProposal(actor="玩家", kind="attack", target="国王"), world
+    packet = parse_agent_packet(
+        """{
+          "decision": "reject",
+          "narrative": "你刚拔出武器，侍卫长已经挡在国王身前。你被制服并押往地牢。",
+          "reason": "护卫拦截",
+          "state": {
+            "time_delta": 5,
+            "characters": {"玩家": {"location": "地牢", "emotion": "恐惧"}},
+            "events": [
+              {"kind": "attack", "actor": "玩家", "summary": "玩家袭击国王，被侍卫长制止"}
+            ]
+          }
+        }"""
     )
+    result = packet_to_result(packet)
     after = world.apply_delta(result.state_delta)
 
     assert result.success is False
-    assert result.outcome == "intercepted"
     assert after.characters["玩家"].location == "地牢"
     assert after.characters["玩家"].emotion == "恐惧"
     assert after.time_minutes == before_time + 5
     assert any(e.kind == "attack" for e in after.events)
 
 
-def test_a2_teleport_rejected_with_available_locations(world):
+def test_a2_llm_packet_can_reject_teleport_with_available_locations(world):
     world.characters["玩家"].location = "雾港旅店"
-    gm = GameMaster()
-    result = gm.adjudicate(
-        ActionProposal(actor="玩家", kind="move", target="王宫"), world
+
+    packet = parse_agent_packet(
+        """{
+          "decision": "reject",
+          "narrative": "你无法凭空出现在王宫。",
+          "reason": "不可达",
+          "available": ["码头"]
+        }"""
     )
+    result = packet_to_result(packet)
     assert result.success is False
-    assert result.error_code == "not_found"
     assert "码头" in result.available
     assert "王宫" not in result.available
 
@@ -217,8 +238,6 @@ def test_a3b_world_context_gm_sees_everything(project, world):
 
 
 def test_a4_save_load_replay_is_identical(tmp_path, world):
-    from storyloom.runtime.directive import StageScene, StageDirective
-
     scene = StageScene(
         directives=[StageDirective(kind="say", params={"text": "雾从海面压下来。"})],
         text="雾从海面压下来。",
@@ -254,13 +273,8 @@ def test_a5_demo_manifests_resolve_and_travel_override(world):
     mapped = host.apply_map(world)
     assert "演武场" in mapped.locations
     assert mapped.locations["演武场"].exits["杂役院"] == 8
-
-    gm = GameMaster(travel_overrides=host.travel_overrides())
-    mapped.characters["玩家"].location = "演武场"
-    result = gm.adjudicate(
-        ActionProposal(actor="玩家", kind="move", target="杂役院"), mapped
-    )
-    assert result.state_delta.time_delta == 8
+    # 旅行耗时仍由 mod 注入世界；是否移动由导演 Agent 裁决。
+    assert host.travel_overrides()["演武场->杂役院"] == 8
 
 
 def test_a5_bad_manifest_rejected():
@@ -296,20 +310,19 @@ def test_a5_bad_manifest_rejected():
 
 
 def test_a8_override_audit_and_rollback(world):
-    authority = DirectorAuthority()
     override = FactOverride(
         target="国王",
         field="emotion",
         after="恐惧",
         reason="剧情需要",
     )
-    new_world, record = authority.apply_override(override, world, snapshot_id="snap_1")
+    new_world, record = world.apply_override(override, snapshot_id="snap_1")
     assert new_world.characters["国王"].emotion == "恐惧"
     assert record.before == "平静"
     assert new_world.overrides[0]["after"] == "恐惧"
     assert new_world.flags["needs_review:国王"] is True
 
-    rolled = authority.rollback(record.override_id, new_world)
+    rolled = new_world.rollback_override(record.override_id)
     assert rolled.characters["国王"].emotion == "平静"
     assert rolled.overrides[0]["rolled_back"] is True
 
@@ -328,7 +341,7 @@ def test_a9_idle_three_turns_triggers_npc_event(project, world):
             TurnBoot(
                 project_id="world_demo",
                 world_state=world,
-                intent=PlayerIntent(kind="skip"),
+                wait=True,
                 idle_turns=3,
             )
         )
@@ -342,21 +355,11 @@ def test_a9_idle_three_turns_triggers_npc_event(project, world):
 
 
 def test_a10_mode_switch_writes_checkpoint(world):
-    saved = {}
-
-    def checkpoint(state, label):
-        saved["state"] = state
-        saved["label"] = label
-        return "save_switch"
-
-    controller = AuthorityController()
-    new_state, checkpoint_id = controller.switch_mode(
-        world, "director", checkpoint_fn=checkpoint
-    )
-    assert checkpoint_id == "save_switch"
-    assert saved["state"].mode == "game"
+    new_state = world.switch_mode("director", checkpoint_id="save_switch")
     assert new_state.mode == "director"
     assert new_state.flags["force_director_frame"] is True
+    assert new_state.flags["last_checkpoint_id"] == "save_switch"
+    assert world.mode == "game"  # 原状态不被原地修改
 
 
 # ---------------- A11 / A12 / A13 / A14 / A15：分层记忆 ----------------
@@ -442,33 +445,38 @@ def test_a15_secrets_visibility(repo, project):
     assert "私生子" not in memory.prompt_block(viewer="国王")
 
 
-# ---------------- 意图路由与渲染 ----------------
+# ---------------- 自由输入与渲染 ----------------
 
 
-def test_intent_router_parses_player_actions(world):
-    router = IntentRouter()
-    move = router.route(
-        PlayerIntent(payload={"text": "我前往码头"}), world
+def test_freeform_text_enters_narrative_pipeline_without_action_parser(
+    project, world
+):
+    action = "把账单折成纸船，放进街角的积水里"
+    loop = TurnLoop(project)
+    result = asyncio.run(
+        loop.run(
+            TurnBoot(
+                project_id="world_demo",
+                world_state=world,
+                text=action,
+            )
+        )
     )
-    assert move.mode == "player_action"
-    assert move.primary().kind == "move"
-    assert move.primary().target == "码头"
 
-    attack = router.route(
-        PlayerIntent(payload={"text": "拔剑刺向国王"}), world
+    assert result.status == "ok"
+    assert result.state.time_minutes == world.time_minutes + 1
+    assert result.state_delta.events[-1].summary == action
+    adjudication = next(
+        item for item in result.log["trace"] if item["stage"] == "adjudicate"
     )
-    assert attack.primary().kind == "attack"
-    assert attack.primary().target == "国王"
-
-    idle = router.route(PlayerIntent(kind="skip"), world)
-    assert idle.mode == "idle"
+    assert adjudication["results"] == ["narrated"]
 
 
-def test_agent_suggestions_render_and_route_as_free_text(world):
-    narrative = parse_narrative_output(
+def test_agent_suggestions_render_as_free_text_choices(world):
+    packet = parse_agent_packet(
         """{
           "prose": "旅店老板把一张潮湿的账单推到你面前。",
-          "suggested_actions": [
+          "choices": [
             {"text": "和旅店老板聊聊账单上的数字", "hint": "可能获得新线索"},
             {"text": "观察账房的进出的人"},
             {"text": "把账单悄悄收进衣袋"},
@@ -476,61 +484,40 @@ def test_agent_suggestions_render_and_route_as_free_text(world):
           ]
         }"""
     )
-    assert narrative.prose == "旅店老板把一张潮湿的账单推到你面前。"
-    assert len(narrative.suggested_actions) == 3
+    assert packet.prose == "旅店老板把一张潮湿的账单推到你面前。"
+    assert len(packet.choices) == 3
 
-    adjudication = GameMaster().adjudicate(
-        ActionProposal(actor="玩家", kind="observe"), world
+    adjudication = packet_to_result(
+        parse_agent_packet('{"decision": "allow", "narrative": "你环顾四周。"}')
     )
     after = world.apply_delta(adjudication.state_delta)
-    scene = SceneRenderer().render(
-        world,
-        after,
-        adjudication,
-        prose=narrative.prose,
-        suggested_actions=[
-            action.model_dump() for action in narrative.suggested_actions
-        ],
-    )
+    scene = compose_scene(world, after, adjudication, packet=packet)
 
     assert scene.choices[0]["source"] == "agent"
     assert "action" not in scene.choices[0]
-    interpreted = IntentRouter().route(
-        PlayerIntent(
-            kind="choice",
-            payload={
-                "label": scene.choices[0]["label"],
-                "text": scene.choices[0]["text"],
-            },
-        ),
-        after,
-    )
-    assert interpreted.primary().kind == "talk"
-    assert interpreted.primary().target == "旅店老板"
-    assert interpreted.raw == scene.choices[0]["text"]
+    assert scene.choices[0]["text"] == "和旅店老板聊聊账单上的数字"
 
 
 def test_plain_prose_remains_compatible(world):
-    narrative = parse_narrative_output("门外的脚步声停了。")
-    assert narrative.prose == "门外的脚步声停了。"
-    assert narrative.suggested_actions == []
+    packet = parse_agent_packet("门外的脚步声停了。")
+    assert packet.prose == "门外的脚步声停了。"
+    assert packet.choices == []
 
-    adjudication = GameMaster().adjudicate(
-        ActionProposal(actor="玩家", kind="observe"), world
+    adjudication = packet_to_result(
+        parse_agent_packet('{"decision": "allow", "narrative": "门外的脚步声停了。"}')
     )
-    scene = SceneRenderer().render(world, world, adjudication)
+    scene = compose_scene(world, world, adjudication, packet=packet)
     assert scene.choices
     assert all(choice["source"] == "rules" for choice in scene.choices)
 
 
 def test_scene_directives_are_json_serializable(world):
     world.characters["玩家"].location = "王宫"
-    gm = GameMaster()
-    result = gm.adjudicate(
-        ActionProposal(actor="玩家", kind="observe"), world
+    result = packet_to_result(
+        parse_agent_packet('{"decision": "allow", "narrative": "你环顾四周。"}')
     )
     after = world.apply_delta(result.state_delta)
-    scene = SceneRenderer().render(world, after, result)
+    scene = compose_scene(world, after, result)
     payload = scene.model_dump(mode="json")
     assert payload["directives"]
     assert any(d["kind"] == "choice" for d in payload["directives"])
@@ -547,13 +534,13 @@ def test_timeout_returns_immediately(project, world):
         time.sleep(0.3)
         return "慢"
 
-    loop = TurnLoop(project, renderer=SceneRenderer(prose_fn=slow_prose))
+    loop = TurnLoop(project, prose_fn=slow_prose)
     result = asyncio.run(
         loop.run(
             TurnBoot(
                 project_id="world_demo",
                 world_state=world,
-                intent=PlayerIntent(payload={"text": "观察四周"}),
+                text="观察四周",
                 max_duration_ms=50,
             )
         )
@@ -587,7 +574,7 @@ def test_director_mode_turn_runs_without_touching_game_entry(project, world):
                 mode="director",
                 world_state=world,
                 goal="让雾更浓，压住码头的灯光。",
-                intent=PlayerIntent(payload={"text": "让雾更浓"}),
+                text="让雾更浓",
             )
         )
     )

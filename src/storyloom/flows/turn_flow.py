@@ -4,7 +4,7 @@ This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 
 双模式 TurnLoop：游戏 / 扮演与导演模式共用同一套世界状态与 SceneCrew 多 Agent 链。
 
-    boot → perceive → classify_input → interpret_*
+    boot → perceive → freeform_input
          → director_frame → actor_round → adjudicate
          → [scene_crew_narrative]  ← SceneCrew: Surprise + Foreshadow + Director +
          → consistency_check           Consistency + Prose
@@ -24,40 +24,32 @@ SceneCrew 策略（避免每回合都跑全套 agent 的成本）：
 """
 
 import asyncio
-import json
 import time
 import uuid
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
 from storyloom.crews.scene_crew.crew import SceneCrew
+from storyloom.crews.scene_crew.packet import (
+    AgentPacket,
+    compose_scene,
+    parse_agent_packet,
+)
 from storyloom.extensions.host import ExtensionHost, ExtensionRegistry
+from storyloom.memory.checkpoint import SaveService
 from storyloom.memory.core import LayeredMemory
 from storyloom.memory.legacy import SimpleRAGMemory
 from storyloom.models import NovelProject
 from storyloom.narrative.arc import ArcDirector, DirectorFrame
-from storyloom.runtime.directive import StageScene
-from storyloom.runtime.intent import (
-    InterpretedIntent,
-    IntentRouter,
-    PlayerIntent,
-)
-from storyloom.runtime.renderer import SceneRenderer
-from storyloom.memory.checkpoint import SaveService
-from storyloom.world.autonomous_agent import autonomous_tick
-from storyloom.world.authority import (
-    AuthorityController,
-    DirectorAuthority,
-    FactOverride,
-    GameAuthority,
-)
-from storyloom.crews.scene_crew.deterministic.gm import (
+from storyloom.world.state import (
     ActionProposal,
     AdjudicationResult,
-    GameMaster,
+    FactOverride,
+    StageScene,
+    StateDelta,
+    WorldState,
 )
-from storyloom.world.state import StateDelta, WorldState
 
 
 class TurnBoot(BaseModel):
@@ -67,7 +59,8 @@ class TurnBoot(BaseModel):
     instance_id: str = "default"
     actor: str = "玩家"
     mode: Literal["game", "director"] = "game"
-    intent: PlayerIntent = Field(default_factory=PlayerIntent)
+    text: str = ""
+    wait: bool = False
     world_state: Optional[WorldState] = None
 
     max_turns: int = 1
@@ -83,20 +76,6 @@ class TurnBoot(BaseModel):
     goal: str = ""
     # 仅存在运行时内存，不落盘、不写环境变量、不进入日志
     provider_api_keys: Dict[str, str] = Field(default_factory=dict, exclude=True)
-
-
-class SuggestedAction(BaseModel):
-    """叙事 Agent 给出的自然语言行动建议，不是可执行动作白名单。"""
-
-    text: str
-    hint: str = ""
-
-
-class NarrativeOutput(BaseModel):
-    """ProseAgent 的游戏回合结构化输出。"""
-
-    prose: str = ""
-    suggested_actions: List[SuggestedAction] = Field(default_factory=list)
 
 
 class TurnResult(BaseModel):
@@ -125,49 +104,9 @@ class TurnResult(BaseModel):
     log: Dict[str, Any] = Field(default_factory=dict)
 
 
-def parse_narrative_output(raw: str) -> NarrativeOutput:
-    """解析游戏叙事 JSON；旧版纯文本输出仍可直接作为正文使用。"""
-    text = raw.strip()
-    if not text:
-        return NarrativeOutput()
-
-    try:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start < 0 or end < start:
-            raise ValueError("输出中未找到 JSON 对象")
-        data = json.loads(text[start:end + 1])
-        if not isinstance(data, dict):
-            raise ValueError("叙事输出必须是 JSON 对象")
-        prose = str(data.get("prose") or "").strip()
-        if not prose:
-            raise ValueError("叙事输出缺少 prose")
-    except (ValueError, TypeError, json.JSONDecodeError):
-        return NarrativeOutput(prose=text)
-
-    actions: List[SuggestedAction] = []
-    seen = set()
-    raw_actions = data.get("suggested_actions") or []
-    if not isinstance(raw_actions, list):
-        raw_actions = []
-    for item in raw_actions:
-        if isinstance(item, str):
-            action_text = item.strip()
-            hint = ""
-        elif isinstance(item, dict):
-            action_text = str(
-                item.get("text") or item.get("label") or ""
-            ).strip()
-            hint = str(item.get("hint") or "").strip()
-        else:
-            continue
-        if not action_text or action_text in seen:
-            continue
-        seen.add(action_text)
-        actions.append(SuggestedAction(text=action_text, hint=hint))
-        if len(actions) == 4:
-            break
-    return NarrativeOutput(prose=prose, suggested_actions=actions)
+def parse_narrative_output(raw: str) -> AgentPacket:
+    """兼容旧名：解析统一 Agent JSON 信封。"""
+    return parse_agent_packet(raw)
 
 
 def merge_deltas(target: StateDelta, patch: StateDelta) -> StateDelta:
@@ -201,8 +140,7 @@ class TurnLoop:
         memory: Optional[LayeredMemory] = None,
         extensions: Optional[ExtensionRegistry] = None,
         save_service: Optional[SaveService] = None,
-        renderer: Optional[SceneRenderer] = None,
-        gap_policy: str = "reject",
+        prose_fn: Optional[Callable[[str, WorldState], str]] = None,
         crew: Optional[SceneCrew] = None,
         rag: Optional[SimpleRAGMemory] = None,
     ):
@@ -211,9 +149,8 @@ class TurnLoop:
         self.memory = memory
         self.extensions = extensions
         self.save_service = save_service
-        self.renderer = renderer or SceneRenderer()
-        self.gap_policy = gap_policy
-        self.router = IntentRouter()
+        # crew 不可用时的确定性正文兜底（engine 注入模型润色函数）
+        self.prose_fn = prose_fn
         self.arc_director = ArcDirector()
         self._rrf_counter = 0
         self.crew = crew
@@ -292,12 +229,17 @@ class TurnLoop:
         state = host.apply_map(state)
 
         if boot.switch_mode_to:
-            controller = self._authority(host)
-            state, checkpoint_id = controller.switch_mode(
-                state,
-                boot.switch_mode_to,
-                checkpoint_fn=self._checkpoint_fn(),
-                label=f"switch_to_{boot.switch_mode_to}",
+            checkpoint_id = ""
+            if self.save_service is not None:
+                checkpoint_id = self.save_service.save(
+                    self.project.project_id,
+                    state,
+                    StageScene(),
+                    label=f"switch_to_{boot.switch_mode_to}",
+                    kind="checkpoint",
+                ).save_id
+            state = state.switch_mode(
+                boot.switch_mode_to, checkpoint_id=checkpoint_id
             )
             trace.append(
                 {"stage": "switch_mode", "checkpoint": checkpoint_id}
@@ -311,23 +253,6 @@ class TurnLoop:
             boot.instance_id, enabled=boot.enabled_extensions
         )
 
-    def _authority(self, host: ExtensionHost) -> AuthorityController:
-        gm = GameMaster(
-            gap_policy=self.gap_policy,  # type: ignore[arg-type]
-            travel_overrides=host.travel_overrides(),
-        )
-        return AuthorityController(GameAuthority(gm), DirectorAuthority(gm))
-
-    def _checkpoint_fn(self):
-        def checkpoint(world: WorldState, label: str) -> str:
-            if self.save_service is None:
-                return ""
-            record = self.save_service.save(
-                self.project.project_id, world, StageScene(), label=label
-            )
-            return record.save_id
-        return checkpoint
-
     # ---------------- 主流水线 ----------------
 
     async def _pipeline(
@@ -340,7 +265,6 @@ class TurnLoop:
         started: float,
     ) -> TurnResult:
         host = self._host(boot)
-        controller = self._authority(host)
         actor = boot.actor
         before = state
 
@@ -348,35 +272,38 @@ class TurnLoop:
         actor_state = state.characters.get(actor)
         location = actor_state.location if actor_state else ""
         present = state.characters_at(location)
-        action_text = (
-            str(boot.intent.payload.get("text", "")).strip()
-            if isinstance(boot.intent.payload, dict)
-            else ""
-        )
+        action_text = boot.text.strip()
         if self.memory is not None:
             self.memory.configure_working(
                 location=location,
                 present_characters=present,
                 scene_brief=action_text,
-                # 意图应展示玩家实际输入，而不是 "text" / "choice" 这类总线类型
-                intent=action_text or boot.intent.kind,
+                intent=action_text or ("等待" if boot.wait else ""),
                 time=state.format_time(),
             )
         trace.append({"stage": "perceive", "location": location})
 
-        # 2-3. classify + interpret
-        interpreted = self.router.route(boot.intent, state, actor)
+        # 2-3. 自由文本直接包装为行动，不做关键词分类或动作白名单校验。
+        proposals: List[ActionProposal] = []
+        if action_text:
+            proposals.append(
+                ActionProposal(
+                    actor=actor,
+                    kind="other",
+                    detail=action_text,
+                    source="player",
+                )
+            )
         trace.append(
             {
-                "stage": "classify_input",
-                "mode": interpreted.mode,
-                "proposals": [p.kind for p in interpreted.proposals],
+                "stage": "freeform_input",
+                "chars": len(action_text),
+                "wait": boot.wait,
             }
         )
 
         overrides_applied: List[FactOverride] = []
         if boot.mode == "director" and boot.overrides:
-            authority = controller.director
             for override in boot.overrides:
                 snapshot_id = ""
                 if self.save_service is not None:
@@ -385,8 +312,8 @@ class TurnLoop:
                         label=f"before_override_{override.override_id}",
                         kind="checkpoint",
                     ).save_id
-                state, record = authority.apply_override(
-                    override, state, snapshot_id=snapshot_id
+                state, record = state.apply_override(
+                    override, snapshot_id=snapshot_id
                 )
                 overrides_applied.append(record)
             trace.append(
@@ -395,7 +322,7 @@ class TurnLoop:
 
         # 4. director_frame
         frame = self.arc_director.frame(
-            state, goal=boot.goal or interpreted.scene_goal
+            state, goal=boot.goal or action_text
         )
         if state.flags.get("force_director_frame"):
             state = state.model_copy(deep=True)
@@ -403,11 +330,10 @@ class TurnLoop:
         trace.append({"stage": "director_frame", "phase": frame.phase})
 
         # 5. actor_round
-        proposals = list(interpreted.proposals)
         npc_actors: List[str] = []
         if not proposals and boot.idle_turns >= 3:
-            npc_proposals, npc_actors = autonomous_tick(
-                state, memory=self.memory, idle_turns=boot.idle_turns
+            npc_proposals, npc_actors = await self._npc_round(
+                state, boot.idle_turns
             )
             proposals.extend(npc_proposals)
         trace.append(
@@ -426,14 +352,18 @@ class TurnLoop:
         issues: List[str] = []
 
         while True:
-            working_state, combined, results = self._adjudicate(
-                proposals, state, controller, actor, frame
+            working_state, combined, results = await self._adjudicate(
+                proposals, state, actor, frame, boot.mode
             )
             issues = self._consistency_check(before, working_state)
-            # SceneCrew LLM 级一致性检测（有 crew 时叠加）
+            # ConsistencyAgent 语义级检测（有 crew 时叠加）
             if self.crew is not None:
-                crew_issues = await self._crew_consistency_check(
-                    working_state, before, results, actor,
+                crew_issues = await self.crew.check_consistency(
+                    self.project,
+                    working_state,
+                    before,
+                    results,
+                    actor,
                     director_mode=(boot.mode == "director"),
                 )
                 issues.extend(crew_issues)
@@ -454,7 +384,7 @@ class TurnLoop:
         )
 
         # 7.5 SceneCrew 叙事增强：Surprise + Foreshadow + Director + Prose（可选）
-        crew_narrative = NarrativeOutput()
+        crew_narrative = AgentPacket()
         crew_trace: Dict[str, Any] = {}
         if self.crew is not None and any(r.success for r in results):
             self._crew_turn_counter += 1
@@ -483,8 +413,8 @@ class TurnLoop:
             memory_context = "\n".join(
                 part for part in (core, retrieved) if part
             )
-        # crew 叙事文本作为可选的 prose 输入，优先于 renderer.prose_fn
-        scene = await self._render_with_crew_prose(
+        # crew 叙事文本作为可选的 prose 输入，优先于 prose_fn 兜底
+        scene = await self._render_scene(
             before, working_state, primary, actor,
             memory_context, crew_narrative, boot.mode,
         )
@@ -518,7 +448,7 @@ class TurnLoop:
 
         # 11. plan_next
         status, exit_reason = self._plan_next(
-            interpreted, results, issues, working_state
+            results, issues, working_state
         )
         quality = self._quality(results, issues, retry_count)
 
@@ -632,29 +562,86 @@ class TurnLoop:
 
         return "\n".join(lines)
 
-    def _adjudicate(
+    async def _adjudicate(
         self,
         proposals: List[ActionProposal],
         state: WorldState,
-        controller: AuthorityController,
         actor: str,
         frame: DirectorFrame,
+        mode: str,
     ) -> Tuple[WorldState, StateDelta, List[AdjudicationResult]]:
         working = state
         combined = StateDelta()
         results: List[AdjudicationResult] = []
-        policy = controller.policy_for(working.mode)
 
         for proposal in proposals:
             if proposal.actor != actor and proposal.source != "npc":
                 proposal = proposal.model_copy(update={"actor": actor})
-            result = policy.adjudicate(proposal, working, frame)
+            if self.crew is not None:
+                result = await self.crew.adjudicate(
+                    proposal, working, mode=mode, frame=frame
+                )
+            else:
+                result = self._fallback_adjudicate(proposal, working)
             working = working.apply_delta(
                 result.state_delta, advance_turn=False
             )
             combined = merge_deltas(combined, result.state_delta)
             results.append(result)
         return working, combined, results
+
+    @staticmethod
+    def _fallback_adjudicate(
+        proposal: ActionProposal, state: WorldState
+    ) -> AdjudicationResult:
+        """无 Crew 时的最小兜底：自由文本直接进入叙事并推进 1 分钟。"""
+        actor = state.characters.get(proposal.actor)
+        if actor is None:
+            return AdjudicationResult(
+                success=False,
+                outcome="rejected",
+                error_code="actor_not_found",
+                narrative=f"不存在的行动者：{proposal.actor}",
+                rule="existence",
+            )
+        if actor.status == "dead":
+            return AdjudicationResult(
+                success=False,
+                outcome="rejected",
+                error_code="actor_dead",
+                narrative="你已经无法行动。",
+                rule="existence",
+            )
+        detail = proposal.detail.strip() or "世界安静地向前推进。"
+        return AdjudicationResult(
+            success=True,
+            outcome="narrated",
+            narrative=detail,
+            state_delta=StateDelta(
+                time_delta=1,
+                events=[state.touch("freeform", proposal.actor, detail)],
+            ),
+            rule="freeform_narrative",
+        )
+
+    async def _npc_round(
+        self, state: WorldState, idle_turns: int
+    ) -> Tuple[List[ActionProposal], List[str]]:
+        if self.crew is not None:
+            return await self.crew.npc_actions(
+                state, idle_turns=idle_turns, memory=self.memory
+            )
+        if idle_turns < 3:
+            return [], []
+        player = state.characters.get("玩家")
+        location = player.location if player else ""
+        candidates = [
+            name for name in state.characters_at(location) if name != "玩家"
+        ]
+        from storyloom.crews.scene_crew.crew import _fallback_npc
+
+        proposals = _fallback_npc(state, candidates[:2])
+        return proposals, [item.actor for item in proposals]
 
     @staticmethod
     def _consistency_check(
@@ -703,7 +690,6 @@ class TurnLoop:
 
     @staticmethod
     def _plan_next(
-        interpreted: InterpretedIntent,
         results: List[AdjudicationResult],
         issues: List[str],
         state: WorldState,
@@ -716,8 +702,6 @@ class TurnLoop:
             return "idle", "idle_stop"
         if state.arc.phase == "resolution" and state.arc.beats_remaining <= 1:
             return "ok", "end_arc"
-        if interpreted.mode == "meta":
-            return "ok", "stop"
         return "ok", "next_turn"
 
     # ---------------- SceneCrew 叙事增强 ----------------
@@ -747,78 +731,6 @@ class TurnLoop:
         except Exception:
             return None
 
-    async def _crew_consistency_check(
-        self,
-        after: WorldState,
-        before: WorldState,
-        results: List[AdjudicationResult],
-        actor: str,
-        director_mode: bool = False,
-    ) -> List[str]:
-        """SceneCrew ConsistencyAgent 做 LLM 级人设/时间线/设定一致性检测
-
-        与硬编码 _consistency_check 叠加；LLM 失败时返回空列表放行，
-        避免阻塞回合。
-        """
-        issues: List[str] = []
-        if self.crew is None:
-            return issues
-
-        present = after.characters_at(
-            (after.characters.get(actor).location
-             if after.characters.get(actor) else "")
-        )
-        char_summaries = []
-        for name in present:
-            cs = after.characters.get(name)
-            if cs is None:
-                continue
-            profile = self.project.get_character(name)
-            persona = profile.persona if profile else ""
-            motivation = profile.motivation if profile else ""
-            char_summaries.append(
-                f"- {name}: {persona}；动机: {motivation}；"
-                f"状态: {cs.status}；情绪: {cs.emotion}"
-            )
-        foreshadow_context = "\n".join(
-            f"- [{f.foreshadow_id}] {f.description} (状态: {f.status.value})"
-            for f in self.project.foreshadowings
-            if f.status.value not in ("resolved", "subverted", "abandoned")
-        ) or "（无活跃伏笔）"
-
-        director_constraints = ""
-        if director_mode:
-            director_constraints = "导演模式：本回合内容为作者指令的直接产出，请重点检查人设与设定一致性。"
-
-        prompt = self.crew.task_prompt(
-            "consistency_check",
-            actor_log="\n".join(r.narrative for r in results),
-            character_data="\n".join(char_summaries) or "- （在场无角色）",
-            foreshadow_data=foreshadow_context,
-            director_constraints=director_constraints or "（无）",
-        )
-        raw = await self._run_crew_agent(self.crew.consistency(), prompt)
-        if raw is None:
-            return issues
-
-        try:
-            # 尝试解析 JSON（ConsistencyAgent 的结构化输出）
-            start = raw.find("{")
-            end = raw.rfind("}") + 1
-            if start >= 0 and end > start:
-                data = json.loads(raw[start:end])
-                if not data.get("passed", True):
-                    issues.extend(data.get("conflicts", []))
-            else:
-                # 纯文本格式：每行一个冲突
-                for line in raw.splitlines():
-                    stripped = line.strip()
-                    if stripped.startswith("- ") or stripped.startswith("* "):
-                        issues.append(stripped[2:])
-        except (ValueError, TypeError):
-            pass
-        return issues
-
     async def _crew_narrative_round(
         self,
         mode: Literal["game", "director"],
@@ -828,7 +740,7 @@ class TurnLoop:
         actor: str,
         frame: DirectorFrame,
         action_text: str,
-    ) -> Tuple[NarrativeOutput, Dict[str, Any]]:
+    ) -> Tuple[AgentPacket, Dict[str, Any]]:
         """SceneCrew 叙事层增强（Surprise + Foreshadow + Director + Prose）
 
         游戏模式：每 3 回合抽样运行 Surprise + Foreshadow + Director（控制成本），
@@ -973,63 +885,92 @@ class TurnLoop:
 只输出一个 JSON 对象，不要 Markdown 代码围栏或额外说明：
 {
   "prose": "正式小说正文，不要把行动建议写进正文",
-  "suggested_actions": [
+  "choices": [
     {"text": "玩家下一步可尝试的完整自然语言行动", "hint": "一句可选的代价或风险提示"}
-  ]
+  ],
+  "stage": [{"kind": "bgm", "params": {"name": "紧张"}}]
 }
-suggested_actions 必须包含 3-4 项，并遵守：
+choices 必须包含 3-4 项，并遵守：
 1. 紧扣正文结束时的具体处境，各项应有实质差异；除了常规应对，也可建议冒险、试探或非常规做法。
 2. text 是可以直接作为玩家自由输入的自然语言，不使用 move/talk 等枚举，不替玩家决定已经采取该行动。
 3. 这些只是推荐，不是行动范围或成功承诺；玩家仍可输入任何其他行动。
 4. hint 只作可能性提示，不虚构精确数值或保证结果，实际后果由世界裁决。
+stage 只填写确实需要的表现层指令，可为空。
 """
             prose_text = await self._run_crew_agent(
                 self.crew.prose(project.style), prompt
             ) or ""
 
-        narrative = (
-            parse_narrative_output(prose_text)
-            if mode == "game" and prose_text
-            else NarrativeOutput(prose=prose_text)
-        )
+        narrative = parse_agent_packet(prose_text) if prose_text else AgentPacket()
         trace["prose"] = bool(narrative.prose)
-        trace["suggested_actions"] = len(narrative.suggested_actions)
+        trace["choices"] = len(narrative.choices)
         return narrative, trace
 
-    async def _render_with_crew_prose(
+    async def _render_scene(
         self,
         state_before: WorldState,
         state_after: WorldState,
         adjudication: AdjudicationResult,
         actor: str,
         memory_context: str,
-        crew_narrative: NarrativeOutput,
+        crew_narrative: AgentPacket,
         mode: Literal["game", "director"],
     ) -> StageScene:
-        """优先使用 SceneCrew 结构化叙事；无产出时走 renderer.arender。"""
-        if crew_narrative.prose:
-            return self.renderer._build(
-                state_before,
-                state_after,
-                adjudication,
-                actor,
-                crew_narrative.prose,
-                suggested_actions=[
-                    action.model_dump()
-                    for action in crew_narrative.suggested_actions
-                ],
+        """ProseAgent 已给出正文/选项/舞台段；全部缺失时走 prose_fn 兜底。"""
+        packet = crew_narrative
+        if not packet.prose and not packet.choices and self.prose_fn is not None:
+            prompt = self._prose_prompt(
+                adjudication, state_after, memory_context
             )
-        # 退回原有路径
-        return await self.renderer.arender(
-            state_before,
-            state_after,
-            adjudication,
-            actor,
-            context=memory_context,
-            style=self.project.style,
-            description=self.project.description,
-            world_book=self._world_context(state_after, actor),
+            try:
+                prose = await asyncio.to_thread(
+                    self.prose_fn, prompt, state_after
+                )
+            except Exception:
+                prose = ""
+            if str(prose).strip():
+                packet = packet.model_copy(
+                    update={"prose": str(prose).strip()}
+                )
+        return compose_scene(
+            state_before, state_after, adjudication, actor, packet=packet
         )
+
+    def _prose_prompt(
+        self,
+        adjudication: AdjudicationResult,
+        state: WorldState,
+        context: str = "",
+    ) -> str:
+        lines = [
+            "请把下面的世界事件改写成第二人称、克制而有画面感的中文叙事，"
+            "不要新增未经裁决的事实，不要复述系统提示。",
+            "世界先于主角：NPC 有各自的目标与处境，不会因为玩家期待而改变；"
+            "不要替玩家做决定，不要自动让玩家成功。",
+            f"文风：{self.project.style}",
+            f"作品设定：{self.project.description}",
+        ]
+        if context:
+            lines.extend(["", "## 你已知的剧情与设定（仅作上下文，不必逐字引用）", context])
+        lines.extend(
+            [
+                "",
+                f"时间：{state.format_time()}",
+                f"地点：{self._actor_location(state)}",
+                f"裁决：{adjudication.outcome}",
+                f"事实：{adjudication.narrative}",
+            ]
+        )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _actor_location(state: WorldState) -> str:
+        player = state.characters.get("玩家")
+        if player:
+            return player.location
+        if state.characters:
+            return next(iter(state.characters.values())).location
+        return ""
 
 
 def _ms(started: float) -> int:
@@ -1037,8 +978,7 @@ def _ms(started: float) -> int:
 
 
 __all__ = [
-    "NarrativeOutput",
-    "SuggestedAction",
+    "AgentPacket",
     "TurnBoot",
     "TurnLoop",
     "TurnResult",

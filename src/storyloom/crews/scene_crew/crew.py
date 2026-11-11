@@ -28,12 +28,27 @@ Agent 角色划分（8 类）：
 
 from typing import Any, List, Optional, Tuple
 
+import asyncio
+
 from crewai import Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, crew
 
+from storyloom.crews.scene_crew.packet import (
+    PACKET_CONTRACT,
+    AgentPacket,
+    packet_to_proposals,
+    packet_to_result,
+    parse_agent_packet,
+)
 from storyloom.db import DEFAULT_PROJECT_ID, DbConfig, get_repository
 from storyloom.llm.router import AgentModelRouter
 from storyloom.models import CharacterAsset
+from storyloom.world.state import (
+    ActionProposal,
+    AdjudicationResult,
+    StateDelta,
+    WorldState,
+)
 
 
 #: 无工具的单次创作类 Agent 不需要默认的 25 轮迭代，收紧上限让异常快速收敛。
@@ -266,6 +281,247 @@ class SceneCrew:
             verbose=True,
         )
 
+    # ---------------- 世界裁决（导演 Agent） ----------------
+    # 原确定性规则与双模式策略已并入此处：
+    # 导演 Agent 输出统一 JSON，裁决段直接生成 StateDelta。
+    # 没有 LLM 时退化为「自由叙事」兜底，不阻塞回合。
+
+    async def run_agent(
+        self, agent: Agent, prompt: str, timeout_s: float = 60.0
+    ) -> Optional[str]:
+        """同步 kickoff 的异步包装；不可用或超时返回 None。"""
+        loop = asyncio.get_event_loop()
+
+        def _kickoff():
+            return agent.kickoff(prompt)
+
+        try:
+            output = await asyncio.wait_for(
+                loop.run_in_executor(None, _kickoff), timeout=timeout_s
+            )
+            return str(output.raw).strip() if output else None
+        except asyncio.TimeoutError:
+            return None
+        except Exception:
+            return None
+
+    async def adjudicate(
+        self,
+        proposal: ActionProposal,
+        state: WorldState,
+        mode: str = "game",
+        frame: Any = None,
+    ) -> AdjudicationResult:
+        """导演 Agent 裁决一个行动，返回结构化结果。"""
+        actor = state.characters.get(proposal.actor)
+        if actor is None:
+            return AdjudicationResult(
+                success=False,
+                outcome="rejected",
+                error_code="actor_not_found",
+                narrative=f"不存在的行动者：{proposal.actor}",
+                rule="existence",
+            )
+        if actor.status == "dead":
+            return AdjudicationResult(
+                success=False,
+                outcome="rejected",
+                error_code="actor_dead",
+                narrative="你已经无法行动。",
+                rule="existence",
+            )
+
+        prompt = self._adjudication_prompt(proposal, state, mode, frame)
+        raw = await self.run_agent(self.director(), prompt)
+        if raw is None:
+            return _narrate_fallback(proposal, state)
+        packet = parse_agent_packet(raw)
+        result = packet_to_result(packet, default_narrative=proposal.detail)
+        if result.success:
+            # 每个成功行动至少留下时间推进与一条事件，便于回放与记忆。
+            if result.state_delta.time_delta <= 0:
+                result.state_delta.time_delta = 1
+            if not result.state_delta.events:
+                result.state_delta.events.append(
+                    state.touch(
+                        "action",
+                        proposal.actor,
+                        proposal.detail or result.narrative,
+                    )
+                )
+        return result
+
+    def _adjudication_prompt(
+        self,
+        proposal: ActionProposal,
+        state: WorldState,
+        mode: str,
+        frame: Any = None,
+    ) -> str:
+        goal = getattr(frame, "goal", "") if frame is not None else ""
+        phase = getattr(frame, "phase", "") if frame is not None else ""
+        mode_rule = (
+            "导演模式：这是作者指令，decision 用 direct，不要否决。"
+            if mode == "director"
+            else "游戏模式：世界先于玩家，不可行的行动用 reject。"
+        )
+        return (
+            "你是本作导演兼世界裁决者。"
+            f"{mode_rule}\n"
+            f"{PACKET_CONTRACT}\n"
+            f"当前节拍：{phase}；叙事目标：{goal or '（未指定）'}\n"
+            f"世界状态：\n{self._world_brief(state, proposal.actor)}\n"
+            f"行动者：{proposal.actor}\n"
+            f"行动：{proposal.detail or proposal.kind}\n"
+            f"目标：{proposal.target or '（无）'}\n"
+            "请裁决该行动是否发生，并只填写 decision / narrative / reason / "
+            "state / available 字段。state 只写必要变化，"
+            "没有变化时至少给出 time_delta。"
+        )
+
+    @staticmethod
+    def _world_brief(state: WorldState, actor: str) -> str:
+        view = state.view(
+            actor if actor in ("gm", "director", "narrator") else actor
+        )
+        lines = [
+            f"时间：{view['time']}（第 {view['turn']} 回合）",
+            f"地点：{', '.join(loc['name'] for loc in view['locations']) or '未知'}",
+            "在场角色："
+            + (
+                ", ".join(c["name"] for c in view["characters"])
+                or "无"
+            ),
+        ]
+        if view["facts"]:
+            lines.append(
+                "已知事实："
+                + "；".join(
+                    f"{f['subject']} {f['predicate']} {f['object']}"
+                    for f in view["facts"]
+                )
+            )
+        if view["events"]:
+            lines.append(
+                "最近发生："
+                + "；".join(e["summary"] for e in view["events"][-5:])
+            )
+        return "\n".join(lines)
+
+    # ---------------- NPC 自主（群演 Agent） ----------------
+    # AutonomousAgent 已并入群演 Agent：一次 JSON 调用产出 npc_actions。
+
+    async def npc_actions(
+        self,
+        state: WorldState,
+        idle_turns: int = 0,
+        threshold: int = 3,
+        memory: Any = None,
+    ) -> Tuple[List[ActionProposal], List[str]]:
+        if idle_turns < threshold:
+            return [], []
+
+        player = state.characters.get("玩家")
+        location = player.location if player else ""
+        candidates = [
+            name for name in state.characters_at(location) if name != "玩家"
+        ] or [
+            name for name, char in state.characters.items()
+            if name != "玩家" and char.status == "active"
+        ]
+        if not candidates:
+            return [], []
+
+        prompt = (
+            "你扮演本作的所有次要角色。根据世界状态，为其中 1-2 个角色"
+            "各给出一条主动行动；没有合适行动就返回空列表。\n"
+            f"{PACKET_CONTRACT}\n"
+            f"世界状态：\n{self._world_brief(state, '导演')}\n"
+            f"可行动角色：{', '.join(candidates)}\n"
+            "只填写 npc_actions 字段。"
+        )
+        raw = await self.run_agent(self.ensemble(), prompt)
+        packet = parse_agent_packet(raw) if raw else AgentPacket()
+
+        proposals = [
+            item for item in packet_to_proposals(packet)
+            if item.actor in candidates
+        ]
+        if not proposals:
+            proposals = _fallback_npc(state, candidates[:2])
+        actors: List[str] = []
+        for item in proposals:
+            if item.actor not in actors:
+                actors.append(item.actor)
+        return proposals, actors
+
+    # ---------------- 一致性检测（Consistency Agent） ----------------
+
+    async def check_consistency(
+        self,
+        project: Any,
+        after: WorldState,
+        before: WorldState,
+        results: List[AdjudicationResult],
+        actor: str,
+        director_mode: bool = False,
+    ) -> List[str]:
+        present = after.characters_at(
+            after.characters[actor].location
+            if actor in after.characters else ""
+        )
+        char_summaries = []
+        for name in present:
+            char = after.characters.get(name)
+            if char is None:
+                continue
+            profile = project.get_character(name)
+            char_summaries.append(
+                f"- {name}: {profile.persona if profile else ''}；"
+                f"动机: {profile.motivation if profile else ''}；"
+                f"状态: {char.status}；情绪: {char.emotion}"
+            )
+        foreshadow_context = "\n".join(
+            f"- [{f.foreshadow_id}] {f.description} (状态: {f.status.value})"
+            for f in project.foreshadowings
+            if f.status.value not in ("resolved", "subverted", "abandoned")
+        ) or "（无活跃伏笔）"
+        director_constraints = (
+            "导演模式：本回合内容为作者指令的直接产出，重点检查人设与设定一致性。"
+            if director_mode else "（无）"
+        )
+
+        prompt = self.task_prompt(
+            "consistency_check",
+            actor_log="\n".join(r.narrative for r in results),
+            character_data="\n".join(char_summaries) or "- （在场无角色）",
+            foreshadow_data=foreshadow_context,
+            director_constraints=director_constraints,
+        )
+        raw = await self.run_agent(self.consistency(), prompt)
+        if raw is None:
+            return []
+        packet = parse_agent_packet(raw)
+        if packet.issues:
+            return packet.issues
+        # 兼容旧输出：{"passed": false, "conflicts": [...]}
+        text = raw.strip()
+        start, end = text.find("{"), text.rfind("}") + 1
+        if start >= 0 and end > start:
+            import json
+
+            try:
+                data = json.loads(text[start:end])
+                if not data.get("passed", True):
+                    return [str(item) for item in data.get("conflicts", [])]
+            except (ValueError, TypeError):
+                pass
+        return [
+            line.strip()[2:]
+            for line in text.splitlines()
+            if line.strip().startswith(("- ", "* "))
+        ]
+
     # ---------------- 标准任务序列 ----------------
     # 任务完全由数据库 task_configs 表驱动：position 决定顺序，
     # agent_key 决定执行者，context_keys 决定上游任务的输出作为上下文。
@@ -308,3 +564,81 @@ class SceneCrew:
         print("\n📋 Agent 创建摘要：")
         for agent_id, model_key in self._summary:
             print(f"  {agent_id:35s} → {model_key}")
+
+
+def _narrate_fallback(
+    proposal: ActionProposal, state: WorldState
+) -> AdjudicationResult:
+    """LLM 不可用时的最小兜底：记录行动并推进 1 分钟。"""
+    detail = proposal.detail.strip() or "世界安静地向前推进。"
+    return AdjudicationResult(
+        success=True,
+        outcome="narrated",
+        narrative=detail,
+        state_delta=StateDelta(
+            time_delta=1,
+            events=[state.touch("freeform", proposal.actor, detail)],
+        ),
+        rule="freeform_narrative",
+    )
+
+
+def _fallback_npc(
+    state: WorldState, candidates: List[str]
+) -> List[ActionProposal]:
+    """LLM 不可用时的最小 NPC 提案：与旧 AutonomousAgent 行为一致。"""
+    proposals: List[ActionProposal] = []
+    player = state.characters.get("玩家")
+    player_location = player.location if player else ""
+
+    for name in candidates:
+        char = state.characters.get(name)
+        if char is None or char.status != "active":
+            continue
+        others = [
+            other for other in state.characters_at(char.location)
+            if other != name
+        ]
+        if char.location == player_location and player is not None:
+            proposals.append(
+                ActionProposal(
+                    actor=name,
+                    kind="talk",
+                    target="玩家",
+                    detail=f"{name}主动与玩家搭话",
+                    source="npc",
+                )
+            )
+        elif others:
+            proposals.append(
+                ActionProposal(
+                    actor=name,
+                    kind="talk",
+                    target=others[0],
+                    detail=f"{name}与{others[0]}交谈",
+                    source="npc",
+                )
+            )
+        else:
+            loc = state.locations.get(char.location)
+            if loc and loc.exits:
+                destination = next(iter(loc.exits))
+                proposals.append(
+                    ActionProposal(
+                        actor=name,
+                        kind="move",
+                        target=destination,
+                        detail=f"{name}前往{destination}",
+                        source="npc",
+                    )
+                )
+            else:
+                proposals.append(
+                    ActionProposal(
+                        actor=name,
+                        kind="observe",
+                        detail=f"{name}观察四周",
+                        source="npc",
+                    )
+                )
+    return proposals[:2]

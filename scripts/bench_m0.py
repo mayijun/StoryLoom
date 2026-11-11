@@ -77,7 +77,6 @@ def build_project():
 
 async def bench_turns(rounds: int) -> list[float]:
     from storyloom.flows.turn_flow import TurnBoot, TurnLoop
-    from storyloom.runtime.intent import PlayerIntent
     from storyloom.world.state import WorldState
 
     project = build_project()
@@ -90,10 +89,7 @@ async def bench_turns(rounds: int) -> list[float]:
         boot = TurnBoot(
             project_id="bench",
             instance_id="bench",
-            intent=PlayerIntent(
-                kind="text",
-                payload={"text": inputs[index % len(inputs)]},
-            ),
+            text=inputs[index % len(inputs)],
             world_state=state,
         )
         started = time.perf_counter()
@@ -107,7 +103,6 @@ async def bench_turns(rounds: int) -> list[float]:
 
 async def bench_concurrency(count: int) -> tuple[int, float]:
     from storyloom.flows.turn_flow import TurnBoot, TurnLoop
-    from storyloom.runtime.intent import PlayerIntent
     from storyloom.world.state import WorldState
 
     async def one(index: int) -> bool:
@@ -116,9 +111,7 @@ async def bench_concurrency(count: int) -> tuple[int, float]:
         boot = TurnBoot(
             project_id="bench",
             instance_id=f"c{index}",
-            intent=PlayerIntent(
-                kind="text", payload={"text": "观察四周"}
-            ),
+            text="观察四周",
             world_state=WorldState.from_project(project),
         )
         result = await loop.run(boot)
