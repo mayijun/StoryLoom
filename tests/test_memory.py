@@ -3,7 +3,6 @@
 import pytest
 
 from storyloom.db import CrewConfigRepository
-from storyloom.flows.scene_flow import SceneGenerationFlow
 from storyloom.memory import LayeredMemory, MemoryIndexer
 from storyloom.memory.models import CharacterAsset, LocationAsset, NovelProject
 
@@ -39,15 +38,8 @@ def test_director_flow_retrieves_world_book_from_layered_memory(repo):
     )
     memory = LayeredMemory("x", repo=repo)
     memory.add_archive_item("lore:map", "航海图藏在雾港旅店的地下室。")
-    flow = SceneGenerationFlow(
-        project=project,
-        memory=memory,
-        crew=None,
-        scene_brief="寻找航海图",
-        present_characters=[],
-    )
 
-    context = flow.gather_rag_context("导演要求角色寻找航海图")
+    context = memory.retrieval_block("导演要求角色寻找航海图", k=3)
 
     assert "航海图藏在雾港旅店的地下室" in context
     assert memory.items["lore:map"].hits == 1

@@ -76,12 +76,12 @@ def build_project():
 
 
 async def bench_turns(rounds: int) -> list[float]:
-    from storyloom.flows.turn_flow import TurnBoot, TurnLoop
+    from storyloom.engine.narrative import NarrativeEngine, TurnBoot
     from storyloom.memory.state import WorldState
 
     project = build_project()
     state = WorldState.from_project(project)
-    loop = TurnLoop(project)
+    engine = NarrativeEngine(project=project)
     inputs = ["观察四周", "前往码头", "等待", "和旅店老板交谈"]
     latencies: list[float] = []
 
@@ -93,7 +93,11 @@ async def bench_turns(rounds: int) -> list[float]:
             world_state=state,
         )
         started = time.perf_counter()
-        result = await loop.run(boot)
+        result = await engine.play_turn(
+            project=project,
+            world_state=state,
+            action_text=inputs[index % len(inputs)],
+        )
         latencies.append((time.perf_counter() - started) * 1000)
         assert result.status == "ok", result.status
         state = result.state
@@ -102,19 +106,17 @@ async def bench_turns(rounds: int) -> list[float]:
 
 
 async def bench_concurrency(count: int) -> tuple[int, float]:
-    from storyloom.flows.turn_flow import TurnBoot, TurnLoop
+    from storyloom.engine.narrative import NarrativeEngine, TurnBoot
     from storyloom.memory.state import WorldState
 
     async def one(index: int) -> bool:
         project = build_project()
-        loop = TurnLoop(project)
-        boot = TurnBoot(
-            project_id="bench",
-            instance_id=f"c{index}",
-            text="观察四周",
+        engine = NarrativeEngine(project=project)
+        result = await engine.play_turn(
+            project=project,
             world_state=WorldState.from_project(project),
+            action_text="观察四周",
         )
-        result = await loop.run(boot)
         return result.status == "ok"
 
     started = time.perf_counter()

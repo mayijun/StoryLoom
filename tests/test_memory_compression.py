@@ -13,7 +13,7 @@ import asyncio
 import pytest
 
 from storyloom.db import CrewConfigRepository, reset_engines, reset_repositories
-from storyloom.flows.turn_flow import TurnBoot, TurnLoop
+from storyloom.engine.narrative import NarrativeEngine, TurnBoot
 from storyloom.memory import (
     DemotionRule,
     LayeredMemory,
@@ -23,6 +23,7 @@ from storyloom.memory import (
 )
 from storyloom.memory.scoring import score_compressed_importance
 from storyloom.memory.models import CharacterAsset, LocationAsset, NovelProject
+from storyloom.memory.state import WorldState
 
 
 class FakeCompressor:
@@ -295,22 +296,18 @@ def test_turn_working_context_uses_player_action_text():
         locations=[LocationAsset(name="青云宗", description="山门")],
     )
     memory = LayeredMemory("p_working")
-    loop = TurnLoop(
-        project,
-        memory=memory,
-        prose_fn=lambda prompt, state: "你环顾四周，山风从石阶上吹过。",
-    )
+    state = WorldState.from_project(project)
 
-    asyncio.run(
-        loop.run(
-            TurnBoot(
-                project_id="p_working",
-                text="观察四周",
-                max_duration_ms=5000,
-            )
+    engine = NarrativeEngine(project=project, memory=memory)
+    result = asyncio.run(
+        engine.play_turn(
+            project=project,
+            world_state=state,
+            action_text="观察四周",
+            max_retries=0,
         )
     )
-
+    assert result.status == "ok"
     assert memory.working.intent == "观察四周"
     assert memory.working.scene_brief == "观察四周"
     assert "【本轮意图】观察四周" in memory.prompt_block()

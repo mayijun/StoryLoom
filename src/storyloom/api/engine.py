@@ -5,6 +5,7 @@ CrewAI引擎桥接：连接FastAPI和已有的CrewAI多Agent后端
 import json
 import asyncio
 import time
+import uuid
 from typing import List, Optional
 from pathlib import Path
 
@@ -795,33 +796,107 @@ class StoryEngine:
     async def play_turn(
         self, project_id: str, boot: TurnBoot
     ) -> TurnResult:
-        """执行一个双模式回合（可选集成 SceneCrew 多 Agent 叙事链）"""
+        """执行一个双模式回合，消费 TurnBoot 的全部运行时参数。"""
         project = self._get_or_load_project(project_id)
-        if boot.world_state is None:
-            boot = boot.model_copy(
-                update={
-                    "world_state": self.get_game_state(
-                        project_id, boot.instance_id
-                    )
-                }
+        state = boot.world_state or self.get_game_state(
+            project_id, boot.instance_id
+        )
+        turn_id = f"turn_{uuid.uuid4().hex[:10]}"
+        trace_id = f"trace_{uuid.uuid4().hex[:10]}"
+
+        # 配额：单回合入口的前置闸门
+        if boot.max_turns < 1 or boot.max_cost <= 0:
+            return TurnResult(
+                turn_id=turn_id,
+                trace_id=trace_id,
+                project_id=project_id,
+                instance_id=boot.instance_id,
+                status="quota_exceeded",
+                state=state,
+                state_delta=StateDelta(),
+                scene=StageScene(),
+                quality=0.0,
+                quality_flags=["quota_exceeded"],
+                log={"instance_id": boot.instance_id, "mode": boot.mode},
             )
-        boot = boot.model_copy(update={"project_id": project_id})
+
+        # 回合前模式切换：先落 checkpoint，再切状态
+        if boot.switch_mode_to and boot.switch_mode_to != state.mode:
+            record = self.save_service.save(
+                project_id, state, StageScene(),
+                label=f"switch_to_{boot.switch_mode_to}", kind="checkpoint",
+            )
+            state = state.switch_mode(
+                boot.switch_mode_to, checkpoint_id=record.save_id
+            )
+
+        # 回合前导演改写：逐条先落 checkpoint，再应用
+        for override in boot.overrides:
+            record = self.save_service.save(
+                project_id, state, StageScene(),
+                label=f"before_override_{override.override_id}",
+                kind="checkpoint",
+            )
+            state, _ = state.apply_override(
+                override, snapshot_id=record.save_id
+            )
+
+        # 请求模式与世界状态模式对齐
+        if boot.mode != state.mode:
+            state = state.model_copy(update={"mode": boot.mode})
+
         if boot.provider_api_keys:
             # 只在运行时内存注册，供后续 LLM 调用使用
             self.registry.apply_provider_keys(boot.provider_api_keys)
 
         memory = self.memory_for(project_id, backend=boot.memory_backend)
         crew = self._crew_for(project_id)
-        narrative = NarrativeEngine(crew=crew, memory=memory)
-        result = await narrative.play_turn(
-            project=project,
-            world_state=boot.world_state,
-            actor=boot.actor,
-            action_text=boot.text,
-            wait=boot.wait,
-            max_retries=boot.max_retries,
+        host = self.extension_registry.for_instance(
+            boot.instance_id, enabled=boot.enabled_extensions
         )
+        narrative = NarrativeEngine(
+            crew=crew,
+            memory=memory,
+            extensions=host,
+            instance_id=boot.instance_id,
+        )
+
         key = (project_id, boot.instance_id)
+        timeout = max(0.001, boot.max_duration_ms / 1000)
+        try:
+            result = await asyncio.wait_for(
+                narrative.play_turn(
+                    project=project,
+                    world_state=state,
+                    actor=boot.actor,
+                    action_text=boot.text,
+                    wait=boot.wait,
+                    max_retries=boot.max_retries,
+                    idle_turns=boot.idle_turns,
+                    mode=boot.mode,
+                    goal=boot.goal,
+                    instance_id=boot.instance_id,
+                ),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            return TurnResult(
+                turn_id=turn_id,
+                trace_id=trace_id,
+                project_id=project_id,
+                instance_id=boot.instance_id,
+                status="timeout",
+                exit="stop",
+                state=state,
+                state_delta=StateDelta(),
+                scene=StageScene(),
+                quality=0.0,
+                quality_flags=["timeout"],
+                log={"instance_id": boot.instance_id, "mode": boot.mode},
+            )
+
+        result.log.setdefault("instance_id", boot.instance_id)
+        result.log.setdefault("mode", boot.mode)
         self.game_states[key] = result.state
         self.last_turns[key] = result
         return result

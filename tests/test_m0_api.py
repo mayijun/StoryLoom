@@ -23,11 +23,6 @@ def _fake_prose(prompt: str, state) -> str:
     return ""
 
 
-async def _no_crew_agent(self, agent, prompt, timeout_s=60.0):
-    """禁用 Crew 的 LLM 增强层，直接走确定性兜底，避免测试访问网络。"""
-    return None
-
-
 async def _fake_crew_run(self, agent, prompt, timeout_s=60.0):
     """伪装统一 JSON Agent：裁决放行、正文为空、无一致性问题。"""
     return '{"decision": "allow", "prose": "", "choices": [], "issues": []}'
@@ -44,15 +39,13 @@ def apis(tmp_path, monkeypatch):
     from storyloom.api.engine import engine
     from storyloom.api.routers import extensions, game, memory
     from storyloom.crews.scene_crew.crew import SceneCrew
-    from storyloom.flows.turn_flow import TurnLoop
 
     # 游戏回合的叙述润色改为假模型返回，避免真实 LLM 调用导致超时
     monkeypatch.setattr(engine, "_game_prose_fn", _fake_prose)
     # 记忆压缩同样走确定性兜底
     monkeypatch.setattr(engine, "_memory_compress_fn", lambda prompt: "")
     # Crew 叙事增强层整体关闭（一致性 / 意外 / 伏笔 / 导演 / 润色）
-    monkeypatch.setattr(TurnLoop, "_run_crew_agent", _no_crew_agent)
-    # 导演裁决与一致性检测走统一 JSON 假模型
+    # NarrativeEngine._kickoff 优先走 crew.run_agent，直接 patch SceneCrew 即可
     monkeypatch.setattr(SceneCrew, "run_agent", _fake_crew_run)
     engine._project_runtime.clear()
     engine.memories.clear()
@@ -210,3 +203,85 @@ def test_runtime_v1_routes_registered(apis):
             json={"instance_id": "legacy", "text": "观察四周"},
         )
         assert legacy.status_code == 200
+
+
+def test_turn_advances_arc_and_returns_frame(apis):
+    game, _, _ = apis
+    before = asyncio.run(game.get_state("m0api", instance_id="i1"))
+    result = asyncio.run(
+        game.play_turn("m0api", TurnRequest(instance_id="i1", text="观察四周"))
+    )
+    assert result["status"] == "ok"
+    assert result["frame"] is not None
+    assert result["frame"]["phase"] == "setup"
+    assert result["state"]["arc"]["beats_remaining"] == (
+        before["state"]["arc"]["beats_remaining"] - 1
+    )
+
+
+def test_turn_mode_switch_writes_checkpoint(apis):
+    game, _, _ = apis
+    result = asyncio.run(
+        game.play_turn(
+            "m0api",
+            TurnRequest(
+                instance_id="i1",
+                text="观察四周",
+                mode="director",
+                switch_mode_to="director",
+            ),
+        )
+    )
+    assert result["state"]["mode"] == "director"
+    assert result["state"]["flags"]["last_checkpoint_id"]
+
+
+def test_turn_applies_overrides_before_narrative(apis):
+    game, _, _ = apis
+    result = asyncio.run(
+        game.play_turn(
+            "m0api",
+            TurnRequest(
+                instance_id="i1",
+                text="观察四周",
+                overrides=[
+                    {
+                        "target": "侍卫长",
+                        "field": "emotion",
+                        "after": "紧张",
+                        "reason": "测试改写",
+                    }
+                ],
+            ),
+        )
+    )
+    assert result["state"]["characters"]["侍卫长"]["emotion"] == "紧张"
+    assert result["state"]["overrides"]
+
+
+def test_turn_timeout_returns_timeout_status(apis, monkeypatch):
+    game, _, _ = apis
+    from storyloom.engine.narrative import NarrativeEngine
+
+    async def _slow_play_turn(self, **kwargs):
+        await asyncio.sleep(0.2)
+
+    monkeypatch.setattr(NarrativeEngine, "play_turn", _slow_play_turn)
+    result = asyncio.run(
+        game.play_turn(
+            "m0api",
+            TurnRequest(instance_id="i1", text="观察四周", max_duration_ms=10),
+        )
+    )
+    assert result["status"] == "timeout"
+
+
+def test_turn_quota_exceeded(apis):
+    game, _, _ = apis
+    result = asyncio.run(
+        game.play_turn(
+            "m0api",
+            TurnRequest(instance_id="i1", text="观察四周", max_turns=0),
+        )
+    )
+    assert result["status"] == "quota_exceeded"

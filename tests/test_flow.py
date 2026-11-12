@@ -7,7 +7,7 @@ from storyloom.memory.models import (
     Foreshadowing,
     NovelProject,
 )
-from storyloom.flows.scene_flow import (
+from storyloom.engine.narrative import (
     advance_scene_counters,
     apply_foreshadow_ops,
     parse_json_block,

@@ -518,12 +518,8 @@ src/storyloom/
 │   ├── vector.py            # vector 后端
 │   ├── hybrid.py            # hybrid 后端
 │   └── indexer.py           # 历史场景回填与资产刷新
-├── flows/
-│   ├── scene_flow.py        # 兼容 shim → NarrativeEngine.generate_scene()
-│   └── turn_flow.py         # 兼容 shim → NarrativeEngine.play_turn()
 ├── llm/                     # providers.py + router.py
 ├── db/                      # ORM + Repository
-├── media/                   # render_adapter.py → PresentationAdapter
 ├── config/
 │   ├── memory_config.default.yaml
 │   └── model_config.yaml

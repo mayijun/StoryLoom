@@ -245,6 +245,7 @@ class NarrativeEngine:
         *,
         project: Optional[NovelProject] = None,
         instance_id: str = "default",
+        extensions: Optional[Any] = None,
     ) -> None:
         # ── 兼容旧 TurnLoop.__init__ 签名 ──
         # 旧签名: TurnLoop(project, instance_id, memory, extensions, save_service, prose_fn, crew)
@@ -265,6 +266,7 @@ class NarrativeEngine:
         self.memory: Optional[LayeredMemory] = memory if not isinstance(memory, _NP) else None
         self.project = project  # 向后兼容旧 TurnLoop: self.project
         self.instance_id = instance_id
+        self.extensions = extensions
 
     # ------------------------------------------------------------------
     # 公开入口 1: 导演模式（原 SceneGenerationFlow）
@@ -336,6 +338,9 @@ class NarrativeEngine:
         max_retries: int = 1,
         frame: Optional[DirectorFrame] = None,
         idle_turns: int = 0,
+        mode: Literal["game", "director"] = "game",
+        goal: str = "",
+        instance_id: str = "default",
     ) -> TurnResult:
         """
         游戏模式入口：跑一个玩家回合。
@@ -355,14 +360,42 @@ class NarrativeEngine:
         turn_id = uuid.uuid4().hex[:12]
         trace_id = uuid.uuid4().hex
 
-        # ① perceive
+        # ① perceive（先合入扩展地图 / 旅行耗时，只增不删）
         if world_state is None:
-            world_state = WorldState.from_project(project, mode="game")
+            world_state = WorldState.from_project(project, mode=mode)
+        # 同步 mode 到 world_state（旧 TurnLoop._prepare_state 的职责）
+        if mode != world_state.mode:
+            world_state = world_state.model_copy(update={"mode": mode})
+        if self.extensions is not None:
+            world_state = self.extensions.apply_map(world_state)
+            travel = self.extensions.travel_overrides()
+            if travel:
+                world_state = world_state.model_copy(deep=True)
+                for key, minutes in travel.items():
+                    origin, _, dest = key.partition("->")
+                    if origin in world_state.locations and dest:
+                        world_state.locations[origin].exits[dest] = minutes
         location = world_state.location_of(actor) or ""
         present = world_state.characters_at(location)
         present = present or [actor]
 
-        # ② GM adjudicate + idle_turns NPC round
+        # memory 工作区：同步 location / present / intent / time
+        if self.memory is not None:
+            try:
+                self.memory.configure_working(
+                    location=location,
+                    present_characters=present,
+                    scene_brief=action_text.strip() or "(等待)",
+                    intent=action_text.strip() or ("等待" if wait else ""),
+                    time=world_state.format_time(),
+                )
+            except Exception:
+                pass
+
+        # ② 导演帧（先定节拍，再裁决） + GM adjudicate + idle_turns NPC round
+        arc_director = ArcDirector()
+        arc_frame = frame or arc_director.frame(world_state, goal=goal)
+
         adjudication = None
         state_delta = StateDelta()
         pre_context_gm = None
@@ -376,7 +409,7 @@ class NarrativeEngine:
                 source="player",
             )
             adjudication, state_delta = await self._gm_adjudicate(
-                proposal=proposal, state=world_state, mode="game", frame=frame,
+                proposal=proposal, state=world_state, mode=mode, frame=arc_frame,
             )
             pre_context_gm = {
                 "gm_verdict": adjudication.narrative,
@@ -384,51 +417,50 @@ class NarrativeEngine:
                 "outcome": adjudication.outcome,
             }
 
-        # idle_turns >= 3 时触发 NPC 事件轮（crew=None 时用硬编码降级）
+        # idle_turns >= 3 时触发 NPC 事件轮（硬编码降级），事件并入本回合 delta
         if idle_turns >= 3:
             npc_delta = self._npc_round_fallback(world_state, actor)
-            # NPC 事件合并到 state_delta
             state_delta.events.extend(npc_delta.events)
-            working_state = world_state.apply_delta(state_delta, advance_turn=False)
-        else:
-            working_state = world_state.apply_delta(state_delta, advance_turn=False)
 
         # ③ 统一叙事生成（pre_context 传 GM 结果）
         narrate_result = await self._narrate(
             project=project,
             scene_brief=action_text or "(等待)",
             present_chars=present,
-            mode="game",
+            mode=mode,
             pre_context=pre_context_gm,
             enable_crew=False,  # 游戏模式跳过动态 Crew
             enable_consistency=True,
             max_retries=max_retries,
         )
 
-        # ④ 统一世界推进（两条链路都调，消除僵尸状态）
-        await self._advance_world(
+        # ④ 统一世界推进（只 apply 一次 delta，使用返回的对齐后状态）
+        advance_result = await self._advance_world(
             project=project,
             prose=narrate_result.prose,
             scene_brief=action_text or "(等待)",
             present_chars=present,
             director_json=narrate_result.director_json,
-            world_state=working_state,
+            world_state=world_state,
             state_delta=state_delta,
-            mode="game",
+            mode=mode,
             is_regenerate=False,
         )
+        working_state = advance_result.world_state or world_state
 
-        # ⑤ arc 推进（ArcDirector，保留原 TurnLoop 逻辑）
-        arc_result: Optional[DirectorFrame] = None
-        try:
-            arc_director = ArcDirector(memory=self.memory, project=project)
-            arc_result = await arc_director.tick(
-                scene_idx=project.scene_count,
-                world_state=working_state,
-                director_json=narrate_result.director_json,
-            )
-        except Exception:
-            pass  # arc 推进失败不阻塞回合
+        # ⑤ arc 推进（确定性节拍：成功微调张力，戏剧性结果放大张力）
+        arc = arc_director.advance(
+            working_state,
+            success=(adjudication is None or adjudication.success),
+            dramatic=bool(
+                adjudication
+                and adjudication.outcome in ("hit", "intercepted")
+            ),
+        )
+        working_state = working_state.model_copy(update={"arc": arc})
+        arc_result: Optional[DirectorFrame] = arc_director.frame(
+            working_state, goal=goal
+        )
 
         # ⑥ render（compose_scene）
         packet = AgentPacket(
@@ -462,10 +494,12 @@ class NarrativeEngine:
         status: Literal["ok", "rejected"] = (
             "ok" if (adjudication is None or adjudication.success) else "rejected"
         )
-        exit_flag: Literal["next_turn", "stop"] = (
-            "stop"
-            if arc_result and arc_result.phase == "ending"
-            else "next_turn"
+        end_arc = (
+            working_state.arc.phase == "resolution"
+            and working_state.arc.beats_remaining <= 1
+        )
+        exit_flag: Literal["next_turn", "end_arc"] = (
+            "end_arc" if end_arc else "next_turn"
         )
 
         elapsed_ms = int((time.time() - start) * 1000)
@@ -473,7 +507,7 @@ class NarrativeEngine:
             turn_id=turn_id,
             trace_id=trace_id,
             project_id=getattr(project, "project_id", "") or "",
-            instance_id="default",
+            instance_id=instance_id,
             status=status,
             exit=exit_flag,
             state=working_state,
@@ -765,6 +799,9 @@ class NarrativeEngine:
         self, agent: Agent, prompt: str, timeout_s: float = 60.0
     ) -> Optional[str]:
         """同步 kickoff 的异步包装；不可用或超时返回 None。"""
+        if self.crew is not None and hasattr(self.crew, "run_agent"):
+            return await self.crew.run_agent(agent, prompt, timeout_s)
+
         loop = asyncio.get_event_loop()
 
         def _sync_kickoff() -> Any:
@@ -835,6 +872,19 @@ class NarrativeEngine:
                 f"结局类型: {pre_context.get('outcome', '')}\n"
             )
 
+        extension_block = ""
+        if self.extensions is not None:
+            skill_text = self.extensions.skill_prompt()
+            rules = self.extensions.rules()
+            if skill_text:
+                extension_block += f"\n【扩展设定】\n{skill_text}\n"
+            if rules:
+                extension_block += (
+                    "\n【扩展规则】\n"
+                    + json.dumps(rules, ensure_ascii=False, indent=2)
+                    + "\n"
+                )
+
         return (
             "你是本作导演兼创作总指挥。\n"
             f"{mode_hint}\n"
@@ -848,6 +898,7 @@ class NarrativeEngine:
             f"【RAG 检索】:\n{rag_context}\n"
             f"【伏笔简要状态表】:\n{foreshadow_table}\n"
             f"{pre_context_str}\n"
+            f"{extension_block}\n"
             "\n"
             "请输出一个 JSON 对象（不要 Markdown 代码围栏），"
             "包含以下四个部分：\n"

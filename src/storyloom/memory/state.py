@@ -434,34 +434,6 @@ class WorldState(BaseModel):
         )
         return new, record
 
-    def rollback_override(self, override_id: str) -> "WorldState":
-        """回到 override 记录中的 before 值（只回滚字段，不重放后续）。"""
-        record = next(
-            (
-                item for item in self.overrides
-                if item.get("override_id") == override_id
-            ),
-            None,
-        )
-        if record is None:
-            raise KeyError(f"未找到改写记录: {override_id}")
-        new = self.model_copy(deep=True)
-        new._write_field(
-            record["target"], record["field"], record.get("before")
-        )
-        for item in new.overrides:
-            if item.get("override_id") == override_id:
-                item["rolled_back"] = True
-        new.events.append(
-            new.touch(
-                "rollback",
-                "director",
-                f"回滚改写 {record['target']}.{record['field']}",
-                override_id=override_id,
-            )
-        )
-        return new
-
     def switch_mode(
         self, target_mode: str, checkpoint_id: str = ""
     ) -> "WorldState":
@@ -531,7 +503,6 @@ class FactOverride(BaseModel):
     created_at: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
-    rolled_back: bool = False
 
 
 class ActionProposal(BaseModel):

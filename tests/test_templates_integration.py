@@ -28,11 +28,6 @@ def _fake_prose(prompt: str, state) -> str:
     return ""
 
 
-async def _no_crew_agent(self, agent, prompt, timeout_s=60.0):
-    """禁用 Crew 的 LLM 增强层，直接走确定性兜底，避免测试访问网络。"""
-    return None
-
-
 async def _fake_crew_run(self, agent, prompt, timeout_s=60.0):
     """伪装统一 JSON Agent：裁决放行、正文为空、无一致性问题。"""
     return '{"decision": "allow", "prose": "", "choices": [], "issues": []}'
@@ -49,15 +44,12 @@ def client(tmp_path, monkeypatch):
     from storyloom.api.engine import engine
     from storyloom.api.main import app
     from storyloom.crews.scene_crew.crew import SceneCrew
-    from storyloom.flows.turn_flow import TurnLoop
 
     # 游戏回合的叙述润色改为假模型返回，避免真实 LLM 调用导致超时
     monkeypatch.setattr(engine, "_game_prose_fn", _fake_prose)
     # 记忆压缩同样走确定性兜底
     monkeypatch.setattr(engine, "_memory_compress_fn", lambda prompt: "")
-    # Crew 叙事增强层整体关闭（一致性 / 意外 / 伏笔 / 导演 / 润色）
-    monkeypatch.setattr(TurnLoop, "_run_crew_agent", _no_crew_agent)
-    # 导演裁决与一致性检测走统一 JSON 假模型
+    # NarrativeEngine._kickoff 优先走 crew.run_agent，直接 patch SceneCrew 即可
     monkeypatch.setattr(SceneCrew, "run_agent", _fake_crew_run)
     engine._project_runtime.clear()
     engine.memories.clear()

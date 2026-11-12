@@ -283,11 +283,8 @@ StoryLoom/
 │   ├── extensions/
 │   │   ├── manifest.py          # manifest schema + 校验
 │   │   └── host.py              # ExtensionHost = Crew 的 Tool Loader
-│   ├── flows/                   # 兼容 shim
-│   │   ├── scene_flow.py        # → NarrativeEngine.generate_scene()
-│   │   └── turn_flow.py         # → NarrativeEngine.play_turn()
 │   ├── llm/                     # providers.py + router.py
-│   ├── media/                   # render_adapter.py（表现层雏形）
+│   ├── db/                      # ORM + Repository
 │   ├── config/
 │   │   ├── memory_config.default.yaml
 │   │   └── model_config.yaml
@@ -301,7 +298,7 @@ StoryLoom/
 ```
 
 > 已完成的模块收敛：
-> - `flows/scene_flow.py` / `flows/turn_flow.py` 的叙事链合并进 `engine/narrative.py`，旧类保留为兼容 shim
+> - `flows/` 整个目录已删除（`scene_flow.py` / `turn_flow.py` 两个 shim 彻底移除），叙事链全部走 `engine/narrative.py`
 > - `world/game_master.py` / `world/authority.py` / `world/autonomous_agent.py` 已删除，职责分别并入 `SceneCrew.adjudicate` / `SceneCrew.npc_actions` / `WorldState`
 > - `runtime/directive.py` / `runtime/renderer.py` 已删除，由 `crews/scene_crew/packet.py` 的 `compose_scene` 接管
 > - `saves/service.py` → `memory/checkpoint.py`（`SaveService` 保留为 `CheckpointStore` 别名）

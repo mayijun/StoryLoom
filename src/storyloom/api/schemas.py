@@ -359,61 +359,6 @@ class SceneAssignChapter(BaseModel):
 
 
 # ================================================================
-# ★ Flow 编辑器预留：节点/边数据结构
-# 设计为与 Vue Flow 的数据格式完全兼容
-# 参考：https://vueflow.dev/
-# ================================================================
-
-class FlowNode(BaseModel):
-    """
-    Vue Flow 兼容的节点定义
-    
-    搜索结果确认 Vue Flow 支持：
-    - 自定义节点（AgentNode、AssetNode、ProcessNode）
-    - 拖拽、缩放、多选
-    - 嵌套节点
-    
-    参考 LuckyFlow 项目和 vue3-workFlow 项目的节点模型
-    """
-    id: str
-    type: str                                    # "agent" / "asset" / "process"
-    position: Dict[str, float]                   # {"x": 100, "y": 200}
-    data: Dict[str, Any]                         # 节点内部数据
-    # 以下字段与 Vue Flow 格式对齐
-    label: Optional[str] = None
-    source_position: str = "right"               # "top" / "right" / "bottom" / "left"
-    target_position: str = "left"
-
-
-class FlowEdge(BaseModel):
-    """Vue Flow 兼容的边（连线）定义"""
-    id: str
-    source: str                                  # 源节点ID
-    target: str                                  # 目标节点ID
-    source_handle: Optional[str] = None
-    target_handle: Optional[str] = None
-    type: str = "default"                        # "default" / "data_flow" / "control_flow"
-    label: Optional[str] = None
-    data: Dict[str, Any] = Field(default_factory=dict)
-
-
-class FlowDefinition(BaseModel):
-    """
-    完整的工作流定义
-    前端 Flow 编辑器保存/加载的数据格式
-    后端根据此定义动态编排 Agent
-    """
-    flow_id: str = Field(default_factory=lambda: f"flow_{uuid.uuid4().hex[:8]}")
-    name: str = "Default Scene Flow"
-    nodes: List[FlowNode] = Field(default_factory=list)
-    edges: List[FlowEdge] = Field(default_factory=list)
-    # 元信息
-    viewport: Dict[str, float] = Field(
-        default_factory=lambda: {"x": 0, "y": 0, "zoom": 1}
-    )
-
-
-# ================================================================
 # 双模式运行时（M0）
 # ================================================================
 
