@@ -21,7 +21,7 @@
 | `test_api_tasks.py` | 5 | Task 配置 API |
 | `test_api_agents.py` | 4 | Agent 配置 API |
 | `test_assets.py` | 4 | 资产模型默认值 |
-| `test_memory.py` | 3 | 记忆基础版（CoreMemory + RAG） |
+| `test_memory.py` | 3 | 双模式统一记忆 / 世界书召回 / 数据库回填 |
 | **合计** | **194** | |
 
 ---

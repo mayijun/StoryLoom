@@ -17,7 +17,7 @@ EmbeddingFn = Callable[[str], List[float]]
 class VectorBackend:
     """轻量向量后端（内存索引 + 可注入 embedding）
 
-    不默认使用 Chroma 的英文 embedding；中文叙事必须显式配置模型。
+    不默认绑定 embedding 模型；中文叙事必须显式配置多语言模型。
     """
 
     name = "vector"

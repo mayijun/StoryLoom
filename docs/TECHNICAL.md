@@ -102,8 +102,12 @@ PLANTED ──→ REINFORCED ──→ ACTIVATED ──→ RESOLVED
 - **检索后端**：`fts`（默认，SQLite LIKE + 中文二元组打分）/ `vector`（需显式注入
   embedding，否则不可用）/ `hybrid`（RRF 融合，向量不可用时自动退化为 fts）；
 - **历史回填**：`MemoryIndexer` 把旧项目场景与资产写入 archive，支持中文专名检索；
+  已有分层场景时跳过场景回填，但仍从数据库刷新角色与地点资产，并清理已删除或改名的
+  角色、秘密、地点条目（未传入的资产类别不参与清理）；
 - **隐私**：`secrets` 以 `visibility=private:<角色>` 写入检索库，只对本人可见；
-- 旧的平铺 `CoreMemory` / `SimpleRAGMemory` 保留在 `memory/legacy.py`，作者模式继续使用。
+- **双模式共用**：导演 Flow 与游戏 TurnLoop 使用同一个项目级 `LayeredMemory`；
+  核心层通过 `prompt_block()` 注入，世界书通过 `retrieval_block()` 按需召回，
+  正文落库后只写入一次；旧 `CoreMemory` / `SimpleRAGMemory` 与独立 Chroma 索引已移除。
 
 ```yaml
 tiers:
@@ -259,8 +263,7 @@ StoryLoom/
 │   │   ├── lexical.py           # fts 后端
 │   │   ├── vector.py            # vector 后端
 │   │   ├── hybrid.py            # hybrid 后端
-│   │   ├── indexer.py           # 历史回填
-│   │   └── legacy.py            # CoreMemory + SimpleRAGMemory（作者模式）
+│   │   └── indexer.py           # 历史场景回填与资产刷新
 │   ├── extensions/
 │   │   ├── manifest.py          # manifest schema + 校验
 │   │   └── host.py              # ExtensionHost = Crew 的 Tool Loader

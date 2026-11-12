@@ -144,7 +144,7 @@ def test_regenerate_flow_skips_scene_count_increment():
     advance_scene_counters，因此 project.scene_count 不变。"""
     from storyloom.memory.models import NovelProject
     from storyloom.flows.scene_flow import SceneGenerationFlow, advance_scene_counters
-    from storyloom.memory import CoreMemory, SimpleRAGMemory
+    from storyloom.memory import LayeredMemory
 
     project = NovelProject(
         project_id="x", title="t", style="wuxia", characters=[], locations=[]
@@ -153,8 +153,7 @@ def test_regenerate_flow_skips_scene_count_increment():
 
     flow = SceneGenerationFlow(
         project=project,
-        memory=CoreMemory(),
-        rag=SimpleRAGMemory("x"),
+        memory=LayeredMemory("x"),
         crew=None,  # 不真正跑 crew
         scene_brief="b",
         present_characters=[],
@@ -165,9 +164,8 @@ def test_regenerate_flow_skips_scene_count_increment():
     with patch(
         "storyloom.flows.scene_flow.advance_scene_counters"
     ) as mock_advance:
-        flow.state.memory.add_scene_summary("test prose")
-        if not flow.is_regenerate:
-            advance_scene_counters(project)
+        flow.state.director_intent = "{}"
+        flow.update_memory_and_foreshadowings("test prose")
         mock_advance.assert_not_called()
 
     assert project.scene_count == 5  # 未递增
@@ -177,7 +175,7 @@ def test_normal_flow_increments_scene_count():
     """is_regenerate=False（默认）时，scene_count 应递增。"""
     from storyloom.memory.models import NovelProject
     from storyloom.flows.scene_flow import SceneGenerationFlow, advance_scene_counters
-    from storyloom.memory import CoreMemory, SimpleRAGMemory
+    from storyloom.memory import LayeredMemory
 
     project = NovelProject(
         project_id="x", title="t", style="wuxia", characters=[], locations=[]
@@ -186,8 +184,7 @@ def test_normal_flow_increments_scene_count():
 
     flow = SceneGenerationFlow(
         project=project,
-        memory=CoreMemory(),
-        rag=SimpleRAGMemory("x"),
+        memory=LayeredMemory("x"),
         crew=None,
         scene_brief="b",
         present_characters=[],

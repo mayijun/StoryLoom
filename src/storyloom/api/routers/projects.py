@@ -202,5 +202,4 @@ async def delete_project(project_id: str):
     # 同时清理内存缓存
     engine._project_runtime.pop(project_id, None)
     engine.memories.pop(project_id, None)
-    engine.rags.pop(project_id, None)
     return {"status": "ok", "project_id": project_id}

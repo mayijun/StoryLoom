@@ -4269,7 +4269,6 @@ version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
-    { name = "chromadb" },
     { name = "crewai" },
     { name = "crewai-tools" },
     { name = "fastapi" },
@@ -4289,7 +4288,6 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "anthropic" },
-    { name = "chromadb" },
     { name = "crewai", specifier = ">=0.121.0" },
     { name = "crewai-tools" },
     { name = "fastapi", specifier = ">=0.115.0" },

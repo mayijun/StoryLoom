@@ -24,7 +24,7 @@
 | 8 | 伏笔状态机（种植 / 强化 / 揭示 / 回收 / 颠覆） | ✅ | `memory/models.py` + Flow 内 `apply_foreshadow_ops` |
 | 9 | 多模型路由 + 自动降级 | ✅ | `llm/router.py` |
 | 10 | 控制论质量管控 | ✅ | `frontend/src/components/flow/controls.ts`（Flow 控制配置） |
-| 11 | 记忆基础版 | ✅ | `memory/legacy.py`（平铺 `CoreMemory` + Chroma；分层 v2 见 M0-14） |
+| 11 | 统一分层记忆 | ✅ | `memory/core.py`（导演 / 游戏共用；archive 世界书按需检索） |
 | 12 | Vue 作者工作台 | ✅ | `frontend/` |
 
 ### P1 — 创作体验 ✅

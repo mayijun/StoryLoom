@@ -18,7 +18,7 @@ from typing import List, Literal, Optional
 
 from crewai import Crew, Process, Task
 from crewai.flow.flow import Flow, listen, router, start
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from storyloom.crews.scene_crew.crew import SceneCrew
 from storyloom.memory.models import (
@@ -26,7 +26,7 @@ from storyloom.memory.models import (
     ForeshadowStatus,
     NovelProject,
 )
-from storyloom.memory import CoreMemory, SimpleRAGMemory
+from storyloom.memory import LayeredMemory
 
 
 class ConsistencyReport(BaseModel):
@@ -128,8 +128,10 @@ def advance_scene_counters(project: NovelProject):
 
 
 class SceneFlowState(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     project: Optional[NovelProject] = None
-    memory: Optional[CoreMemory] = None
+    memory: Optional[LayeredMemory] = None
     scene_brief: Optional[str] = None
     surprise_proposal: Optional[str] = None
     foreshadowing_ops: Optional[str] = None
@@ -152,14 +154,13 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
     3.  动态组建 Crew 进行角色互动
     4.  一致性检测（冲突可回退重试）
     5.  润色成正式小说正文
-    6.  写回记忆 + 更新伏笔状态
+    6.  更新伏笔状态；Engine 在正文落库后写回统一记忆
     """
 
     def __init__(
         self,
         project: NovelProject,
-        memory: CoreMemory,
-        rag: SimpleRAGMemory,
+        memory: LayeredMemory,
         crew: SceneCrew,
         scene_brief: str,
         present_characters: List[str],
@@ -170,7 +171,6 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
         self.state.project = project
         self.state.memory = memory
         self.state.scene_brief = scene_brief
-        self.rag = rag
         self.crew = crew
         self.present_characters = present_characters
         self.max_retries = max_retries
@@ -248,7 +248,7 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
             self.crew.task_prompt(
                 "surprise_proposal",
                 project_title=project.title,
-                memory_block=self.state.memory.as_prompt_block(),
+                memory_block=self.state.memory.prompt_block(),
                 scene_brief=self.state.scene_brief,
                 cooldown_hint=cooldown_hint,
                 active_foreshadowings=foreshadow_context,
@@ -316,7 +316,7 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
             self.crew.task_prompt(
                 "foreshadowing_ops",
                 project_title=project.title,
-                memory_block=self.state.memory.as_prompt_block(),
+                memory_block=self.state.memory.prompt_block(),
                 scene_brief=self.state.scene_brief,
                 present_characters=", ".join(self.present_characters),
                 foreshadow_table=foreshadow_status,
@@ -346,7 +346,7 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
             self.crew.task_prompt(
                 "director_plan",
                 project_title=self.state.project.title,
-                memory_block=self.state.memory.as_prompt_block(),
+                memory_block=self.state.memory.prompt_block(),
                 scene_brief=self.state.scene_brief,
                 surprise_proposal=self.state.surprise_proposal,
                 foreshadowing_ops=foreshadowing_ops,
@@ -362,8 +362,9 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
     def gather_rag_context(self, director_intent: str):
         """按需检索背景设定，不是每次都硬塞全部设定"""
         query = self.state.scene_brief + " " + director_intent
-        docs = self.rag.query(query, n_results=3)
-        self.rag_context = "\n".join(docs) if docs else "（无额外背景）"
+        self.rag_context = (
+            self.state.memory.retrieval_block(query, k=3) or "（无额外背景）"
+        )
         return self.rag_context
 
     # ============================================================
@@ -405,7 +406,7 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
                     ),
                     director_intent=self.state.director_intent,
                     rag_context=rag_context,
-                    memory_block=self.state.memory.as_prompt_block(),
+                    memory_block=self.state.memory.prompt_block(),
                     character_name=char.name,
                 ),
                 expected_output=self.crew.task_expected_output(
@@ -430,7 +431,7 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
                         ),
                         director_intent=self.state.director_intent,
                         rag_context=rag_context,
-                        memory_block=self.state.memory.as_prompt_block(),
+                        memory_block=self.state.memory.prompt_block(),
                         character_name=char.name,
                     ),
                     expected_output=self.crew.task_expected_output(
@@ -563,16 +564,14 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
         return result
 
     # ============================================================
-    # Step 6: 更新记忆 + 更新伏笔状态
+    # Step 6: 更新伏笔状态（记忆由 Engine 在正文落库后写入）
     # ============================================================
     @listen(write_prose)
     def update_memory_and_foreshadowings(self, prose: str):
         """
-        写回记忆 + 根据 ForeshadowingAgent 的建议更新伏笔状态
-        这是防止"注意力稀释导致伏笔遗忘"的关键机制。
+        根据 ForeshadowingAgent 的建议更新伏笔状态。
+        正文由 Engine 落库后写入同一个 LayeredMemory，避免双重写入。
         """
-        self.state.memory.add_scene_summary(prose)
-
         project = self.state.project
         # 重跑同一编号场景时不推进计数（scene_count 不递增，伏笔沉睡不推进）
         if not self.is_regenerate:
@@ -590,5 +589,5 @@ class SceneGenerationFlow(Flow[SceneFlowState]):
         except (ValueError, KeyError, TypeError) as exc:
             print(f"  ℹ️ 伏笔操作解析跳过: {exc}")
 
-        print("✅ 记忆和伏笔状态已更新")
+        print("✅ 伏笔状态已更新")
         return self.state.final_prose

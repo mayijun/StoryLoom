@@ -112,8 +112,9 @@ Crew  LLM + 确定性   Agent 们协作：导演、GM、一致性检查、润色
 **作者模式已可用**：项目管理、Agent/Task 可视化配置、资产与场景落库、
 章节结构、单场景生成与重跑，以及伏笔状态流转、小说导出（Markdown / TXT）、
 成本与质量指标面板、Agent/Task 配置导入导出与跨项目复制。
-作者模式使用平铺 `CoreMemory` + Chroma；动态世界使用分层记忆 v2
-（`working → short_term → long_term → canon` + archive 按需检索）。
+导演模式与游戏模式共用分层记忆 v2
+（`working → short_term → long_term → canon` + archive 世界书按需检索）；
+历史场景、角色与地点均可从数据库重建。
 
 **M0 已交付 — 双模式动态世界纵切（含分层记忆 v2）**：
 游戏模式与导演模式共用一条 TurnLoop，跑通「玩家输入 / 导演指令 → Crew GM Agent 裁决 →
@@ -122,7 +123,7 @@ Crew  LLM + 确定性   Agent 们协作：导演、GM、一致性检查、润色
 按项目落库的记忆配置、`fts / vector / hybrid` 三后端）、Mod v1（YAML，ExtensionHost 加载为 Crew Tool）、
 可玩的游戏前端；运行时入口 **StoryEngine**（原 NovelEngine 改名）统一两种模式。
 接口按运行时架构预留（async + 超时 + 扩展包隔离），为后续性能扩展留对结构。
-验收 A1 ~ A15 由 `tests/test_m0*.py` 覆盖，后端共 **189 个用例全部通过**
+验收 A1 ~ A15 由 `tests/test_m0*.py` 覆盖，后端共 **194 个用例全部通过**
 （完整清单见 [TESTS.md](docs/TESTS.md)），详见 [MVP.md](docs/MVP.md)。
 
 ## 文档

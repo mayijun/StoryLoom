@@ -337,8 +337,7 @@ boot
 | `memory/core.py` | `LayeredMemory` | 分层叙事记忆 |
 | `memory/checkpoint.py` | `CheckpointStore`（原 `SaveService` 合并进来） | SessionState 快照 |
 | `memory/lexical.py` / `vector.py` / `hybrid.py` | 检索后端 | 记忆召回 |
-| `memory/indexer.py` | `MemoryIndexer` | 历史回填 |
-| `memory/legacy.py` | `CoreMemory` / `SimpleRAGMemory` | 作者模式兼容 |
+| `memory/indexer.py` | `MemoryIndexer` | 历史场景回填与资产刷新 |
 
 导演帧不在 `memory/`：它是 Crew 的生成参数，位于 `crews/scene_crew/arc.py`。
 控制策略不在后端：它是 Flow 配置，位于 `frontend/src/components/flow/controls.ts`。
@@ -417,13 +416,13 @@ Checkpoint 合并进记忆系统的设计理由：
 | 后端 | 实现 | 适用 |
 |---|---|---|
 | `fts` | SQLite FTS5 `trigram` + `LIKE` 兜底 | 默认；专名、伏笔、场景回溯 |
-| `vector` | Chroma + 可配置 embedding（OpenAI / Ollama） | 主题、情绪、相似桥段 |
+| `vector` | 内存向量索引 + 可注入 embedding | 主题、情绪、相似桥段 |
 | `hybrid` | FTS + 向量，RRF 融合 | 配好 embedding 后的推荐值 |
 
 - 三种后端同级，按项目记忆配置（`memory_configs` 的 `retrieval.backend`）切换；
 - 作品数据（`scenes` / 资产）是事实来源，记忆索引与向量库可重建；
-- 不使用 Chroma 默认英文 embedding；中文叙事需显式配置多语言模型；
-- embedding / Chroma 不可用时，`vector` 返回空，`hybrid` 自动退化为 `fts`，不阻断生成。
+- 不默认绑定 embedding 模型；中文叙事需显式注入多语言模型；
+- embedding 不可用时，`vector` 返回空，`hybrid` 自动退化为 `fts`，不阻断生成。
 
 ### 5.4 与角色视图的关系
 
@@ -507,8 +506,7 @@ src/storyloom/
 │   ├── lexical.py           # fts 后端
 │   ├── vector.py            # vector 后端
 │   ├── hybrid.py            # hybrid 后端
-│   ├── indexer.py           # 历史回填
-│   └── legacy.py            # CoreMemory + SimpleRAGMemory（作者模式兼容）
+│   └── indexer.py           # 历史场景回填与资产刷新
 ├── flows/
 │   ├── scene_flow.py        # 导演模式单场景
 │   └── turn_flow.py         # 双模式 TurnLoop

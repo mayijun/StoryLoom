@@ -7,7 +7,7 @@ This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 作品数据是事实来源，记忆索引可随时删除重建。
 """
 
-from typing import Any, Iterable, List
+from typing import Any, Iterable, List, Optional
 
 from storyloom.memory.core import LayeredMemory
 from storyloom.memory.scoring import score_importance
@@ -22,17 +22,20 @@ class MemoryIndexer:
     def backfill(
         self,
         scenes: Iterable[Any],
-        characters: Iterable[Any] = (),
-        locations: Iterable[Any] = (),
+        characters: Optional[Iterable[Any]] = None,
+        locations: Optional[Iterable[Any]] = None,
         force: bool = False,
     ) -> int:
-        """幂等回填；已有场景记忆时默认跳过"""
-        if self.memory.has_scene_memory() and not force:
-            return 0
+        """幂等回填；已有场景记忆时只跳过场景，资产仍保持最新。
 
+        传入的资产集合即事实来源：已删除 / 改名的角色、秘密、地点会被清理。
+        某一类资产传 None 表示不参与本次回填，因而也不清理该类旧条目。
+        """
         count = 0
+        backfill_scenes = force or not self.memory.has_scene_memory()
+        scene_source = scenes if backfill_scenes else ()
 
-        for index, scene in enumerate(scenes):
+        for index, scene in enumerate(scene_source):
             scene_id = _get(scene, "scene_id") or f"scene_{index}"
             brief = _get(scene, "brief") or ""
             prose = _get(scene, "prose") or ""
@@ -51,44 +54,73 @@ class MemoryIndexer:
             if len(self.memory.items) > before:
                 count += 1
 
-        for char in characters:
-            name = _get(char, "name") or ""
-            if not name:
-                continue
-            persona = _get(char, "persona") or ""
-            motivation = _get(char, "motivation") or ""
-            self.memory.add_archive_item(
-                item_id=f"char:{name}",
-                text=f"{name}：{persona}。动机：{motivation}",
-                tags=["character", "asset"],
-                source="asset",
-            )
-            count += 1
-            secrets = _get(char, "secrets") or ""
-            if secrets:
+        keep_char: Optional[set[str]] = None
+        if characters is not None:
+            keep_char = set()
+            for char in characters:
+                name = _get(char, "name") or ""
+                if not name:
+                    continue
+                persona = _get(char, "persona") or ""
+                motivation = _get(char, "motivation") or ""
                 self.memory.add_archive_item(
-                    item_id=f"secret:{name}",
-                    text=f"{name}的秘密：{secrets}",
-                    tags=["secret", "asset"],
-                    visibility=f"private:{name}",
+                    item_id=f"char:{name}",
+                    text=f"{name}：{persona}。动机：{motivation}",
+                    tags=["character", "asset"],
                     source="asset",
                 )
+                keep_char.add(f"char:{name}")
+                count += 1
+                secrets = _get(char, "secrets") or ""
+                if secrets:
+                    self.memory.add_archive_item(
+                        item_id=f"secret:{name}",
+                        text=f"{name}的秘密：{secrets}",
+                        tags=["secret", "asset"],
+                        visibility=f"private:{name}",
+                        source="asset",
+                    )
+                    keep_char.add(f"secret:{name}")
+                    count += 1
+
+        keep_loc: Optional[set[str]] = None
+        if locations is not None:
+            keep_loc = set()
+            for loc in locations:
+                name = _get(loc, "name") or ""
+                description = _get(loc, "description") or ""
+                if not name:
+                    continue
+                self.memory.add_archive_item(
+                    item_id=f"loc:{name}",
+                    text=f"{name}：{description}",
+                    tags=["location", "asset"],
+                    source="asset",
+                )
+                keep_loc.add(f"loc:{name}")
                 count += 1
 
-        for loc in locations:
-            name = _get(loc, "name") or ""
-            description = _get(loc, "description") or ""
-            if not name:
-                continue
-            self.memory.add_archive_item(
-                item_id=f"loc:{name}",
-                text=f"{name}：{description}",
-                tags=["location", "asset"],
-                source="asset",
-            )
-            count += 1
-
+        self._prune_stale_assets(keep_char, keep_loc)
         return count
+
+    def _prune_stale_assets(
+        self,
+        keep_char: Optional[set[str]],
+        keep_loc: Optional[set[str]],
+    ) -> None:
+        """删除已不在数据库资产中的 char:/secret:/loc: 条目。
+
+        只处理 source=asset 的归档项，避免误删降级记忆或回填场景。
+        """
+        for item in list(self.memory.items.values()):
+            if item.tier != "archive" or item.source != "asset":
+                continue
+            if item.id.startswith(("char:", "secret:")):
+                if keep_char is not None and item.id not in keep_char:
+                    self.memory._drop(item.id)
+            elif item.id.startswith("loc:"):
+                if keep_loc is not None and item.id not in keep_loc:
+                    self.memory._drop(item.id)
 
 
 def _get(obj: Any, key: str) -> Any:

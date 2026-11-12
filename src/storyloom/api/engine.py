@@ -66,11 +66,9 @@ _FORESHADOW_TRANSITIONS: dict[str, tuple[set[ForeshadowStatus], ForeshadowStatus
     ),
 }
 from storyloom.memory import (
-    CoreMemory,
     LayeredMemory,
     MemoryIndexer,
     MemorySettings,
-    SimpleRAGMemory,
 )
 from storyloom.flows.scene_flow import SceneGenerationFlow
 from storyloom.flows.turn_flow import TurnBoot, TurnLoop, TurnResult
@@ -121,14 +119,13 @@ class StoryEngine:
         self.crews: dict[str, SceneCrew] = {}
         self.crew = self._crew_for(DEFAULT_PROJECT_ID)
 
-        self.memories: dict[str, CoreMemory] = {}
-        self.rags: dict[str, SimpleRAGMemory] = {}
+        # 导演与游戏模式按项目共用同一份分层记忆
+        self.memories: dict[str, LayeredMemory] = {}
         # 运行时 NovelProject 对象缓存（元数据落库，运行时状态暂存内存）
         self._project_runtime: dict[str, NovelProject] = {}
 
         # 双模式运行时（M0）：WorldState 不落 DB，仅按实例暂存
         self.game_states: dict[tuple[str, str], WorldState] = {}
-        self.game_memories: dict[str, LayeredMemory] = {}
         self.last_turns: dict[tuple[str, str], TurnResult] = {}
         self.save_service = SaveService()
         self.extension_registry = ExtensionRegistry()
@@ -211,9 +208,6 @@ class StoryEngine:
             raise KeyError(f"项目不存在: {project_id}")
         project = self._build_project(meta)
         self._project_runtime[project_id] = project
-        # 同步内存存储（兼容旧代码路径）
-        self.memories.setdefault(project_id, CoreMemory())
-        self.rags.setdefault(project_id, SimpleRAGMemory(project_id))
         return project
 
     # 兼容旧代码：engine.projects['demo'] 仍可访问（只读快照）
@@ -255,8 +249,7 @@ class StoryEngine:
 
         project = self._build_project(repo.get_project(project_id))
         self._project_runtime[project_id] = project
-        self.memories[project_id] = CoreMemory()
-        self.rags[project_id] = SimpleRAGMemory(project_id)
+        self.memories.pop(project_id, None)
         return project
 
     def get_project(self, project_id: str) -> NovelProject | None:
@@ -300,8 +293,7 @@ class StoryEngine:
         # 同步运行时缓存
         meta = repo.get_project(project_id)
         self._project_runtime[project_id] = self._build_project(meta)
-        self.memories[project_id] = CoreMemory()
-        self.rags[project_id] = SimpleRAGMemory(project_id)
+        self.memories.pop(project_id, None)
         return meta
 
     def add_character(self, project_id, char: CharacterAsset):
@@ -322,11 +314,20 @@ class StoryEngine:
         get_repository().update_project_stats(
             project_id, character_count=len(project.characters)
         )
-        self.rags[project_id].add(
-            f"char_{char.name}",
-            f"{char.name}: {char.persona}. 动机: {char.motivation}",
-            {"type": "character"},
-        )
+        memory = self.memories.get(project_id)
+        if memory is not None:
+            memory.add_archive_item(
+                f"char:{char.name}",
+                f"{char.name}：{char.persona}。动机：{char.motivation}",
+                tags=["character", "asset"],
+            )
+            if char.secrets:
+                memory.add_archive_item(
+                    f"secret:{char.name}",
+                    f"{char.name}的秘密：{char.secrets}",
+                    tags=["secret", "asset"],
+                    visibility=f"private:{char.name}",
+                )
 
     def add_location(self, project_id, loc: LocationAsset):
         project = self._get_or_load_project(project_id)
@@ -336,11 +337,13 @@ class StoryEngine:
         project.locations = [
             l for l in project.locations if l.name != loc.name
         ] + [loc]
-        self.rags[project_id].add(
-            f"loc_{loc.name}",
-            f"{loc.name}: {loc.description}",
-            {"type": "location"},
-        )
+        memory = self.memories.get(project_id)
+        if memory is not None:
+            memory.add_archive_item(
+                f"loc:{loc.name}",
+                f"{loc.name}：{loc.description}",
+                tags=["location", "asset"],
+            )
 
     def add_foreshadowing(self, project_id, fs: Foreshadowing):
         project = self._get_or_load_project(project_id)
@@ -442,17 +445,19 @@ class StoryEngine:
         不递增 scene_count。
         """
         project = self._get_or_load_project(request.project_id)
-        memory = self.memories[request.project_id]
-        rag = self.rags[request.project_id]
+        memory = self.memory_for(request.project_id)
         crew = self._crew_for(request.project_id)
 
-        # 更新在场角色
-        memory.characters_present = request.present_character_names
+        memory.configure_working(
+            location=memory.working.location,
+            present_characters=request.present_character_names,
+            scene_brief=request.scene_brief,
+            intent=request.scene_brief,
+        )
 
         flow = SceneGenerationFlow(
             project=project,
             memory=memory,
-            rag=rag,
             crew=crew,
             scene_brief=request.scene_brief,
             present_characters=request.present_character_names,
@@ -536,14 +541,9 @@ class StoryEngine:
             foreshadowing_count=len(project.foreshadowings),
         )
 
-        # ------- 同步到分层记忆（LayeredMemory）-------
-        # 导演写作流程用 CoreMemory 供 CrewAI 拼 prompt，
-        # 但游戏模式 / 记忆面板读 LayeredMemory（game_memories）。
-        # 这里把本次生成结果追加到 LayeredMemory，保证两套记忆互通，
-        # 玩家切回游戏模式时能看到刚写的那幕。
+        # 正文落库后写入导演与游戏模式共用的分层记忆
         try:
-            layer = self.memory_for(request.project_id)
-            layer.add_scene(
+            memory.add_scene(
                 scene_index=project.scene_count if not scene_id else int(scene_id.split("_")[-1]),
                 prose=str(final_text),
                 brief=request.scene_brief,
@@ -552,8 +552,8 @@ class StoryEngine:
                 key=target_scene_id,
             )
         except Exception as exc:  # noqa: BLE001
-            # 记忆同步属于附加功能，失败不应阻断主流程
-            print(f"  ℹ️ 分层记忆同步跳过: {exc}")
+            # 正文已经落库，记忆写入失败不应阻断主流程
+            print(f"  ℹ️ 分层记忆写入失败: {exc}")
 
         # 构建伏笔视图
         fs_views = [
@@ -607,7 +607,7 @@ class StoryEngine:
         backend: str | None = None,
     ) -> LayeredMemory:
         """项目级分层记忆：首次访问自动从历史场景与资产回填"""
-        cached = self.game_memories.get(project_id)
+        cached = self.memories.get(project_id)
         if cached is not None and (
             backend is None or cached.backend_name == backend
         ):
@@ -635,7 +635,7 @@ class StoryEngine:
                 intent=cached.working.intent,
                 time=cached.working.time,
             )
-        self.game_memories[project_id] = memory
+        self.memories[project_id] = memory
         return memory
 
     def get_game_state(
@@ -825,7 +825,6 @@ class StoryEngine:
 
         memory = self.memory_for(project_id, backend=boot.memory_backend)
         crew = self._crew_for(project_id)
-        rag = self.rags.get(project_id)
         loop = TurnLoop(
             project,
             instance_id=boot.instance_id,
@@ -834,7 +833,6 @@ class StoryEngine:
             save_service=self.save_service,
             prose_fn=self._game_prose_fn,
             crew=crew,
-            rag=rag,
         )
         result = await loop.run(boot)
         key = (project_id, boot.instance_id)
@@ -867,7 +865,7 @@ class StoryEngine:
         state = self.get_game_state(project_id, instance_id)
         last = self.last_turns.get((project_id, instance_id))
         scene = last.scene if last is not None else StageScene()
-        memory = self.game_memories.get(project_id)
+        memory = self.memories.get(project_id)
         return self.save_service.save(
             project_id,
             state,
@@ -888,7 +886,7 @@ class StoryEngine:
         state = state_from_save(record)
         self.game_states[(project_id, instance_id)] = state
         if record.memory_snapshot:
-            self.game_memories[project_id] = LayeredMemory.restore(
+            self.memories[project_id] = LayeredMemory.restore(
                 project_id,
                 record.memory_snapshot,
                 repo=get_repository(),
@@ -955,7 +953,7 @@ class StoryEngine:
         merged = _deep_merge(repo.load_memory_config(project_id), patch)
         settings = MemorySettings.from_dict(merged)
         repo.save_memory_config(project_id, settings.to_dict())
-        self.game_memories.pop(project_id, None)
+        self.memories.pop(project_id, None)
         return self.memory_overview(project_id)
 
     def resolve_extensions(

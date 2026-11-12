@@ -38,8 +38,6 @@ def apis(tmp_path, monkeypatch):
     monkeypatch.setenv(
         "STORYLOOM_DATABASE_URL", f"sqlite:///{tmp_path / 'api.db'}"
     )
-    # RAG 退化为内存关键词检索，避免 chromadb 联网下载 embedding 模型
-    monkeypatch.setenv("DISABLE_CHROMADB", "1")
     reset_repositories()
     reset_engines()
 
@@ -58,9 +56,7 @@ def apis(tmp_path, monkeypatch):
     monkeypatch.setattr(SceneCrew, "run_agent", _fake_crew_run)
     engine._project_runtime.clear()
     engine.memories.clear()
-    engine.rags.clear()
     engine.game_states.clear()
-    engine.game_memories.clear()
     engine.last_turns.clear()
     engine.save_service = SaveService(root=str(tmp_path / "saves"))
 

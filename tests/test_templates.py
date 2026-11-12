@@ -56,17 +56,13 @@ def api_engine(tmp_path, monkeypatch):
 
     engine._project_runtime.clear()
     engine.memories.clear()
-    engine.rags.clear()
     engine.game_states.clear()
-    engine.game_memories.clear()
     engine.last_turns.clear()
     engine.extension_registry.clear_cache()
     yield engine
     engine._project_runtime.clear()
     engine.memories.clear()
-    engine.rags.clear()
     engine.game_states.clear()
-    engine.game_memories.clear()
     engine.last_turns.clear()
     engine.extension_registry.clear_cache()
     reset_repositories()
@@ -352,10 +348,11 @@ def test_engine_apply_template_creates_cached_project(api_engine):
 
     # 列表可见
     assert any(p["project_id"] == pid for p in api_engine.list_projects())
-    # 运行时缓存已就绪
+    # 项目与统一分层记忆均可从数据库恢复
     assert pid in api_engine._project_runtime
-    assert pid in api_engine.memories
-    assert pid in api_engine.rags
+    memory = api_engine.memory_for(pid)
+    assert api_engine.memories[pid] is memory
+    assert memory.counts()["archive"] >= 16
 
 
 def test_engine_apply_template_generates_distinct_projects(api_engine):

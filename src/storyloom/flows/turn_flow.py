@@ -39,7 +39,6 @@ from storyloom.crews.scene_crew.packet import (
 from storyloom.extensions.host import ExtensionHost, ExtensionRegistry
 from storyloom.memory.checkpoint import SaveService
 from storyloom.memory.core import LayeredMemory
-from storyloom.memory.legacy import SimpleRAGMemory
 from storyloom.memory.models import NovelProject
 from storyloom.crews.scene_crew.arc import ArcDirector, DirectorFrame
 from storyloom.memory.state import (
@@ -129,7 +128,7 @@ def merge_deltas(target: StateDelta, patch: StateDelta) -> StateDelta:
 class TurnLoop:
     """双模式回合循环（可选集成 SceneCrew 多 Agent 链）
 
-    crew / rag 都为 None 时退回原简化路径，保证旧测试通过。
+    crew 为 None 时退回原简化路径，保证旧测试通过。
     传入后游戏模式与导演模式共用同一套 SceneCrew 的叙事能力。
     """
 
@@ -142,7 +141,6 @@ class TurnLoop:
         save_service: Optional[SaveService] = None,
         prose_fn: Optional[Callable[[str, WorldState], str]] = None,
         crew: Optional[SceneCrew] = None,
-        rag: Optional[SimpleRAGMemory] = None,
     ):
         self.project = project
         self.instance_id = instance_id
@@ -154,7 +152,6 @@ class TurnLoop:
         self.arc_director = ArcDirector()
         self._rrf_counter = 0
         self.crew = crew
-        self.rag = rag
         # 用于游戏模式下抽样触发高成本 agent（surprise / foreshadow / director）
         self._crew_turn_counter = 0
 
@@ -770,16 +767,7 @@ class TurnLoop:
             f"GM裁决: {primary.narrative if primary else '无'}"
         )
 
-        # RAG 上下文
-        rag_context = ""
-        if self.rag is not None:
-            try:
-                docs = self.rag.query(action_text or scene_brief, n_results=3)
-                rag_context = "\n".join(docs) if docs else ""
-            except Exception:
-                rag_context = ""
-
-        # 记忆上下文（用 LayeredMemory 的 prompt_block）
+        # 核心记忆上下文；archive 在 render_scene 前按需检索
         memory_block = ""
         if self.memory is not None:
             memory_block = self.memory.prompt_block(viewer=actor)

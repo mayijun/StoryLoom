@@ -5,8 +5,7 @@ This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 记忆层入口：
 - 资产模型（角色 / 地点 / 伏笔 / 项目）
 - 世界状态（WorldState / Fact / 裁决协议 / 舞台指令）
-- 基础版 CoreMemory / SimpleRAGMemory（作者模式继续使用）
-- 分层记忆 v2 LayeredMemory + 检索后端 + 历史回填
+- 双模式共用 LayeredMemory + 检索后端 + 历史回填
 """
 
 from storyloom.memory.base import (
@@ -54,7 +53,6 @@ from storyloom.memory.checkpoint import (
 from storyloom.memory.core import LayeredMemory
 from storyloom.memory.hybrid import HybridBackend
 from storyloom.memory.indexer import MemoryIndexer
-from storyloom.memory.legacy import CoreMemory, SimpleRAGMemory
 from storyloom.memory.lexical import LexicalBackend
 from storyloom.memory.vector import VectorBackend
 
@@ -67,7 +65,6 @@ __all__ = [
     "CheckpointRecord",
     "CheckpointStore",
     "CheckpointSummary",
-    "CoreMemory",
     "DemotionRule",
     "Fact",
     "FactOverride",
@@ -87,7 +84,6 @@ __all__ = [
     "SaveRecord",
     "SaveService",
     "SaveSummary",
-    "SimpleRAGMemory",
     "StageDirective",
     "StageScene",
     "StateDelta",
