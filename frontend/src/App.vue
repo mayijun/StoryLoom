@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, provide } from 'vue'
+import { ref, computed, onMounted, provide, onBeforeUnmount } from 'vue'
 import { useProjectStore } from './stores/projectStore'
 import { useAgentStore } from './stores/agentStore'
 import { useAssetStore } from './stores/assetStore'
@@ -32,6 +32,122 @@ const sceneStore = useSceneStore()
 const serverOnline = ref(false)
 const activeTab = ref<'chapters' | 'crew'>('chapters')
 const rightTab = ref<'characters' | 'locations' | 'foreshadowings' | 'metrics'>('characters')
+
+// ---- 侧边栏宽度与折叠 ----
+const SIDE_MIN = 48 // 折叠后的窄条宽度
+const LEFT_MIN = 200
+const LEFT_MAX = 800
+const RIGHT_MIN = 180
+const RIGHT_MAX = 600
+const leftWidth = ref(280)
+const rightWidth = ref(320)
+const leftCollapsed = ref(false)
+const rightCollapsed = ref(false)
+const leftWideBase = ref(560) // layout-wide 时左栏默认宽度
+
+const effectiveLeftWidth = computed(() =>
+  leftCollapsed.value ? SIDE_MIN : (activeTab.value === 'chapters' || activeTab.value === 'crew' ? leftWideBase.value : leftWidth.value)
+)
+const effectiveRightWidth = computed(() =>
+  rightCollapsed.value ? SIDE_MIN : rightWidth.value
+)
+
+// 把宽度应用到 grid
+const layoutStyle = computed(() => ({
+  '--left-width': effectiveLeftWidth.value + 'px',
+  '--right-width': effectiveRightWidth.value + 'px',
+}))
+
+// 从 localStorage 恢复宽度
+onMounted(() => {
+  try {
+    const saved = localStorage.getItem('storyloom.layout')
+    if (saved) {
+      const d = JSON.parse(saved)
+      if (typeof d.leftWidth === 'number') leftWidth.value = d.leftWidth
+      if (typeof d.rightWidth === 'number') rightWidth.value = d.rightWidth
+      if (typeof d.leftWideBase === 'number') leftWideBase.value = d.leftWideBase
+      if (d.leftCollapsed) leftCollapsed.value = true
+      if (d.rightCollapsed) rightCollapsed.value = true
+    }
+  } catch { /* ignore */ }
+})
+
+function persistLayout() {
+  try {
+    localStorage.setItem('storyloom.layout', JSON.stringify({
+      leftWidth: leftWidth.value,
+      rightWidth: rightWidth.value,
+      leftWideBase: leftWideBase.value,
+      leftCollapsed: leftCollapsed.value,
+      rightCollapsed: rightCollapsed.value,
+    }))
+  } catch { /* ignore */ }
+}
+
+// ---- 拖拽调整 ----
+let dragSide: 'left' | 'right' | null = null
+let dragStartX = 0
+let dragStartWidth = 0
+
+function onResizeStart(side: 'left' | 'right', e: MouseEvent) {
+  e.preventDefault()
+  dragSide = side
+  dragStartX = e.clientX
+  dragStartWidth = side === 'left'
+    ? (activeTab.value === 'chapters' || activeTab.value === 'crew' ? leftWideBase.value : leftWidth.value)
+    : rightWidth.value
+  window.addEventListener('mousemove', onResizeMove)
+  window.addEventListener('mouseup', onResizeEnd)
+  document.body.style.cursor = side === 'left' ? 'col-resize' : 'col-resize'
+  document.body.style.userSelect = 'none'
+}
+
+function onResizeMove(e: MouseEvent) {
+  if (!dragSide) return
+  const dx = e.clientX - dragStartX
+  if (dragSide === 'left') {
+    // 拖拽左 handle：handle 在 aside-left 右边，向右拖增加左栏宽度
+    let w = dragStartWidth + dx
+    if (activeTab.value === 'chapters' || activeTab.value === 'crew') {
+      w = Math.max(LEFT_MIN, Math.min(LEFT_MAX, w))
+      leftWideBase.value = w
+    } else {
+      w = Math.max(LEFT_MIN, Math.min(LEFT_MAX, w))
+      leftWidth.value = w
+    }
+    leftCollapsed.value = false
+  } else {
+    // 拖拽右 handle：handle 在 aside-right 左边，向左拖增加右栏宽度
+    let w = dragStartWidth - dx
+    w = Math.max(RIGHT_MIN, Math.min(RIGHT_MAX, w))
+    rightWidth.value = w
+    rightCollapsed.value = false
+  }
+}
+
+function onResizeEnd() {
+  dragSide = null
+  window.removeEventListener('mousemove', onResizeMove)
+  window.removeEventListener('mouseup', onResizeEnd)
+  document.body.style.cursor = ''
+  document.body.style.userSelect = ''
+  persistLayout()
+}
+
+function toggleLeftCollapse() {
+  leftCollapsed.value = !leftCollapsed.value
+  persistLayout()
+}
+function toggleRightCollapse() {
+  rightCollapsed.value = !rightCollapsed.value
+  persistLayout()
+}
+
+onBeforeUnmount(() => {
+  window.removeEventListener('mousemove', onResizeMove)
+  window.removeEventListener('mouseup', onResizeEnd)
+})
 const sceneBrief = ref('')
 const selectedChars = ref<string[]>([])
 
@@ -647,7 +763,15 @@ async function doCopyConfig() {
 </script>
 
 <template>
-  <div class="app-layout" :class="{ 'layout-wide': activeTab === 'chapters' || activeTab === 'crew' }">
+  <div
+    class="app-layout"
+    :class="{
+      'layout-wide': activeTab === 'chapters' || activeTab === 'crew',
+      'left-collapsed': leftCollapsed,
+      'right-collapsed': rightCollapsed,
+    }"
+    :style="layoutStyle"
+  >
     <!-- ==================== 顶栏 ==================== -->
     <header class="app-header">
       <h1>🧵 织章 StoryLoom</h1>
@@ -866,6 +990,18 @@ async function doCopyConfig() {
       </template>
     </aside>
 
+    <!-- 左侧 resize handle -->
+    <div
+      class="resize-handle resize-handle-left"
+      @mousedown="(e: MouseEvent) => onResizeStart('left', e)"
+      @dblclick="toggleLeftCollapse"
+      :title="leftCollapsed ? '双击展开左栏' : '拖拽调整宽度 · 双击折叠'"
+    >
+      <button class="collapse-btn" @click="toggleLeftCollapse" :title="leftCollapsed ? '展开' : '折叠'">
+        {{ leftCollapsed ? '»' : '«' }}
+      </button>
+    </div>
+
     <!-- ==================== 主内容区：写作工作台 ==================== -->
     <main class="main-content">
       <template v-if="projectStore.currentProjectId">
@@ -1013,6 +1149,18 @@ async function doCopyConfig() {
         </div>
       </template>
     </main>
+
+    <!-- 右侧 resize handle -->
+    <div
+      class="resize-handle resize-handle-right"
+      @mousedown="(e: MouseEvent) => onResizeStart('right', e)"
+      @dblclick="toggleRightCollapse"
+      :title="rightCollapsed ? '双击展开右栏' : '拖拽调整宽度 · 双击折叠'"
+    >
+      <button class="collapse-btn" @click="toggleRightCollapse" :title="rightCollapsed ? '展开' : '折叠'">
+        {{ rightCollapsed ? '«' : '»' }}
+      </button>
+    </div>
 
     <!-- ==================== 右侧边栏：资产管理 ==================== -->
     <aside class="sidebar-right">
