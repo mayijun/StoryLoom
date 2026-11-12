@@ -86,14 +86,15 @@
 
 地图必须由 `mod` 注入，否则 `WorldState` 没有任何出口，所有移动都会返回 `not_found`。
 本 Demo 的地图 `map_xianxia` 与文风 `skill_xianxia` 已作为 Python 字典内嵌在
-`src/storyloom/templates/xianxia_system.py` 的 `EXTENSIONS` 中，不再以独立 YAML
-存放在 `examples/` 下。`ExtensionRegistry` 在首次解析时会自动把模板内嵌扩展注册进来，
-因此无需手动放置文件。
+`src/storyloom/templates/xianxia_system.py` 的 `EXTENSIONS` 中，不再使用独立 YAML，
+也没有 `examples/` 扫描目录。`ExtensionRegistry` 在首次解析时会自动把模板内嵌扩展注册进来，
+因此无需手动放置文件。另一个内置模板《临江市 · 平行人生》
+（`src/storyloom/templates/sandbox_life.py`）同样内嵌 `map_sandbox_life` 与 `skill_sandbox_life`。
 
 - `map_xianxia`（mod）：提供青云宗 6 个地点与 15 条双向路线，地牢只留「→演武场」单向出口。
 - `skill_xianxia`（skill）：世界先于主角、NPC 各有各的账、签到必有代价、秘密只作线索。
 
-> **关于同名地点**：模板内嵌扩展是当前唯一的内置扩展，因此「地牢」不会出现歧义。
+> **关于同名地点**：本模板内嵌的扩展即时可用，因此「地牢」不会出现歧义。
 > 自建项目若也要用「地牢」，只要项目资产里存在精确同名地点，
 > `resolve_location` 会优先命中项目自己的地点。
 > 如需隔离，可显式传 `enabled_extensions: ["map_xianxia", "skill_xianxia"]`。

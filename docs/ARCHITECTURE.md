@@ -15,8 +15,10 @@
 | 权限 | 可改写事实（`FactOverride`，审计 + 快照） | 自由文本默认进入叙事；扩展可添加行动裁决 |
 | 产物 | 小说章节 | 可交互的文字世界 |
 
-两种模式共用同一套世界状态、裁决、渲染与扩展机制。导演模式保留现有的
-`scene_brief → 场景正文` 入口；游戏模式走 `text → TurnLoop`。
+两种模式共用同一套世界状态、裁决、渲染与扩展机制。两种模式的叙事链已合并进
+统一叙事引擎 `NarrativeEngine`（`engine/narrative.py`）：导演模式走
+`scene_brief → generate_scene()`，游戏模式走 `text → play_turn()`；
+`flows/scene_flow.py` / `flows/turn_flow.py` 仅保留为向后兼容 shim。
 
 模式切换是**存档级运行时状态**，不是项目创建属性：任意回合边界可切换，世界状态与
 记忆不重置；切换前自动打 checkpoint，切换当回合强制重走一次 `director_frame`。
@@ -38,7 +40,7 @@
 │ Layer 2  共享状态层    WorldState + LayeredMemory             │
 │          Fact 真相 / Belief 认知 / 时间 / 地点 / Flag / 记忆    │
 ├──────────────────────────────────────────────────────────────┤
-│ Layer 1  运行时        TurnLoop                                 │
+│ Layer 1  运行时        NarrativeEngine                          │
 │          自由文本输入 / Agent JSON → StageDirective             │
 ├──────────────────────────────────────────────────────────────┤
 │ Layer 0  基础设施      llm/router + db/repository              │
@@ -58,7 +60,8 @@ LayeredMemory 的 checkpoint 机制。这样 Crew 成为整个系统的**唯一�
 
 **模块归属**：`memory/` = 资产模型（`memory/models.py`）+ 世界状态（`memory/state.py`）+
 分层记忆与 Checkpoint；`crews/` = Agent 定义 + 导演帧（`crews/scene_crew/arc.py`）；
-`flows/` = TurnLoop；`frontend/src/components/flow/controls.ts` = 控制策略配置。
+`engine/narrative.py` = 双模式统一叙事引擎；`flows/` = 兼容层（旧 Flow 名转发到
+`NarrativeEngine`）；`frontend/src/components/flow/controls.ts` = 控制策略配置。
 
 ---
 
@@ -297,32 +300,40 @@ mod 抛异常只降级跳过并打质量标记，不阻断回合。
 
 ---
 
-## 4. TurnLoop
+## 4. 统一叙事引擎（`engine/narrative.py`）
+
+`NarrativeEngine` 有两个公开入口，内部共享 `_narrate` 与 `_advance_world`：
+
+| 入口 | 模式 | 链路 |
+|---|---|---|
+| `generate_scene()` | 导演 | `_narrate(mode="director") → _advance_world(mode="director") → SceneResult` |
+| `play_turn()` | 游戏 | `perceive → adjudicate → _narrate(mode="game") → _advance_world → arc tick → render → TurnResult` |
+
+游戏回合的实际顺序：
 
 ```
-boot
- → perceive              （自由文本，不做动作类型分类）
- → director_frame        （节拍 / 张力 / 信息预算 / 命运预兆）
- → actor_round           （玩家 / 指定角色行动 → ActionProposal）
- → _npc_round            （空闲达阈值时，EnsembleAgent 输出 npc_actions）
- → adjudicate            （导演 Agent JSON 裁决：allow / reject / direct）
- → consistency_check     （ConsistencyAgent 输出 issues → retry ≤ N）
- → moderation_gate       （ModerationGate 暂存态审核）
- → render_scene          （compose_scene：prose + choices + stage）
- → commit                （事务转正）
- → plan_next
-      ├─ next_turn → perceive
-      ├─ end_arc
-      ├─ stop
-      ├─ idle_stop
-      └─ human_review
+perceive              （从 WorldState 读地点 / 在场角色）
+ → adjudicate          （导演 Agent JSON 裁决：allow / reject / direct）
+ → _npc_round_fallback （idle_turns ≥ 3 时 NPC 自发事件）
+ → _narrate            （DirectorAgent → 可选动态 Crew → ProseAgent；一致性 retry）
+ → _advance_world      （世界推进 + 正文落库 + 记忆写入，两种模式共用）
+ → arc tick            （ArcDirector 推进节拍 / 张力）
+ → render              （compose_scene：prose + choices + stage）
+ → TurnResult
 ```
 
-- 循环用 `@router` 回到上游；`@listen` 不能指向自身，回环统一经 `plan_next` 标签；
-- 出口条件：`max_turns`、`arc_complete`、`player_quit`、`idle_stop`、
-  连续 3 回合质量下降、`human_review_required`；
-- 硬上限：`max_turns_per_session`、`max_retries_per_turn`、`max_cost_per_turn`；
-- Flow 的 `max_method_calls` 兜底，防止逻辑遗漏导致死循环。
+- `_narrate` 是 2~3 次 LLM kickoff 的统一链：DirectorAgent 合成
+  surprise / intent / foreshadow / consistency，动态 Crew 仅在导演模式启用，
+  最后统一走 ProseAgent；一致性 major 冲突按 `max_retries` 重试；
+- 没有可用模型时走确定性降级：导演 JSON 兜底 + 最小自由叙事，回合链不断；
+- `flows/turn_flow.py` 的 `TurnLoop` 是兼容 shim：保留 quota / timeout / trace
+  等旧流程控制，核心叙事转发 `NarrativeEngine.play_turn()`；
+- `flows/scene_flow.py` 的 `SceneGenerationFlow` 是兼容 shim：转发
+  `NarrativeEngine.generate_scene()`；
+- 出口：`play_turn` 在 `ArcState.phase == "ending"` 时返回 `exit="stop"`，
+  否则 `next_turn`；超时 / 配额由 shim 返回 `timeout` / `quota_exceeded`；
+- 重试与硬上限：`max_retries`（一致性重试）、`max_duration_ms`（超时）、
+  `max_turns` / `max_cost`（请求级配额）。
 
 ---
 
@@ -334,12 +345,17 @@ boot
 |---|---|---|
 | `memory/models.py` | 角色 / 地点 / 伏笔 / 意外提案 / 项目 | 项目资产 |
 | `memory/state.py` | `WorldState` / `Fact` / `CharState` / `LocationState` / `ArcState` / `StageDirective` / `FactOverride` | 运行时世界状态 |
+| `memory/base.py` | `MemoryItem` / `MemorySettings` / `MemoryTier` / `WorkingMemory` | 记忆模型与配置 |
 | `memory/core.py` | `LayeredMemory` | 分层叙事记忆 |
-| `memory/checkpoint.py` | `CheckpointStore`（原 `SaveService` 合并进来） | SessionState 快照 |
+| `memory/scoring.py` | 摘要 / 重要性评分 / 降级判定 | 记忆生命周期 |
+| `memory/compress.py` | 压缩提示词 / 确定性兜底压缩 | 分层压缩 |
+| `memory/checkpoint.py` | `CheckpointStore`（`SaveService` 别名保留） | SessionState 快照 |
 | `memory/lexical.py` / `vector.py` / `hybrid.py` | 检索后端 | 记忆召回 |
 | `memory/indexer.py` | `MemoryIndexer` | 历史场景回填与资产刷新 |
 
-导演帧不在 `memory/`：它是 Crew 的生成参数，位于 `crews/scene_crew/arc.py`。
+叙事引擎不在 `memory/`：双模式入口位于 `engine/narrative.py`；
+旧的 `flows/scene_flow.py` / `flows/turn_flow.py` 只做兼容转发。
+导演帧是 Crew 的生成参数，位于 `crews/scene_crew/arc.py`。
 控制策略不在后端：它是 Flow 配置，位于 `frontend/src/components/flow/controls.ts`。
 
 ### 5.1 运行时状态（`memory/state.py`）
@@ -434,66 +450,58 @@ Checkpoint 合并进记忆系统的设计理由：
 
 ---
 
-## 6. 与现有实现的映射
+## 6. 当前模块与目录
 
-| 现有模块 | 在新架构中的位置 | 状态 |
+| 模块 | 位置 | 职责 |
 |---|---|---|
-| `api/engine.py` | **StoryEngine**：项目 / 资产 / 两种模式运行时，改名 + 职责收窄 | 改名 + 保留 |
-| `crews/scene_crew/` | Layer 3 Crew：LLM Agents（统一 JSON 输出）+ Tools | 保留 + 扩展 |
-| `flows/scene_flow.py` | 导演模式的单场景子流程 | 保留 |
-| `flows/turn_flow.py` | 双模式 TurnLoop | 保留 |
-| `control/` | 前端 Flow 控制配置：灵敏度 / 采样 / 质量闸门 | 删除后端，迁移到 `frontend/src/components/flow/controls.ts` |
-| `memory.py` → `memory/` | Layer 2 资产模型 + 世界状态 + 分层记忆 + Checkpoint | 重构 + 合并 |
-| `world/state.py` | Layer 2 世界状态：WorldState + Fact + 裁决协议 | 并入 `memory/state.py` |
-| `narrative/arc.py` | 导演帧：Crew 生成参数 | 并入 `crews/scene_crew/arc.py` |
-| `llm/router.py` | Layer 0 模型路由 | 复用 |
-| `models.py` | 资产模型 | 并入 `memory/models.py` |
-| `db/repository.py` | Layer 0 持久化 | 复用 + Checkpoint 记录 |
-| `media/render_adapter.py` | Layer 5 表现层雏形 | 重构为 `PresentationAdapter` |
+| StoryEngine | `api/engine.py` | 项目 / 资产 / Checkpoint / 扩展 / 双模式 API 门面 |
+| NarrativeEngine | `engine/narrative.py` | `generate_scene()` / `play_turn()`，共享 `_narrate` + `_advance_world` |
+| SceneCrew | `crews/scene_crew/crew.py` | LLM Agents + 导演裁决 + NPC 提案 + 质检 |
+| AgentPacket | `crews/scene_crew/packet.py` | 统一 JSON 契约 + 场景装配 |
+| ExtensionHost | `extensions/host.py` | Crew 的 Tool Loader |
+| LayeredMemory | `memory/core.py` | 分层记忆 / 压缩 / 降级 / 回温 |
+| CheckpointStore | `memory/checkpoint.py` | SessionState 快照与回放 |
+| 兼容 shim | `flows/scene_flow.py` / `flows/turn_flow.py` | 旧 Flow 名转发到 `NarrativeEngine` |
 
-### 6.1 StoryEngine（原 NovelEngine）
-
-| 旧名 | 新名 | 理由 |
-|---|---|---|
-| `NovelEngine` | **StoryEngine** | 不再只是生成小说章节；游戏模式、双模式切换、TurnLoop、记忆编排都在这个引擎里。`StoryEngine` 更直观地表达「整个 StoryLoom 运行时的入口」。 |
-
-StoryEngine 的职责：
+StoryEngine 是 API 门面，叙事细节委托给 `NarrativeEngine`：
 
 ```python
 class StoryEngine:
-    # === 项目管理 ===
+    # === 项目管理 / 资产 ===
     create_project / get_project / list_projects / add_character / ...
-    
-    # === 两种模式的统一入口 ===
-    generate_scene(request)          # 导演模式：生成一章场景
-    play_turn(project_id, boot)     # 游戏模式：跑一个 TurnLoop
-    
+
+    # === 两种模式 ===
+    generate_scene(request)           # 导演模式：委托 NarrativeEngine.generate_scene()
+    play_turn(project_id, boot)       # 游戏模式：委托 NarrativeEngine.play_turn()
+
     # === 模式切换 ===
     switch_game_mode(project_id, target_mode, instance_id)
-    
+
     # === 记忆 & Checkpoint ===
     memory_for(project_id, backend) -> LayeredMemory
-    create_checkpoint / list_checkpoints / restore_checkpoint  # 原 save_* 方法
-    
+    create_save / list_saves / load_save
+
     # === 扩展 ===
     resolve_extensions(instance_id, enabled)
 ```
 
-### 6.2 目录结构
+### 6.1 目录结构
 
 ```
 src/storyloom/
 ├── api/
 │   ├── main.py              # FastAPI 入口 + CORS
-│   ├── engine.py            # **StoryEngine**：项目/资产/双模式运行时
+│   ├── engine.py            # **StoryEngine**：项目/资产/双模式 API 门面
 │   ├── schemas.py
 │   └── routers/             # 版本化 API：/runtime/v1/* + /api/*
+├── engine/
+│   └── narrative.py         # **NarrativeEngine**：generate_scene / play_turn
 ├── crews/
 │   └── scene_crew/
 │       ├── crew.py          # @CrewBase SceneCrew：Agent + 裁决 + NPC + 质检
 │       ├── packet.py        # AgentPacket 统一 JSON 契约 + 场景装配
 │       ├── arc.py           # 导演帧：起承转合 + 张力 + 信息预算（Crew 生成参数）
-│       ├── tools/           # ExtensionHost 注册的 mod/skill 工具
+│       ├── tools.py         # Crew 工具（如活跃伏笔查询）
 │       └── config/          # agents.default.yaml / tasks.default.yaml
 ├── extensions/
 │   ├── manifest.py          # manifest schema + 校验
@@ -501,38 +509,27 @@ src/storyloom/
 ├── memory/
 │   ├── models.py            # 资产模型 / 伏笔 / 意外 / NovelProject
 │   ├── state.py             # WorldState + Fact + FactOverride + 裁决协议
+│   ├── base.py              # MemoryItem / MemorySettings / MemoryTier
 │   ├── core.py              # LayeredMemory：分层 / 压缩 / 降级 / 回温
-│   ├── checkpoint.py        # Checkpoint：快照 + 恢复（**原 saves/service.py 合并进来**）
+│   ├── scoring.py           # 摘要 / 重要性评分 / 降级判定
+│   ├── compress.py          # 压缩提示词 + 确定性兜底
+│   ├── checkpoint.py        # CheckpointStore：快照 + 恢复
 │   ├── lexical.py           # fts 后端
 │   ├── vector.py            # vector 后端
 │   ├── hybrid.py            # hybrid 后端
 │   └── indexer.py           # 历史场景回填与资产刷新
 ├── flows/
-│   ├── scene_flow.py        # 导演模式单场景
-│   └── turn_flow.py         # 双模式 TurnLoop
+│   ├── scene_flow.py        # 兼容 shim → NarrativeEngine.generate_scene()
+│   └── turn_flow.py         # 兼容 shim → NarrativeEngine.play_turn()
 ├── llm/                     # providers.py + router.py
 ├── db/                      # ORM + Repository
 ├── media/                   # render_adapter.py → PresentationAdapter
-├── config/memory_config.default.yaml
-├── templates/               # 试用模板 + 内嵌扩展
+├── config/
+│   ├── memory_config.default.yaml
+│   └── model_config.yaml
+├── templates/               # xianxia_system.py / sandbox_life.py + 内嵌扩展
 └── frontend/                # Vue 3（components/flow/controls.ts 为 Flow 控制配置）
 ```
-
-**模块归并 / 删除结果**：
-
-| 旧路径 | 去向 |
-|---|---|
-| `saves/service.py` | 合并进 `memory/checkpoint.py`，`SaveService` 改为 `CheckpointStore` |
-| `world/state.py` | 并入 `memory/state.py`（世界状态也是世界书 / 长期状态的一种） |
-| `world/game_master.py` | 删除；裁决改由导演 Agent 输出 JSON（`SceneCrew.adjudicate`） |
-| `world/authority.py` | 删除；模式策略进 `SceneCrew.adjudicate(mode=)`，改写进 `WorldState` |
-| `world/autonomous_agent.py` | 删除；NPC 自主合并进 `SceneCrew.npc_actions`（EnsembleAgent） |
-| `narrative/arc.py` | 并入 `crews/scene_crew/arc.py`，作为 Crew 生成参数 |
-| `models.py` | 并入 `memory/models.py` |
-| `control/` | 删除后端；灵敏度 / 闸门策略改为 `frontend/src/components/flow/controls.ts` 的 Flow 配置 |
-| `runtime/directive.py` | 删除；`StageDirective` 保留在 `memory/state.py` |
-| `runtime/renderer.py` | 删除；`compose_scene` + ProseAgent 接管 |
-| `extensions/host.py` | 保留路径不变，重新定位为 Crew 的 Tool Loader |
 
 ---
 
@@ -570,7 +567,7 @@ M0 只解析 `asset` manifest，不做媒体渲染。
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | 作者模式 MVP | 场景生成 / 资产与场景落库 / 章节 / Web 工作台 | ✅ |
-| M0 | 双模式纵切：WorldState / 导演 Agent JSON 裁决 / 双总线 / TurnLoop / 模式切换 / NPC 自主 / LayeredMemory + Checkpoint / memory 统一资产·状态·记忆 / Mod v1 / 游戏前端 | ✅ |
+| M0 | 双模式纵切：WorldState / 导演 Agent JSON 裁决 / 双总线 / `NarrativeEngine` 统一叙事链 / 模式切换 / NPC 自主 / LayeredMemory + Checkpoint / memory 统一资产·状态·记忆 / Mod v1 / 游戏前端 | ✅ |
 | M1 | TFC 五档、审核 Gate 实装、图片/音频媒体、Flag/Choice/好感度、章节化收束 | 🔲 |
 | M2 | 命运、Casting、路线图、日程、POV、Belief 全量、ADV/NVL | 🔲 |
 | M3 | 视频、生成式媒体、TTS | 🔲 |

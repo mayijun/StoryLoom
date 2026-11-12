@@ -79,8 +79,8 @@
 ### 成本与质量的权衡
 
 控制论增强的实验实现曾验证：用约 3 倍 API 调用可以换取明显的质量提升。
-该实验实现已移除，相关能力将在 M0 的 TurnLoop 中按阶段重新接入；
-当前可通过 `config/model_config.yaml` 的 `strategy.mode` 在
+该实验实现已移除；M0 只在 `NarrativeEngine` 中保留按角色分级的重试与一致性校验，
+未重新引入多采样投票。当前可通过 `src/storyloom/config/model_config.yaml` 的 `strategy.mode` 在
 `cost_optimized` / `balanced` / `quality_first` 之间切换。
 
 ---
@@ -91,16 +91,16 @@
 
 | 原理 | 作者模式 | 游戏模式 |
 |---|---|---|
-| 反馈闭环 | 一致性检测 → 重试 | GM 裁决 → 一致性 → 审核 → 重试 |
+| 反馈闭环 | 一致性检测 → 重试 | 导演 Agent 裁决 → 一致性 → 审核 → 重试 |
 | 统计滤波 | 高杠杆 Agent 多次采样 | 关键裁决（攻击/命运收束）多次采样 |
 | 灵敏度分析 | 按 Agent 风险分配校验 | 按 `importance_tier` 分配 tick 频率与审核强度 |
 | 解耦控制 | 结构化中间格式 | `TurnBoot(text)` / `Fact` / `StageDirective` 三层解耦 |
-| 分层管控 | Orchestrator | 基座 / 扩展 / 导演 / 表现四层 |
-| 人机结合 | `human_review_gate` | 审核不确定、命运收束、关键 GM 裁决转人工 |
+| 分层管控 | Crew / Flow 编排 | 基座 / 扩展 / 导演 / 表现四层 |
+| 人机结合 | `human_review_gate` | 审核不确定、命运收束、关键导演 Agent 裁决转人工 |
 
 新增的三处闭环：
 
-1. **GM 裁决闭环**：行动提案 → 规则校验 → 失败给出替代方案 → 重试；
+1. **导演裁决闭环**：行动提案 → 规则校验 → 失败给出替代方案 → 重试；
 2. **审核闭环**：暂存态 → 审核 → `soften / rewrite / regenerate`，不污染已提交状态；
 3. **节奏闭环**：TFC 根据 `drift` / `tension` 调节时间步长，避免主线发散或长期平淡。
 
@@ -118,6 +118,6 @@
 ### M0 的控制论边界
 
 M0 只做**最小闭环**：`retry ≤ N`、schema 校验、超时、硬上限
-（`max_turns / max_retries / max_cost`），内化在 TurnLoop 与 GM 里。
+（`max_turns / max_retries / max_cost`），内化在 `NarrativeEngine` 与导演 Agent 里。
 记忆 v2 的压缩 / 降级同样只做最小闭环：阈值触发、确定性兜底、可回温，
 不做学习型重要性模型。多采样投票、趋势自适应等高级控制形式不进 M0，只保留接口。

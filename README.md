@@ -45,12 +45,12 @@
 - 📋 **大纲** — 规划章节结构
 
 **Deterministic Agents**（纯代码，不花钱，永远可用）：
-- 🎲 **GM 裁决** — 行动合法性、在场性、资源、世界规则
-- ✅ **一致性检查** — 人设/时间线/设定冲突校验
+- 🚧 **运行时守卫** — 存在性 / 在场性 / 死亡态 / 输出 schema 的前置拦截
+- ✅ **一致性前置校验** — 时间线、在场性与世界规则的确定性检查
 - 🛡️ **审核闸门** — 内容合规检查
 
-> 规则类的工作（裁决、一致性、审核）不交给 LLM 即兴发挥，
-> 而是确定性代码保证：LLM 决定「想做什么」，Crew 的确定性角色决定「能不能发生」。
+> 行动裁决由导演 Agent 输出统一 JSON，运行时只做确定性的前置拦截与状态推进：
+> LLM 决定「想做什么」，代码守住「这个提案是否具备发生条件」。
 
 ### 2. 闭环：错了就改，而不是一路错下去
 
@@ -66,11 +66,11 @@
 输入  自由文本       玩家输入 / Agent 推荐行动 / 等待
 状态  WorldState     Fact 真相 + Belief 认知 + Memory 经历
 输出  StageDirective 对话 / 立绘 / 背景 / 音乐 / 选项
-Crew  LLM + 确定性   Agent 们协作：导演、GM、一致性检查、润色...
+Crew  LLM + 确定性   Agent 们协作：导演、主角、群演、一致性、润色...
 工具  skill / mod / policy / asset   ExtensionHost 加载为 Crew Tool
 ```
 
-- **LLM Agents 决定「想做什么」，确定性 Agents（GM）决定「能不能发生」**；
+- **导演 Agent 输出 JSON 裁决，运行时守卫做确定性前置拦截**；LLM 决定「想做什么」，代码守住「能不能发生」的边界；
 - ExtensionHost 是 Crew 的 Tool Loader：把 mod/skill 注册为 Crew 可用的工具；
 - 每个角色只看到自己该看到的信息，避免「角色知道全局」；
 - 表现层与叙事层解耦：同一段剧情可以输出成文本、ADV、NVL，未来接多模态。
@@ -117,11 +117,14 @@ Crew  LLM + 确定性   Agent 们协作：导演、GM、一致性检查、润色
 历史场景、角色与地点均可从数据库重建。
 
 **M0 已交付 — 双模式动态世界纵切（含分层记忆 v2）**：
-游戏模式与导演模式共用一条 TurnLoop，跑通「玩家输入 / 导演指令 → Crew GM Agent 裁决 →
-演出指令 → 状态更新 → Checkpoint 回放」的最小纵切。包含 `FactOverride` 审计回滚、
-模式切换自动 checkpoint、NPC 自主、分层记忆 v2 + Checkpoint（短期压缩 / 长期 / 常驻 / 降级回温、
-按项目落库的记忆配置、`fts / vector / hybrid` 三后端）、Mod v1（YAML，ExtensionHost 加载为 Crew Tool）、
-可玩的游戏前端；运行时入口 **StoryEngine**（原 NovelEngine 改名）统一两种模式。
+游戏模式与导演模式共用统一叙事引擎 **`NarrativeEngine`**（`engine/narrative.py`），
+跑通「玩家输入 / 导演指令 → 导演 Agent 裁决 → 统一叙事生成 → 世界推进 →
+演出指令 → Checkpoint 回放」的最小纵切。`flows/` 下的旧 Flow 已收敛为兼容 shim。
+包含 `FactOverride` 审计回滚、模式切换自动 checkpoint、NPC 自主、分层记忆 v2 + Checkpoint
+（短期压缩 / 长期 / 常驻 / 降级回温、按项目落库的记忆配置、`fts / vector / hybrid` 三后端）、
+Mod v1（YAML，ExtensionHost 加载为 Crew Tool）、可玩的游戏前端；
+运行时入口 **StoryEngine**（`api/engine.py`）统一项目、资产与两种模式。
+内置两个可删除试用模板：仙侠《青云宗 · 签到有债》与都市沙盒《临江市 · 平行人生》。
 接口按运行时架构预留（async + 超时 + 扩展包隔离），为后续性能扩展留对结构。
 验收 A1 ~ A15 由 `tests/test_m0*.py` 覆盖，后端共 **194 个用例全部通过**
 （完整清单见 [TESTS.md](docs/TESTS.md)），详见 [MVP.md](docs/MVP.md)。

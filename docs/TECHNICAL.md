@@ -47,9 +47,20 @@ Crew 是整个 StoryLoom 的核心协作单元，包含两种角色：
   数据库里配置的同名字段优先；
 - **可配置**：每个项目可独立增删改 Agent / Task、调整执行顺序、启停。
 
+### 🔀 统一叙事引擎（NarrativeEngine）
+
+- `src/storyloom/engine/narrative.py` 合并了原 `flows/scene_flow.py`（导演模式）与
+  `flows/turn_flow.py`（游戏模式）的叙事链；
+- 两个公开入口：`generate_scene()`（导演）与 `play_turn()`（游戏），
+  内部共享 `_narrate()` 与 `_advance_world()`；
+- `_narrate()` 是 2~3 次 LLM kickoff 的统一链：DirectorAgent JSON → 可选动态 Crew →
+  ProseAgent，一致性 major 冲突按 `max_retries` 重试；
+- `TurnLoop` / `SceneGenerationFlow` 仅作为兼容 shim，保留旧签名与 quota / timeout / trace；
+- API 门面 `StoryEngine`（`api/engine.py`）负责项目、资产、存档、扩展，叙事委托 `NarrativeEngine`。
+
 ### 🔀 多模型路由 + 自动降级
 
-- `config/model_config.yaml` 配置提供商与 Agent→模型映射，改配置不改代码；
+- `src/storyloom/config/model_config.yaml` 配置提供商与 Agent→模型映射，改配置不改代码；
 - 支持 DeepSeek / OpenAI / Anthropic / Ollama（本地）；
 - 主模型不可用时自动切到 fallback。
 
@@ -79,14 +90,14 @@ PLANTED ──→ REINFORCED ──→ ACTIVATED ──→ RESOLVED
 - 超时预警（超过 N 场景未提及）；
 - 密度控制（同时活跃伏笔上限）；
 - 伏笔 × 意外联动；
-- 状态推进在 `scene_flow.py` 内完成。
+- 状态推进在 `engine/narrative.py` 的 `_advance_world()` 内完成。
 
 ### 🧠 记忆（分层 v2）
 
 - **分层核心记忆**（`memory/core.py`）：`working → short_term → long_term → canon`，
   `archive` 作为按需检索库；核心三层固定（层名受 `MemoryTier` 枚举约束），
   各层容量 / 压缩由 `tiers` 有序列表定义，降级 / 回温由 `demotion` 配置；
-  默认种子来自 `config/memory_config.default.yaml`，每个项目可独立覆盖；
+  默认种子来自 `src/storyloom/config/memory_config.default.yaml`，每个项目可独立覆盖；
 - **按项目配置**：记忆配置落 SQLite `memory_configs` 表（`MemoryConfigRow`），
   新建项目时自动从 YAML 播种，旧项目首次读取或运行迁移脚本时补种；
   `GET /api/projects/{id}/memory` 返回生效中的 `settings`；`PATCH` 按字段更新，
@@ -105,7 +116,7 @@ PLANTED ──→ REINFORCED ──→ ACTIVATED ──→ RESOLVED
   已有分层场景时跳过场景回填，但仍从数据库刷新角色与地点资产，并清理已删除或改名的
   角色、秘密、地点条目（未传入的资产类别不参与清理）；
 - **隐私**：`secrets` 以 `visibility=private:<角色>` 写入检索库，只对本人可见；
-- **双模式共用**：导演 Flow 与游戏 TurnLoop 使用同一个项目级 `LayeredMemory`；
+- **双模式共用**：导演模式与游戏模式使用同一个项目级 `LayeredMemory`；
   核心层通过 `prompt_block()` 注入，世界书通过 `retrieval_block()` 按需召回，
   正文落库后只写入一次；旧 `CoreMemory` / `SimpleRAGMemory` 与独立 Chroma 索引已移除。
 
@@ -217,7 +228,7 @@ uv run python scripts/reset_data.py --dry-run
   环境变量只提供各 provider 的 API Key，不改变模型映射；
 - **模型 Key 的优先级**：请求体 `provider_api_keys`（仅内存，进程内生效）> `.env` / 环境变量；
   两者都没有时该模型不可用；
-- **基础设施配置**：`STORYLOOM_DATABASE_URL`、`STORYLOOM_SAVE_DIR`、`DISABLE_CHROMADB`
+- **基础设施配置**：`STORYLOOM_DATABASE_URL`、`STORYLOOM_SAVE_DIR`
   由环境变量读取，项目根目录 `.env` 在启动时加载。
 
 ---
@@ -245,21 +256,26 @@ StoryLoom/
 ├── src/storyloom/
 │   ├── api/
 │   │   ├── main.py              # FastAPI 入口 + CORS
-│   │   ├── engine.py            # StoryEngine：项目/资产/双模式运行时
+│   │   ├── engine.py            # StoryEngine：项目/资产/存档/扩展 + 双模式门面
 │   │   ├── schemas.py           # Pydantic 数据契约
 │   │   └── routers/             # 版本化 API：/runtime/v1/* + /api/*
+│   ├── engine/
+│   │   └── narrative.py         # NarrativeEngine：generate_scene / play_turn
 │   ├── db/                      # ORM + Repository
 │   ├── crews/scene_crew/
 │   │   ├── crew.py              # @CrewBase SceneCrew：Agent + 世界裁决 + NPC 自主
 │   │   ├── packet.py            # 统一 Agent JSON 契约 + 场景装配
 │   │   ├── arc.py               # 导演帧：起承转合 + 张力 + 信息预算（Crew 生成参数）
-│   │   ├── tools/               # ExtensionHost 注册的 mod/skill 工具（规划中）
+│   │   ├── tools.py             # Crew 工具（活跃伏笔查询等）
 │   │   └── config/              # agents.default.yaml / tasks.default.yaml（种子）
 │   ├── memory/
 │   │   ├── models.py            # 资产模型 / 伏笔 / 意外 / NovelProject
 │   │   ├── state.py             # WorldState + Fact + FactOverride + 裁决协议
+│   │   ├── base.py              # MemoryItem / MemorySettings / MemoryTier
 │   │   ├── core.py              # LayeredMemory：分层 / 压缩 / 降级 / 回温
-│   │   ├── checkpoint.py        # Checkpoint：快照 + 恢复（原 saves/service.py）
+│   │   ├── scoring.py           # 摘要 / 重要性评分 / 降级判定
+│   │   ├── compress.py          # 压缩提示词 + 确定性兜底
+│   │   ├── checkpoint.py        # CheckpointStore：快照 + 恢复
 │   │   ├── lexical.py           # fts 后端
 │   │   ├── vector.py            # vector 后端
 │   │   ├── hybrid.py            # hybrid 后端
@@ -267,12 +283,15 @@ StoryLoom/
 │   ├── extensions/
 │   │   ├── manifest.py          # manifest schema + 校验
 │   │   └── host.py              # ExtensionHost = Crew 的 Tool Loader
-│   ├── flows/
-│   │   ├── scene_flow.py        # 导演模式单场景
-│   │   └── turn_flow.py         # 双模式 TurnLoop
+│   ├── flows/                   # 兼容 shim
+│   │   ├── scene_flow.py        # → NarrativeEngine.generate_scene()
+│   │   └── turn_flow.py         # → NarrativeEngine.play_turn()
 │   ├── llm/                     # providers.py + router.py
 │   ├── media/                   # render_adapter.py（表现层雏形）
-│   └── config/model_config.yaml
+│   ├── config/
+│   │   ├── memory_config.default.yaml
+│   │   └── model_config.yaml
+│   └── templates/               # xianxia_system.py / sandbox_life.py + 内嵌扩展
 ├── frontend/                    # Vue 3 + Vite + Pinia
 │   └── src/components/flow/controls.ts   # Flow 控制配置（灵敏度 / 采样 / 闸门）
 ├── scripts/
@@ -281,23 +300,15 @@ StoryLoom/
 └── app.py                       # 启动器
 ```
 
-M0 已新增（均已实现，结构按新架构描述）：
-
-```
-├── config/memory_config.default.yaml    # 记忆分层 / 压缩 / 降级 / 检索后端（默认种子）
-├── examples/                    # 扩展 manifest 扫描目录（可空）
-├── templates/xianxia_system.py  # 试用模板：资产 + 内嵌 map/skill 扩展
-└── frontend/src/components/GamePanel.vue   # 游戏模式面板
-```
-
 > 已完成的模块收敛：
+> - `flows/scene_flow.py` / `flows/turn_flow.py` 的叙事链合并进 `engine/narrative.py`，旧类保留为兼容 shim
 > - `world/game_master.py` / `world/authority.py` / `world/autonomous_agent.py` 已删除，职责分别并入 `SceneCrew.adjudicate` / `SceneCrew.npc_actions` / `WorldState`
 > - `runtime/directive.py` / `runtime/renderer.py` 已删除，由 `crews/scene_crew/packet.py` 的 `compose_scene` 接管
-> - `saves/service.py` → `memory/checkpoint.py`（SaveService 合并进记忆系统的 Checkpoint 机制）
-> - `api/engine.py` `NovelEngine` → `StoryEngine`（运行时引擎改名，更直观）
+> - `saves/service.py` → `memory/checkpoint.py`（`SaveService` 保留为 `CheckpointStore` 别名）
+> - `api/engine.py` `NovelEngine` → `StoryEngine`（运行时门面）
 > - `models.py` → `memory/models.py`：资产模型随世界状态一起归入 `memory/`
 > - `world/state.py` → `memory/state.py`：世界状态与分层记忆统一为 `memory/` 的状态容器
-> - `narrative/arc.py` → `crews/scene_crew/arc.py`：导演帧作为 `SceneCrew.adjudicate(frame=...)` 的生成参数
+> - `narrative/arc.py` → `crews/scene_crew/arc.py`：导演帧作为 Crew 生成参数
 > - `control/` 已删除：灵敏度 / 采样 / 闸门策略改为 `frontend/src/components/flow/controls.ts` 的 Flow 配置
 
 ---
@@ -320,12 +331,12 @@ DEEPSEEK_API_KEY=sk-xxx
 OPENAI_API_KEY=sk-xxx
 ANTHROPIC_API_KEY=sk-ant-xxx
 
-# 记忆配置不走环境变量：默认种子见 config/memory_config.default.yaml，
+# 记忆配置不走环境变量：默认种子见 src/storyloom/config/memory_config.default.yaml，
 # 运行时按项目存于 memory_configs，通过
 # PATCH /api/projects/{id}/memory 调整。
 # 向量检索需要显式注入 embedding 函数；未注入时 vector 不可用，
 # hybrid 会自动退化为 fts。
-# Ollama 的 base_url 在 config/model_config.yaml 的 providers.ollama 中配置
+# Ollama 的 base_url 在 src/storyloom/config/model_config.yaml 的 providers.ollama 中配置
 ```
 
 ### 3. 启动后端
@@ -413,10 +424,10 @@ uv run pytest -q
 ```
 
 覆盖：项目落库与外键、Agent/Task API、迁移与幂等回归、资产模型、场景与章节持久化、
-记忆基础版、记忆分层压缩与按层阈值配置、Flow。共 **194 个用例**，
+分层记忆（LRU 淘汰 / 导演检索 / 历史回填 / 压缩阈值）、Flow 兼容层。共 **194 个用例**，
 逐条清单见 [TESTS.md](TESTS.md)。
 
-M0 覆盖（`tests/test_m0*.py` + `test_memory_compression.py`）：GM 裁决与守卫拦截、移动可达性、`Fact` 可见性、
+M0 覆盖（`tests/test_m0*.py` + `test_memory_compression.py`）：导演 Agent 裁决与守卫拦截、移动可达性、`Fact` 可见性、
 存档回放、manifest 校验与 map mod 旅行覆盖、导演改写审计回滚、idle NPC 事件、
 模式切换 checkpoint、记忆分层 / 压缩 / 降级回温 / 三后端检索 / 历史回填 / secrets、
 自由文本输入、超时与配额、`/game/*` 与 `/memory` `/extensions` API、版本化入口与 Key 注入。
@@ -435,11 +446,12 @@ uv run python scripts/bench_m0.py
 ## 🎯 下一步
 
 M0 双模式动态世界纵切已完成：`WorldState` / 导演 Agent JSON 裁决、自由文本输入 /
-`StageDirective` 输出、双模式 `TurnLoop`、`FactOverride` 审计回滚、NPC 自主、
+`StageDirective` 输出、双模式统一叙事引擎 `NarrativeEngine`、`FactOverride` 审计回滚、NPC 自主、
 叙事节拍、分层记忆 v2 + Checkpoint、Mod v1 与 Checkpoint 回放均已落地，作者模式
 `scene_brief → prose` 流程保持不回归。
 
 已完成的架构收敛：
+- **叙事链合并**：`flows/scene_flow.py` / `flows/turn_flow.py` 合并进 `engine/narrative.py`，旧 Flow 类保留为兼容 shim
 - **裁决统一为 Agent JSON**：`SceneCrew.adjudicate` 调用导演 Agent，输出 `decision / state / available`，不再有确定性 GM 规则
 - **SaveService → memory/checkpoint**：`saves/service.py` 合并进 `memory/`，Checkpoint 与分层记忆统一为 SessionState 快照机制
 - **NovelEngine → StoryEngine**：`api/engine.py` 类名为 `StoryEngine`，表达「整个 StoryLoom 运行时入口」

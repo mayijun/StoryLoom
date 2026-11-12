@@ -151,13 +151,13 @@
 | `test_apply_resolve_closes_foreshadow` | 回收关闭伏笔 |
 | `test_advance_scene_counters_increments` | 场景计数推进 |
 
-### 1.8 记忆基础版 — `test_memory.py`（3）
+### 1.8 分层记忆 — `test_memory.py`（3）
 
 | 用例 | 验证点 |
 |---|---|
-| `test_core_memory_prompt_block` | 核心记忆 prompt 块 |
-| `test_add_scene_summary_truncates` | 场景摘要截断 |
-| `test_rag_fallback_returns_matching_docs` | RAG 兜底检索命中 |
+| `test_layered_memory_separates_core_prompt_and_world_book` | 核心层 `prompt_block` 与世界书 `retrieval_block` 分离 |
+| `test_director_flow_retrieves_world_book_from_layered_memory` | 导演流程按需召回世界书 |
+| `test_backfill_refreshes_assets_without_overwriting_layered_scenes` | 历史回填刷新资产，不覆盖已有分层场景 |
 
 ---
 
@@ -218,7 +218,7 @@
 | `test_quota_rejects_when_no_turns_left` | §2.3-5 | 请求级配额超限拒绝 |
 | `test_director_mode_turn_runs_without_touching_game_entry` | A6 | 导演模式不回归游戏入口 |
 
-### 3.2 API — `test_m0_api.py`（7）
+### 3.2 API — `test_m0_api.py`（8）
 
 | 用例 | 验证点 |
 |---|---|
@@ -228,6 +228,7 @@
 | `test_memory_get_and_patch_backend` | 记忆查看与后端切换 |
 | `test_extensions_resolve_endpoint` | `/extensions/resolve` |
 | `test_provider_api_keys_injected_in_memory` | Key 只注入运行时内存，不落盘 |
+| `test_freeform_api_text_does_not_require_intent` | 自由文本请求无需 `intent` 字段 |
 | `test_runtime_v1_routes_registered` | `/runtime/v1/*` 版本化入口 + 旧端点保留 |
 
 ### 3.3 记忆分层压缩与配置 — `test_memory_compression.py`（13）
@@ -252,7 +253,7 @@
 
 ## 4. Demo 模板（M0-9）
 
-### 4.1 单元 — `test_templates.py`（26）
+### 4.1 单元 — `test_templates.py`（31）
 
 | 用例 | 验证点 |
 |---|---|
@@ -282,6 +283,11 @@
 | `test_router_list_templates` | 路由层列表 |
 | `test_router_apply_template` | 路由层应用 |
 | `test_router_apply_unknown_template_returns_404` | 路由层未知模板 404 |
+| `test_sandbox_life_template_is_registered` | 都市沙盒模板已注册 |
+| `test_sandbox_life_asset_counts_and_order` | 都市沙盒资产数量与顺序 |
+| `test_sandbox_life_extensions_are_valid_manifests` | 内嵌 `map_sandbox_life` / `skill_sandbox_life` manifest 合法 |
+| `test_apply_sandbox_life_template` | 应用都市沙盒模板建项目并写入资产 |
+| `test_apply_sandbox_life_is_idempotent` | 重复应用幂等 |
 
 ### 4.2 端到端集成 — `test_templates_integration.py`（14）
 

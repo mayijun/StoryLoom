@@ -56,7 +56,7 @@ StoryLoom 是**作者工作台 + 世界运行时**，不是内容市场，也不
 
 | 外部参考的做法 | 为什么值得 | StoryLoom 的落法 |
 |---|---|---|
-| 世界模拟优先，NPC 有自主目标 | 这是「活世界」的核心，也是单 Agent 顺从问题的解药 | 已在 `TurnLoop` 的 `_npc_round` / `SceneCrew.npc_actions` 中存在；模板文案强化 NPC 各自有账 |
+| 世界模拟优先，NPC 有自主目标 | 这是「活世界」的核心，也是单 Agent 顺从问题的解药 | 已在 `NarrativeEngine` 的 `_npc_round_fallback` / `SceneCrew.npc_actions` 中存在；模板文案强化 NPC 各自有账 |
 | 选择有真实后果 | 玩家输入不能总被奖励 | 裁决可失败、可被拦截；模板把「签到」改成有代价的契约 |
 | 状态栏 / 世界书 | 让玩家看见世界，而不是只听旁白 | 游戏面板保留「世界状态 / 世界书」，新增节拍、在场角色、标记与关系 |
 | 开放式文本输入 + 选项并存 | 兼顾自由与可玩性 | 自由文本直接进回合链；选项是 Agent JSON 里的 `choices`，只作快捷输入 |
@@ -73,7 +73,7 @@ StoryLoom 是**作者工作台 + 世界运行时**，不是内容市场，也不
 | 华丽但未实现的金钱 / 好感 / 名声数值 | 会制造伪状态；我们只显示 `WorldState` 里真实存在的字段 |
 | 游戏内重复多步创建世界 / 角色 | 资产属于作者工作台；游戏模式只消费，不重复创建 |
 | 18+ / 破甲内容 | 不做 |
-| 单 Agent 顺从玩家、自动让玩家赢 | 与「GM 裁决 + 世界先于主角」直接冲突；必须避免 |
+| 单 Agent 顺从玩家、自动让玩家赢 | 与「导演 Agent 裁决 + 世界先于主角」直接冲突；必须避免 |
 
 ---
 
@@ -100,7 +100,7 @@ StoryLoom 是**作者工作台 + 世界运行时**，不是内容市场，也不
 
 1. **每个角色都有独立动机**：至少一个目标与玩家无关；NPC 不因玩家一句话就改立场。
 2. **主角没有免费外挂**：能力必须带代价（时间、记忆、人情、债、暴露风险）。
-3. **伏笔只写「可见线索」**：`description` 能被角色看见；`target_revelation` 只给导演/GM，不直接进渲染。
+3. **伏笔只写「可见线索」**：`description` 能被角色看见；`target_revelation` 只给导演 Agent，不直接进渲染。
 4. **章节大纲写「处境」而不是「爽点」**：每章结束留下可被行动回应的具体问题。
 5. **文风 skill 反爽文、反越权**：不替玩家做决定，不自动胜利，不让 NPC 无条件臣服。
 6. **地点与路线服务于后果**：移动有耗时，地点有各自的规则与目击者。
@@ -129,12 +129,13 @@ StoryLoom 是**作者工作台 + 世界运行时**，不是内容市场，也不
 
 ---
 
-## 6. 本轮已落地的改动
+## 6. 当前落点
 
-- `src/storyloom/templates/xianxia_system.py`：重写为世界驱动、后果驱动、群像的仙侠样板。
-- `src/storyloom/models.py`：`NovelProject` 增加 `description`，让作品简介进入运行时。
+- `src/storyloom/templates/xianxia_system.py`：世界驱动、后果驱动、群像的仙侠样板。
+- `src/storyloom/templates/sandbox_life.py`：现代都市开放沙盒的第二套试用模板。
+- `src/storyloom/memory/models.py`：`NovelProject` 带 `description`，让作品简介进入运行时。
 - `src/storyloom/api/engine.py`：构建 `NovelProject` 时从项目 meta 读取 `description`。
-- `src/storyloom/flows/turn_flow.py`：渲染阶段构造世界书上下文（不含 secrets / 真相）。
+- `src/storyloom/engine/narrative.py`：渲染阶段构造世界书上下文（不含 secrets / 真相）。
 - `src/storyloom/crews/scene_crew/crew.py`：`_prose_prompt` 接收 `style / description / world_book`，
   并加入「世界先于主角、NPC 自主、不替玩家决定」的约束。
 - `frontend/src/components/GamePanel.vue`：世界状态 tab 增加节拍、在场角色、标记、关系；
@@ -150,7 +151,7 @@ StoryLoom 是**作者工作台 + 世界运行时**，不是内容市场，也不
 - 不新增第二套前端、独立游戏大厅或作品广场。
 - 不在游戏模式里重复创建世界 / 角色。
 - 不把 `secrets` 或 `target_revelation` 注入渲染 prompt。
-- 不为了「爽感」让 GM 自动放行玩家提案。
+- 不为了「爽感」让导演 Agent 自动放行玩家提案。
 
 ---
 
