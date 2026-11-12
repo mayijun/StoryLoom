@@ -4,7 +4,7 @@ This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 
 场景生成 Crew（CrewAI 官方约定版）
 
-- 8 个 Agent 的 role/goal/backstory 持久化在数据库（agent_configs 表），
+- Agent 的 role/goal/backstory 持久化在数据库（agent_configs 表），
   由 DbConfig 描述符接入 @CrewBase 的 self.agents_config
 - 标准任务序列持久化在数据库（task_configs 表），
   由 self.tasks_config 读取、self.crew() 按 agent_key/context_keys 装配
@@ -15,14 +15,11 @@ This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
   配置中的 {name}/{persona}/{motivation}/{names}/{brief}/{style}
   占位符会被代码填充（_config）
 
-Agent 角色划分（8 类）：
+核心 Agent 角色划分：
 - ProtagonistAgent   重要角色，1 角色 = 1 实例
 - EnsembleAgent      "群演"，1 实例承载 N 个次要角色，压缩成本
-- DirectorAgent      导演，只输出"场景意图包"做间接引导
+- DirectorAgent      导演，统一负责意外、伏笔、场景意图与一致性自检
 - OutlineAgent       大纲规划
-- SurpriseAgent      意外事件提案
-- ForeshadowingAgent 伏笔全生命周期管理
-- ConsistencyAgent   一致性检测（强制结构化输出）
 - ProseAgent         润色 / 叙事者
 """
 
@@ -58,10 +55,7 @@ AGENT_DEFAULTS: dict = {
     "ensemble": {"max_iter": 4},
     "director": {"max_iter": 6},
     "outline": {"max_iter": 8},
-    "consistency": {"max_iter": 6},
     "prose": {"max_iter": 4},
-    "surprise": {"max_iter": 6},
-    "foreshadowing": {"max_iter": 6},
 }
 
 
@@ -196,11 +190,45 @@ class SceneCrew:
 
     @agent
     def director(self) -> Agent:
-        """导演 Agent：用推理能力最强的模型，只产出结构化场景意图包"""
+        """
+        导演 Agent（三合一）：用推理能力最强的模型，产出完整 JSON。
+
+        职责：
+        1. 意外判断（surprise）— 合理但未预期的事件
+        2. 伏笔决策（foreshadow_ops）— 种植/强化/回收/颠覆
+        3. 场景/回合意图（director_intent）— goal/tone/key_events
+        4. 一致性自检（consistency）— 人设/时间线/设定冲突
+
+        Tools: query_active_foreshadows（按需查伏笔详情，不是每次都调）
+        """
+        from storyloom.crews.scene_crew.tools import query_active_foreshadows
+
+        config = dict(self._config("director"))
+        # 在数据库配置的 role/goal/backstory 基础上追加三合一职责说明，
+        # 而不直接修改数据库里用户可编辑的默认值。
+        config["role"] = (
+            config.get("role", "导演")
+            + "\n\n你同时负责【意外判断】、【伏笔决策】、【场景/回合意图】、【一致性自检】四项职责。"
+        )
+        config["goal"] = (
+            config.get("goal", "")
+            + "\n\n一次性输出完整 JSON：surprise_idea（意外）+ director_intent（意图）"
+            + "+ foreshadow_ops（伏笔操作）+ consistency（自检冲突）。"
+            + "意外要合理关联伏笔；伏笔操作显式决定（plant/reinforce/resolve/subvert）；"
+            + "自检人设/时间线/设定冲突，major 冲突标记在 consistency.conflicts 里。"
+        )
+        config["backstory"] = (
+            config.get("backstory", "")
+            + "\n\n你是这部作品的创作总指挥。"
+            + "旧版架构曾把你的职责拆给 SurpriseAgent、ForeshadowingAgent、DirectorAgent、ConsistencyAgent 四个独立 Agent，"
+            + "现在全部合并到你一个人身上——一次 kickoff 完成所有决策。"
+            + "当需要查看伏笔详细状态（关联角色、预期揭示、即将超时）时，调用 query_active_foreshadows tool。"
+        )
         return Agent(
-            config=self._config("director"),
+            config=config,
             llm=self._llm("director"),
             verbose=True,
+            tools=[query_active_foreshadows],
         )
 
     @agent
@@ -209,21 +237,6 @@ class SceneCrew:
         return Agent(
             config=self._config("outline"),
             llm=self._llm("outline"),
-            verbose=True,
-        )
-
-    @agent
-    def consistency(self) -> Agent:
-        """
-        一致性检测 Agent：用结构化输出最稳定的模型
-
-        这里的模型选择至关重要：
-        DeepSeek 推理模型在复杂结构化输出上不够稳定，
-        而 GPT-4o 的工具调用 / JSON 模式最可靠
-        """
-        return Agent(
-            config=self._config("consistency"),
-            llm=self._llm("consistency"),
             verbose=True,
         )
 
@@ -241,44 +254,6 @@ class SceneCrew:
             config=self._config("prose", style=style),
             llm=llm,
             verbose=False,
-        )
-
-    # ---------------- 新增：意外 / 伏笔 Agent ----------------
-
-    @agent
-    def surprise(self) -> Agent:
-        """
-        意外 Agent：提出"合理但未被预期"的事件提案
-
-        学术依据：
-        - StoryWriter（清华 KEG）: surprise 是六大评估指标之一
-        - ACL 2025: 意外元素应有意为之，服务于故事
-        - Elser AI: "可控的随机性"——管理何时何处引入意外
-
-        模型选择：用有创意的模型（如 Claude），因为需要跳出常规思维
-        """
-        return Agent(
-            config=self._config("surprise"),
-            llm=self._llm("surprise"),
-            verbose=True,
-        )
-
-    @agent
-    def foreshadowing(self) -> Agent:
-        """
-        伏笔 Agent：管理伏笔的种植、强化、回收全生命周期
-
-        学术依据：
-        - CreAgentive: 知识图谱式语义三元组强制执行伏笔约束
-        - Showrunner Agents: "戏剧算子"程序化注入伏笔操作
-        - 长篇写作的注意力稀释导致早期伏笔被遗忘
-
-        模型选择：用推理能力强的模型，因为需要维护复杂的状态追踪
-        """
-        return Agent(
-            config=self._config("foreshadowing"),
-            llm=self._llm("foreshadowing"),
-            verbose=True,
         )
 
     # ---------------- 世界裁决（导演 Agent） ----------------
@@ -454,73 +429,6 @@ class SceneCrew:
             if item.actor not in actors:
                 actors.append(item.actor)
         return proposals, actors
-
-    # ---------------- 一致性检测（Consistency Agent） ----------------
-
-    async def check_consistency(
-        self,
-        project: Any,
-        after: WorldState,
-        before: WorldState,
-        results: List[AdjudicationResult],
-        actor: str,
-        director_mode: bool = False,
-    ) -> List[str]:
-        present = after.characters_at(
-            after.characters[actor].location
-            if actor in after.characters else ""
-        )
-        char_summaries = []
-        for name in present:
-            char = after.characters.get(name)
-            if char is None:
-                continue
-            profile = project.get_character(name)
-            char_summaries.append(
-                f"- {name}: {profile.persona if profile else ''}；"
-                f"动机: {profile.motivation if profile else ''}；"
-                f"状态: {char.status}；情绪: {char.emotion}"
-            )
-        foreshadow_context = "\n".join(
-            f"- [{f.foreshadow_id}] {f.description} (状态: {f.status.value})"
-            for f in project.foreshadowings
-            if f.status.value not in ("resolved", "subverted", "abandoned")
-        ) or "（无活跃伏笔）"
-        director_constraints = (
-            "导演模式：本回合内容为作者指令的直接产出，重点检查人设与设定一致性。"
-            if director_mode else "（无）"
-        )
-
-        prompt = self.task_prompt(
-            "consistency_check",
-            actor_log="\n".join(r.narrative for r in results),
-            character_data="\n".join(char_summaries) or "- （在场无角色）",
-            foreshadow_data=foreshadow_context,
-            director_constraints=director_constraints,
-        )
-        raw = await self.run_agent(self.consistency(), prompt)
-        if raw is None:
-            return []
-        packet = parse_agent_packet(raw)
-        if packet.issues:
-            return packet.issues
-        # 兼容旧输出：{"passed": false, "conflicts": [...]}
-        text = raw.strip()
-        start, end = text.find("{"), text.rfind("}") + 1
-        if start >= 0 and end > start:
-            import json
-
-            try:
-                data = json.loads(text[start:end])
-                if not data.get("passed", True):
-                    return [str(item) for item in data.get("conflicts", [])]
-            except (ValueError, TypeError):
-                pass
-        return [
-            line.strip()[2:]
-            for line in text.splitlines()
-            if line.strip().startswith(("- ", "* "))
-        ]
 
     # ---------------- 标准任务序列 ----------------
     # 任务完全由数据库 task_configs 表驱动：position 决定顺序，

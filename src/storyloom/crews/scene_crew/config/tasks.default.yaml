@@ -2,7 +2,7 @@
 # Copyright (C) 2026 Ma Yijun (ma.yijun@outlook.com)
 # This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 #
-# 场景生成 Crew 的标准任务默认配置（6 步种子）
+# 场景生成 Crew 的任务模板（6 个模板，3 个旧任务默认停用）
 # 本文件只用于首次播种；运行时的任务配置保存在数据库 task_configs 表，
 # Flow 与标准 Crew 共用数据库里的同一份 description / expected_output。
 # - agent / context 由 crew.py 的 @task 方法显式装配
@@ -32,6 +32,7 @@ surprise_proposal:
     - severity: minor/moderate/major
     如果不需要，输出: {{"no_surprise": true, "reason": "原因说明"}}
   expected_output: "JSON 意外事件提案或不需要意外的声明"
+  enabled: false
 
 foreshadowing_ops:
   description: |
@@ -58,6 +59,7 @@ foreshadowing_ops:
     - link_to_surprise: 是否与意外提案联动(bool)
     输出格式: {{"operations": [...]}}
   expected_output: "JSON 伏笔操作建议列表"
+  enabled: false
 
 director_plan:
   description: |
@@ -130,6 +132,7 @@ consistency_check:
     输出 JSON: {{"passed": ..., "conflicts": [...], "severity": "..."}}
     只输出冲突结论，不要复述剧情。
   expected_output: "JSON 一致性报告"
+  enabled: false
 
 prose_polish:
   description: |

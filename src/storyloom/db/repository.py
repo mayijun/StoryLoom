@@ -1386,6 +1386,7 @@ class CrewConfigRepository:
                     "context_keys": list(
                         conf.get("context", wiring.get("context_keys", []))
                     ),
+                    "enabled": conf.get("enabled", True),
                     "position": position,
                 }
                 if row is None:

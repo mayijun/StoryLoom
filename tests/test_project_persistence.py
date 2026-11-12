@@ -53,12 +53,12 @@ def test_create_project_persists_to_db(repo):
 
 
 def test_create_project_auto_seeds_agents_and_tasks(repo):
-    """新项目自动播种默认的 8 个 agent + 6 个 task"""
+    """新项目自动播种默认的 5 个 agent + 6 个 task"""
     repo.create_project("novel_b", "武侠江湖", "wuxia")
 
     agents = repo.list_agents(project_id="novel_b")
     tasks = repo.list_tasks(project_id="novel_b")
-    assert len(agents) == 8
+    assert len(agents) == 5
     assert len(tasks) == 6
     # 归属正确的 project_id
     assert all(a["project_id"] == "novel_b" for a in agents)
@@ -78,7 +78,7 @@ def test_create_project_no_sqlite_lock(repo):
     # 不抛异常即通过
     repo.create_project("novel_lock", "锁测试", "sci-fi")
     assert repo.get_project("novel_lock") is not None
-    assert len(repo.list_agents(project_id="novel_lock")) == 8
+    assert len(repo.list_agents(project_id="novel_lock")) == 5
 
 
 def test_update_project_stats(repo):
@@ -141,7 +141,7 @@ def test_foreign_key_rejects_orphan_task_insert(repo):
 def test_delete_project_cascades_agents_and_tasks(repo):
     """删除项目时其所有 agent/task 配置级联清理（用底层 SQL 验证，绕开 list_agents 的自动 seed）"""
     repo.create_project("novel_cascade", "级联测试", "sci-fi")
-    assert len(repo.list_agents(project_id="novel_cascade")) == 8
+    assert len(repo.list_agents(project_id="novel_cascade")) == 5
     assert len(repo.list_tasks(project_id="novel_cascade")) == 6
 
     result = repo.delete_project("novel_cascade")
@@ -170,7 +170,7 @@ def test_delete_project_isolates_other_projects(repo):
 
     repo.delete_project("proj_drop")
 
-    assert len(repo.list_agents(project_id="proj_keep")) == 8
+    assert len(repo.list_agents(project_id="proj_keep")) == 5
     assert len(repo.list_tasks(project_id="proj_keep")) == 6
     assert repo.get_project("proj_keep") is not None
 
@@ -398,10 +398,10 @@ def test_legacy_db_without_project_id_column_migrates_to_demo(tmp_path):
         ), f"迁移后 {table} 应有指向 projects 的外键"
 
     # create_all 末尾的 seed_from_yaml 补齐缺失条目但不覆盖 legacy：
-    # demo 共 8 个 agent（1 个 legacy director + 7 个 YAML 补种），
+    # demo 共 5 个 agent（1 个 legacy director + 4 个 YAML 补种），
     # director 的自定义 backstory 原样保留
     agents = repo.list_agents(project_id=DEFAULT_PROJECT_ID)
-    assert len(agents) == 8
+    assert len(agents) == 5
     by_key = {a["key"]: a for a in agents}
     assert by_key["director"]["backstory"] == "旧背景故事"
     assert by_key["director"]["role"] == "老导演"
@@ -440,7 +440,7 @@ def test_fresh_db_creates_tables_without_migration(tmp_path):
     # ensure_seeded 才补 demo
     repo.ensure_seeded()
     assert repo.project_exists(DEFAULT_PROJECT_ID)
-    assert len(repo.list_agents(project_id=DEFAULT_PROJECT_ID)) == 8
+    assert len(repo.list_agents(project_id=DEFAULT_PROJECT_ID)) == 5
     assert len(repo.list_tasks(project_id=DEFAULT_PROJECT_ID)) == 6
 
     reset_repositories()
@@ -489,7 +489,7 @@ def test_reopening_migrated_db_is_idempotent(tmp_path):
     first = CrewConfigRepository(url)
     first.create_all()
     assert len(first.list_agents(project_id="old_novel")) == 1
-    assert len(first.list_agents(project_id=DEFAULT_PROJECT_ID)) == 8
+    assert len(first.list_agents(project_id=DEFAULT_PROJECT_ID)) == 5
 
     # 第二次：模拟服务重启（全新 repository 实例，同一 URL）
     reset_repositories()
@@ -503,7 +503,7 @@ def test_reopening_migrated_db_is_idempotent(tmp_path):
     assert director["backstory"] == "旧背景"
 
     # demo 不重复播种
-    assert len(second.list_agents(project_id=DEFAULT_PROJECT_ID)) == 8
+    assert len(second.list_agents(project_id=DEFAULT_PROJECT_ID)) == 5
 
     # 外键仍然在位（未发生二次 DROP/重建）
     inspector = sa.inspect(second.engine)
@@ -649,7 +649,7 @@ def test_migration_when_only_task_table_is_legacy(tmp_path):
         assert any(fk.get("referred_table") == "projects" for fk in fks)
 
     # create_all 的 legacy 分支触发 demo seed
-    assert len(repo.list_agents(project_id=DEFAULT_PROJECT_ID)) == 8
+    assert len(repo.list_agents(project_id=DEFAULT_PROJECT_ID)) == 5
     assert repo.project_exists(DEFAULT_PROJECT_ID)
 
     reset_repositories()
@@ -685,13 +685,13 @@ def test_regression_ensure_project_must_not_overwrite_metadata(repo):
     导致 create_all → _ensure_all_project_ids_known → ensure_project
     把用户创建的 title/style 覆盖成占位符"项目 <pid>"/"unknown"。
 
-    生产故障路径：创建项目（含 8 个自动播种的 agent）之后，任何后续操作
+    生产故障路径：创建项目（含 5 个自动播种的 agent）之后，任何后续操作
     （ensure_seeded / create_all / seed_from_yaml）都会经由
     _ensure_all_project_ids_known 对每个已出现的 project_id 调用
     ensure_project。修复后 ensure_project 必须是"只 INSERT 不 UPDATE"。
     """
     repo.create_project("novel_bug1", "星际迷航", "sci-fi", "外键验证")
-    # create_project 已自动播种 8 个 agent，agent_configs 里已有该 project_id
+    # create_project 已自动播种 5 个 agent，agent_configs 里已有该 project_id
 
     # 模拟生产中的后续操作链路（都会触发 _ensure_all_project_ids_known）
     repo.create_all()

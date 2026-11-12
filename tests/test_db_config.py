@@ -24,7 +24,7 @@ def test_seed_from_yaml(repo):
     agents = repo.list_agents()
     tasks = repo.list_tasks()
 
-    assert len(agents) == 8
+    assert len(agents) == 5
     assert len(tasks) == 6
     assert agents[0]["key"] == "protagonist"
     assert tasks[0]["key"] == "surprise_proposal"
@@ -39,7 +39,13 @@ def test_load_shapes_for_crewai(repo):
     agents_config = repo.load_agents()
     tasks_config = repo.load_tasks()
 
-    assert set(agents_config["surprise"]) == {"role", "goal", "backstory"}
+    assert set(agents_config["director"]) == {"role", "goal", "backstory"}
+    assert not {"surprise", "foreshadowing", "consistency"} & agents_config.keys()
+    assert set(tasks_config) == {
+        "director_plan",
+        "actor_interaction",
+        "prose_polish",
+    }
     assert tasks_config["director_plan"]["expected_output"] == "JSON 场景意图包"
 
     meta = {row["key"]: row for row in repo.load_task_meta()}
@@ -83,8 +89,8 @@ def test_add_agent_and_task_without_code_change(repo, monkeypatch):
 
     assert "critic" in crew.agents_config
     assert "style_review" in crew.tasks_config
-    assert len(std.agents) == 9
-    assert len(std.tasks) == 7
+    assert len(std.agents) == 6
+    assert len(std.tasks) == 4
     assert std.tasks[-1].description == "审查文风"
 
 
@@ -100,7 +106,7 @@ def test_disabled_task_is_skipped(repo, monkeypatch):
 
     crew = SceneCrew()
     assert "prose_polish" not in crew.tasks_config
-    assert len(crew.crew().tasks) == 5
+    assert len(crew.crew().tasks) == 2
 
 
 def test_project_isolation(repo):
@@ -127,8 +133,8 @@ def test_project_isolation(repo):
         repo.get_task("style_review", project_id="novel2")["description"]
         == "novel2 文风审查"
     )
-    assert len(repo.list_agents()) == 8
-    assert len(repo.list_agents(project_id="novel2")) == 8
+    assert len(repo.list_agents()) == 5
+    assert len(repo.list_agents(project_id="novel2")) == 5
 
 
 def test_legacy_db_migrated_into_demo_project(tmp_path):
@@ -173,6 +179,6 @@ def test_legacy_db_migrated_into_demo_project(tmp_path):
     director = repo.get_agent("director")
     assert director["project_id"] == "demo"
     assert director["backstory"] == "背景"
-    assert len(repo.list_agents()) == 8
+    assert len(repo.list_agents()) == 5
     reset_repositories()
     reset_engines()

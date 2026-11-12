@@ -34,7 +34,7 @@ def test_list_agents_comes_from_database(agents_api):
     response = asyncio.run(agents_api.list_agents(project_id=DEMO))
     keys = [agent.key for agent in response.agents]
 
-    assert len(keys) == 8
+    assert len(keys) == 5
     assert keys[0] == "protagonist"
     assert isinstance(response.available_models, list)
 
@@ -125,7 +125,7 @@ def test_projects_have_isolated_agents(agents_api):
 
     # 另一个项目：没有 demo 新增的 critic，仍是一套默认配置
     other = asyncio.run(agents_api.list_agents(project_id="novel2"))
-    assert len(other.agents) == 8
+    assert len(other.agents) == 5
     assert "critic" not in [a.key for a in other.agents]
 
     # 修改 demo 的 director，不影响 novel2

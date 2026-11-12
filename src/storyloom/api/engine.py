@@ -70,8 +70,7 @@ from storyloom.memory import (
     MemoryIndexer,
     MemorySettings,
 )
-from storyloom.flows.scene_flow import SceneGenerationFlow
-from storyloom.flows.turn_flow import TurnBoot, TurnLoop, TurnResult
+from storyloom.engine import NarrativeEngine, TurnBoot, TurnResult
 from storyloom.extensions.host import ExtensionRegistry
 from storyloom.crews.scene_crew.packet import compose_scene
 from storyloom.memory.checkpoint import SaveService, state_from_save
@@ -455,39 +454,42 @@ class StoryEngine:
             intent=request.scene_brief,
         )
 
-        flow = SceneGenerationFlow(
-            project=project,
-            memory=memory,
-            crew=crew,
-            scene_brief=request.scene_brief,
-            present_characters=request.present_character_names,
-            is_regenerate=scene_id is not None,
-        )
-        flow.render_mode = request.render_mode
+        engine = NarrativeEngine(crew=crew, memory=memory)
 
-        # 在线程池中执行（CrewAI kickoff 是同步的）
-        loop = asyncio.get_event_loop()
+        # NarrativeEngine 是 async 方法，直接 await（内部已用 run_in_executor 处理 CrewAI kickoff）
         started = time.perf_counter()
-        final_text = await loop.run_in_executor(None, flow.kickoff)
+        scene_result = await engine.generate_scene(
+            project=project,
+            scene_brief=request.scene_brief,
+            present_chars=request.present_character_names,
+            is_regenerate=scene_id is not None,
+            max_retries=1,
+        )
+        final_text = scene_result.prose
         duration_ms = int((time.perf_counter() - started) * 1000)
 
-        # 质量分：由一致性报告与重试次数确定性推导（0~1）
-        report = flow.state.consistency_report
+        # 质量分：由 DirectorAgent JSON 里的 consistency 字段推导（0~1）
         quality_score = 1.0
-        if report is not None:
-            if not report.passed:
-                quality_score = {"minor": 0.7, "major": 0.4}.get(
-                    report.severity, 0.5
-                )
-            elif report.severity == "minor":
-                quality_score = 0.85
-        quality_score = max(
-            0.0, round(quality_score - 0.1 * flow.state.retry_count, 2)
-        )
+        consistency = scene_result.director_json.get("consistency", {})
+        issues = consistency.get("conflicts", []) or []
+        severity = "none"
+        for c in issues:
+            if isinstance(c, dict) and c.get("severity") == "major":
+                severity = "major"
+                break
+            if isinstance(c, dict) and c.get("severity") == "minor" and severity != "major":
+                severity = "minor"
+        if severity == "major":
+            quality_score = 0.4
+        elif severity == "minor":
+            quality_score = 0.85
+        if not consistency.get("passed", True):
+            quality_score = min(quality_score, 0.5)
 
         repo = get_repository()
         model_usage = dict(crew._summary) if hasattr(crew, "_summary") else {}
 
+        # NarrativeEngine.advance_world 内部已推进 project.scene_count + 写 memory.add_scene
         # 重跑：用原 scene_id 覆盖；新建：用 scene_count 生成新编号
         if scene_id is not None:
             target_scene_id = scene_id
@@ -502,7 +504,6 @@ class StoryEngine:
                 model_usage=model_usage,
             )
         else:
-            # scene_flow 在 kickoff 内部已经 project.scene_count += 1；
             target_scene_id = f"scene_{project.scene_count}"
             try:
                 repo.create_scene(
@@ -517,7 +518,6 @@ class StoryEngine:
                     model_usage=model_usage,
                 )
             except ValueError:
-                # scene_id 已存在（极端情况）→ 覆盖
                 repo.update_scene(
                     target_scene_id,
                     chapter_id=request.chapter_id,
@@ -533,27 +533,14 @@ class StoryEngine:
         for fs in project.foreshadowings:
             self._persist_foreshadowing(request.project_id, fs)
 
-        # 把更新后的统计写回数据库，保证下次重启仍能看到最新值
+        # 把更新后的统计写回数据库
         repo.update_project_stats(
             request.project_id,
             scene_count=project.scene_count,
             character_count=len(project.characters),
             foreshadowing_count=len(project.foreshadowings),
         )
-
-        # 正文落库后写入导演与游戏模式共用的分层记忆
-        try:
-            memory.add_scene(
-                scene_index=project.scene_count if not scene_id else int(scene_id.split("_")[-1]),
-                prose=str(final_text),
-                brief=request.scene_brief,
-                present_characters=request.present_character_names,
-                active_foreshadow=bool(project.foreshadowings),
-                key=target_scene_id,
-            )
-        except Exception as exc:  # noqa: BLE001
-            # 正文已经落库，记忆写入失败不应阻断主流程
-            print(f"  ℹ️ 分层记忆写入失败: {exc}")
+        # memory.add_scene 已由 NarrativeEngine.advance_world 内部调过，这里不再重复
 
         # 构建伏笔视图
         fs_views = [
@@ -825,16 +812,15 @@ class StoryEngine:
 
         memory = self.memory_for(project_id, backend=boot.memory_backend)
         crew = self._crew_for(project_id)
-        loop = TurnLoop(
-            project,
-            instance_id=boot.instance_id,
-            memory=memory,
-            extensions=self.extension_registry,
-            save_service=self.save_service,
-            prose_fn=self._game_prose_fn,
-            crew=crew,
+        narrative = NarrativeEngine(crew=crew, memory=memory)
+        result = await narrative.play_turn(
+            project=project,
+            world_state=boot.world_state,
+            actor=boot.actor,
+            action_text=boot.text,
+            wait=boot.wait,
+            max_retries=boot.max_retries,
         )
-        result = await loop.run(boot)
         key = (project_id, boot.instance_id)
         self.game_states[key] = result.state
         self.last_turns[key] = result
