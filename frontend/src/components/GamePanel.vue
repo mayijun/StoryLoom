@@ -66,11 +66,11 @@ async function refreshMemory() {
 const MEMORY_TIER_META: Array<{ key: string; label: string }> = [
   { key: 'short_term', label: '短期记忆' },
   { key: 'long_term', label: '长期记忆' },
-  { key: 'canon', label: '历史事件' },
+  { key: 'key_events', label: '关键事件' },
   { key: 'archive', label: '世界书' },
 ]
 
-// 侧边栏 tab：世界状态 / 世界书（原「检索库」）/ 历史事件
+// 侧边栏 tab：世界状态 / 世界书（原「检索库」）/ 关键事件
 const sideTab = ref<'world' | 'codex' | 'history'>('world')
 
 const memoryTiers = computed(() => {
@@ -88,11 +88,11 @@ const worldBookItems = computed(
   () => memoryTiers.value.find((tier) => tier.key === 'archive')?.items || [],
 )
 
-// 历史事件：正史层，按场景时间线排列
+// 关键事件：按场景时间线排列
 const historyItems = computed(() => {
   const items = memory.value?.items || []
   return items
-    .filter((item: any) => item.tier === 'canon')
+    .filter((item: any) => item.tier === 'key_events')
     .sort((a: any, b: any) => (a.scene_index ?? 0) - (b.scene_index ?? 0))
 })
 
@@ -103,7 +103,7 @@ function tierLabel(key: string) {
 function itemSourceLabel(item: any) {
   const tags: string[] = item.tags || []
   if (tags.includes('demoted')) return '冷却记忆'
-  if (tags.includes('compressed')) return item.tier === 'canon' ? '历史事件' : '压缩记忆'
+  if (tags.includes('compressed')) return item.tier === 'key_events' ? '关键事件' : '压缩记忆'
   if (tags.includes('secret')) return '秘密'
   if (tags.includes('character')) return '角色'
   if (tags.includes('location')) return '地点'
@@ -556,7 +556,7 @@ const statusBar = () => {
 
       <aside class="game-side">
         <div class="side-block">
-          <!-- 世界状态 / 世界书（原检索库）/ 历史事件 共用侧边栏 tab 区 -->
+          <!-- 世界状态 / 世界书（原检索库）/ 关键事件 共用侧边栏 tab 区 -->
           <div class="side-tabs">
             <button
               class="side-tab"
@@ -572,7 +572,7 @@ const statusBar = () => {
               class="side-tab"
               :class="{ active: sideTab === 'history' }"
               @click="sideTab = 'history'"
-            >历史事件</button>
+            >关键事件</button>
           </div>
 
           <template v-if="sideTab === 'world'">
@@ -658,7 +658,7 @@ const statusBar = () => {
               <span>共 {{ historyItems.length }} 条</span>
               <span class="memory-meta">只保留关键事件</span>
             </div>
-            <div v-if="!historyItems.length" class="empty">暂无历史事件</div>
+            <div v-if="!historyItems.length" class="empty">暂无关键事件</div>
             <ul v-else class="tier-items worldbook-items">
               <li v-for="item in historyItems" :key="item.id">
                 <div class="tier-text">{{ item.text }}</div>

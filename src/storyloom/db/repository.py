@@ -144,8 +144,74 @@ class CrewConfigRepository:
         # 补全 projects 表：确保所有 agent/task 引用的 project_id 都存在
         self._ensure_all_project_ids_known()
 
+        # 一次性数据迁移：记忆层 canon → key_events
+        self._migrate_memory_tier_names()
+
         if legacy:
             self.seed_from_yaml()
+
+    def _migrate_memory_tier_names(self) -> None:
+        """把旧库里的 canon 数据一次性改写为 key_events。
+
+        硬切后模型层不再接受 canon，这里只做数据搬运，不保留运行时兼容。
+        """
+        inspector = inspect(self.engine)
+        if inspector.has_table("memory_items"):
+            with self.engine.begin() as conn:
+                conn.exec_driver_sql(
+                    "UPDATE memory_items SET tier = 'key_events' "
+                    "WHERE tier = 'canon'"
+                )
+        if not inspector.has_table("memory_configs"):
+            return
+        with self.engine.begin() as conn:
+            rows = conn.execute(
+                select(MemoryConfigRow.project_id, MemoryConfigRow.payload)
+            ).all()
+            for project_id, payload in rows:
+                updated = self._rewrite_memory_payload(payload)
+                if updated is None:
+                    continue
+                conn.execute(
+                    MemoryConfigRow.__table__.update()
+                    .where(MemoryConfigRow.project_id == project_id)
+                    .values(payload=updated)
+                )
+
+    @staticmethod
+    def _rewrite_memory_payload(
+        payload: Any,
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(payload, dict):
+            return None
+        changed = False
+        out = dict(payload)
+        if "canon" in out:
+            out["key_events"] = out.pop("canon")
+            changed = True
+        key_events = out.get("key_events")
+        if isinstance(key_events, dict) and (
+            key_events.get("compress_into") == "canon"
+        ):
+            out["key_events"] = {**key_events, "compress_into": "key_events"}
+            changed = True
+        demotion = out.get("demotion")
+        if isinstance(demotion, dict) and "canon" in demotion:
+            demotion = dict(demotion)
+            demotion["key_events"] = demotion.pop("canon")
+            out["demotion"] = demotion
+            changed = True
+        tiers = out.get("tiers")
+        if isinstance(tiers, list):
+            out["tiers"] = [
+                {**tier, "compress_into": "key_events"}
+                if isinstance(tier, dict)
+                and tier.get("compress_into") == "canon"
+                else tier
+                for tier in tiers
+            ]
+            changed = changed or out["tiers"] != tiers
+        return out if changed else None
 
     def _detect_and_preserve_legacy_data(self) -> Optional[Dict[str, Any]]:
         """

@@ -5,7 +5,7 @@ This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 分层记忆压缩器：
 
 - 短期 → 长期：保留主线事实、人物选择、承诺 / 契约 / 关键物品 / 伏笔线索；
-- 长期 → 正史：只保留改变主线或世界格局的关键事件，忽略日常互动；
+- 长期 → 关键事件：只保留改变主线或世界格局的事件，忽略日常互动；
 - LLM 可用时由 LLM 动态压缩，不可用或返回空时走确定性选择性兜底。
 
 压缩不是拼接：无论走哪条路径，输出都必须受 max_chars 约束。
@@ -49,9 +49,9 @@ def build_compress_prompt(
     hint: str = "",
 ) -> str:
     """构造压缩提示：目标层不同，保留标准不同。"""
-    if target_tier == "canon":
+    if target_tier == "key_events":
         rules = [
-            "你是编年史记录者。把下列长期剧情压缩成「历史事件」。",
+            "你是编年史记录者。把下列长期剧情压缩成「关键事件」。",
             "要求：",
             "1. 只记录改变主线走向或世界格局的关键事件：转折、死亡、背叛、契约、"
             "身份揭示、伏笔回收、重大得失；",
@@ -114,7 +114,7 @@ def fallback_compress(
     if not candidates:
         return ""
 
-    if target_tier == "canon":
+    if target_tier == "key_events":
         return _select_events(candidates, max_chars)
 
     scored = [
@@ -217,7 +217,7 @@ def is_empty_compression(text: str, target_tier: str) -> bool:
     normalized = (text or "").strip().strip("。")
     if not normalized:
         return True
-    if target_tier != "canon":
+    if target_tier != "key_events":
         return False
     lowered = normalized.lower()
     return any(marker in lowered for marker in _EMPTY_MARKERS)

@@ -89,7 +89,7 @@ Crew  LLM + 确定性   Agent 们协作：导演、主角、群演、一致性�
 
 ### 5. 记忆：分层、压缩、遗忘 + Checkpoint
 
-- 核心记忆分层：`working → short_term → long_term → canon`，短期累积到阈值压缩进长期；
+- 核心记忆分层：`working → short_term → long_term → key_events`，短期累积到阈值压缩进长期；
 - 长期记忆重要性下降、长期未命中且与活跃伏笔无关时，降级到检索库；
 - 检索库主要放环境、世界观、角色背景等低命中记忆；命中后可回温；
 - 检索后端 `fts / vector / hybrid` 同级可选，默认 `fts`，向量库只是派生索引；
@@ -113,7 +113,7 @@ Crew  LLM + 确定性   Agent 们协作：导演、主角、群演、一致性�
 章节结构、单场景生成与重跑，以及伏笔状态流转、小说导出（Markdown / TXT）、
 成本与质量指标面板、Agent/Task 配置导入导出与跨项目复制。
 导演模式与游戏模式共用分层记忆 v2
-（`working → short_term → long_term → canon` + archive 世界书按需检索）；
+（`working → short_term → long_term → key_events` + archive 世界书按需检索）；
 历史场景、角色与地点均可从数据库重建。
 
 **M0 已交付 — 双模式动态世界纵切（含分层记忆 v2）**：

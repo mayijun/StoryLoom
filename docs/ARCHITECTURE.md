@@ -59,7 +59,7 @@ LayeredMemory 的 checkpoint 机制。这样 Crew 成为整个系统的**唯一�
 依赖方向自上而下，扩展包只能挂在 Layer 3 定义的 Tool 接口上，不修改核心层。
 
 **模块归属**：`memory/` = 资产模型（`memory/models.py`）+ 世界状态（`memory/state.py`）+
-分层记忆与 Checkpoint；`crews/` = Agent 定义 + 导演帧（`crews/scene_crew/arc.py`）；
+分层记忆与 Checkpoint；`crews/` = Agent 定义 + 导演帧（`crews/scene_crew/outline.py`）；
 `engine/narrative.py` = 双模式统一叙事引擎；`flows/` = 兼容层（旧 Flow 名转发到
 `NarrativeEngine`）；`frontend/src/components/flow/controls.ts` = 控制策略配置。
 
@@ -317,7 +317,7 @@ perceive              （从 WorldState 读地点 / 在场角色）
  → _npc_round_fallback （idle_turns ≥ 3 时 NPC 自发事件）
  → _narrate            （DirectorAgent → 可选动态 Crew → ProseAgent；一致性 retry）
  → _advance_world      （世界推进 + 正文落库 + 记忆写入，两种模式共用）
- → arc tick            （ArcDirector 推进节拍 / 张力）
+ → arc tick            （OutlinePlanner 推进节拍 / 张力，属于 OutlineAgent）
  → render              （compose_scene：prose + choices + stage）
  → TurnResult
 ```
@@ -355,7 +355,8 @@ perceive              （从 WorldState 读地点 / 在场角色）
 
 叙事引擎不在 `memory/`：双模式入口位于 `engine/narrative.py`；
 旧的 `flows/scene_flow.py` / `flows/turn_flow.py` 只做兼容转发。
-导演帧是 Crew 的生成参数，位于 `crews/scene_crew/arc.py`。
+导演帧是 Crew 的生成参数，位于 `crews/scene_crew/outline.py`；
+ARC / 节拍由 `OutlineAgent` 负责，运行时只保留确定性推进。
 控制策略不在后端：它是 Flow 配置，位于 `frontend/src/components/flow/controls.ts`。
 
 ### 5.1 运行时状态（`memory/state.py`）
@@ -373,6 +374,12 @@ WorldState
 
 `WorldEvent` 记录已发生事件，`Promise` 记录承诺与期限。
 
+**权威态与记忆投影的边界**：`WorldState` 是运行时权威真相，不做压缩或淘汰；
+`WorldState.memory_projection()` 只把回忆型内容投影到记忆层
+（`facts` / `relationships` / `promises` → `long_term`，关键事件 → `key_events`），
+由 `LayeredMemory.sync_world_state()` 在 `_advance_world` 末尾同步。
+已降级到 `archive` 的投影条目保持原位，不因每回合同步而复活。
+
 ### 5.2 叙事记忆分层 + Checkpoint（`memory/core.py` + `memory/checkpoint.py`）
 
 项目级叙事记忆分为 5 层：核心层常驻 prompt，检索层按需召回；
@@ -384,11 +391,11 @@ WorldState
 | L0 `working` | 当前场景 brief / 地点 / 在场角色 / 本轮意图 | 总是 | 否 |
 | L1 `short_term` | 最近 K 个场景的详细摘要 | 是 | 是 |
 | L2 `long_term` | 压缩后的章节 / 桥段摘要 | 是 | 是 |
-| L3 `canon` | 改变主线 / 世界格局的关键事件（历史事件） | 是 | 是 |
+| L3 `key_events` | 改变主线 / 世界格局的关键事件 | 是 | 是 |
 | L4 `archive` | 环境、世界观、角色背景、已解决伏笔、被降级旧记忆 | 按需检索 | 是（索引可重建） |
 | — **Checkpoint** | **WorldState 快照 + 渲染历史 + memory_snapshot** | **恢复时写入 working** | **是（与记忆同后端）** |
 
-核心层固定为 `short_term → long_term → canon` 三档（`working` / `archive` 是端点）；
+核心层固定为 `short_term → long_term → key_events` 三档（`working` / `archive` 是端点）；
 三档的容量与压缩由 `tiers` 有序列表配置，降级 / 回温由 `demotion` 配置。
 优先级：`MemorySettings` 代码默认 < `memory_config.default.yaml` 种子 < 项目 `memory_configs`；
 种子只在项目首次读取时导入，之后以数据库配置为准。层名受 `MemoryTier`

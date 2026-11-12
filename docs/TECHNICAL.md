@@ -94,18 +94,18 @@ PLANTED ──→ REINFORCED ──→ ACTIVATED ──→ RESOLVED
 
 ### 🧠 记忆（分层 v2）
 
-- **分层核心记忆**（`memory/core.py`）：`working → short_term → long_term → canon`，
+- **分层核心记忆**（`memory/core.py`）：`working → short_term → long_term → key_events`，
   `archive` 作为按需检索库；核心三层固定（层名受 `MemoryTier` 枚举约束），
   各层容量 / 压缩由 `tiers` 有序列表定义，降级 / 回温由 `demotion` 配置；
   默认种子来自 `src/storyloom/config/memory_config.default.yaml`，每个项目可独立覆盖；
 - **按项目配置**：记忆配置落 SQLite `memory_configs` 表（`MemoryConfigRow`），
   新建项目时自动从 YAML 播种，旧项目首次读取或运行迁移脚本时补种；
   `GET /api/projects/{id}/memory` 返回生效中的 `settings`；`PATCH` 按字段更新，
-  `canon` / `demotion` / `retrieval` 递归合并、`tiers` 整体替换，合并结果经
+  `key_events` / `demotion` / `retrieval` 递归合并、`tiers` 整体替换，合并结果经
   `MemorySettings` 校验后整体落库；`scripts/migrate_config_store.py` 可为已有项目补种或重置；
 - **生命周期**：短期超 `max_items` 取最旧 `compress_batch` 条压缩进长期；
-  长期超限压缩进 canon；长期记忆与历史事件都可按各自阈值冷却到 archive：
-  `demotion.long_term` / `demotion.canon` 分别配置 `importance_threshold` 与
+  长期超限压缩进 key_events；长期记忆与历史事件都可按各自阈值冷却到 archive：
+  `demotion.long_term` / `demotion.key_events` 分别配置 `importance_threshold` 与
   `miss_scenes`（重要度低于阈值且连续 N 场景未命中，且非 pinned / 无活跃伏笔）；
   archive 命中 `reheat_hits` 次 → 回温为 long_term；
 - **持久化**：SQLite `memory_items` 表（`db/models.py`），按 `project_id + id` 隔离；
@@ -130,7 +130,7 @@ tiers:
     compress_batch: 4     # 每次压缩几条进历史事件
 demotion:
   long_term: { importance_threshold: 0.35, miss_scenes: 10 }
-  canon:     { importance_threshold: 0.30, miss_scenes: 20 }
+  key_events:     { importance_threshold: 0.30, miss_scenes: 20 }
   reheat_hits: 2
 ```
 
@@ -150,7 +150,7 @@ SQLite 默认（`data/storyloom.db`），设 `STORYLOOM_DATABASE_URL` 可切 Pos
 | `projects` | 项目元数据 |
 | `agent_configs` | 每项目 Agent 配置 |
 | `task_configs` | 每项目 Task 配置 |
-| `memory_configs` | 每项目记忆层配置（tiers / canon / demotion / retrieval） |
+| `memory_configs` | 每项目记忆层配置（tiers / key_events / demotion / retrieval） |
 | `chapters` | 章节目录 |
 | `scenes` | 已生成场景（brief / prose / 质量分 / 耗时 / 章节归属） |
 | `characters` | 角色资产 |
@@ -265,7 +265,7 @@ StoryLoom/
 │   ├── crews/scene_crew/
 │   │   ├── crew.py              # @CrewBase SceneCrew：Agent + 世界裁决 + NPC 自主
 │   │   ├── packet.py            # 统一 Agent JSON 契约 + 场景装配
-│   │   ├── arc.py               # 导演帧：起承转合 + 张力 + 信息预算（Crew 生成参数）
+│   │   ├── outline.py           # 导演帧：起承转合 + 张力 + 信息预算（OutlineAgent 产出）
 │   │   ├── tools.py             # Crew 工具（活跃伏笔查询等）
 │   │   └── config/              # agents.default.yaml / tasks.default.yaml（种子）
 │   ├── memory/
@@ -305,7 +305,7 @@ StoryLoom/
 > - `api/engine.py` `NovelEngine` → `StoryEngine`（运行时门面）
 > - `models.py` → `memory/models.py`：资产模型随世界状态一起归入 `memory/`
 > - `world/state.py` → `memory/state.py`：世界状态与分层记忆统一为 `memory/` 的状态容器
-> - `narrative/arc.py` → `crews/scene_crew/arc.py`：导演帧作为 Crew 生成参数
+> - `narrative/arc.py` → `crews/scene_crew/outline.py`：ARC 归入 OutlineAgent，导演帧作为 Crew 生成参数
 > - `control/` 已删除：灵敏度 / 采样 / 闸门策略改为 `frontend/src/components/flow/controls.ts` 的 Flow 配置
 
 ---
@@ -392,7 +392,7 @@ M0 已交付（**全部 async**）：
 | POST | `/game/{pid}/mode` | 切换游戏 / 导演模式（切换前落 checkpoint） |
 | POST | `/extensions/resolve` | 解析并加载扩展包 manifest |
 | GET | `/api/projects/{id}/memory` | 记忆层级、后端与生效配置（`settings` / `items` / `prompt_block`） |
-| PATCH | `/api/projects/{id}/memory` | 按字段更新记忆配置（`canon` / `demotion` / `retrieval` 递归合并，`tiers` 整体替换；`backend` 兼容旧写法） |
+| PATCH | `/api/projects/{id}/memory` | 按字段更新记忆配置（`key_events` / `demotion` / `retrieval` 递归合并，`tiers` 整体替换；`backend` 兼容旧写法） |
 
 **版本化入口**：以上运行端点同时挂在 `/runtime/v1/*`（推荐新接入使用）：
 

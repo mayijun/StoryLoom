@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 from crewai import Agent, Crew, Process, Task
 from pydantic import BaseModel, Field
 
-from storyloom.crews.scene_crew.arc import ArcDirector, DirectorFrame
+from storyloom.crews.scene_crew.outline import DirectorFrame, OutlinePlanner
 from storyloom.crews.scene_crew.crew import SceneCrew
 from storyloom.crews.scene_crew.packet import (
     AgentPacket,
@@ -350,7 +350,7 @@ class NarrativeEngine:
           ② GM adjudicate（导演 Agent 裁决 → StateDelta + narrative）
           ③ _narrate(mode="game", enable_crew=False, pre_context=GM 结果)
           ④ _advance_world(mode="game", state_delta=GM 产出)
-          ⑤ arc 推进（ArcDirector）
+          ⑤ arc 推进（OutlinePlanner）
           ⑥ render（compose_scene）
           → 返回 TurnResult
 
@@ -393,8 +393,8 @@ class NarrativeEngine:
                 pass
 
         # ② 导演帧（先定节拍，再裁决） + GM adjudicate + idle_turns NPC round
-        arc_director = ArcDirector()
-        arc_frame = frame or arc_director.frame(world_state, goal=goal)
+        arc_planner = OutlinePlanner()
+        arc_frame = frame or arc_planner.frame(world_state, goal=goal)
 
         adjudication = None
         state_delta = StateDelta()
@@ -449,7 +449,7 @@ class NarrativeEngine:
         working_state = advance_result.world_state or world_state
 
         # ⑤ arc 推进（确定性节拍：成功微调张力，戏剧性结果放大张力）
-        arc = arc_director.advance(
+        arc = arc_planner.advance(
             working_state,
             success=(adjudication is None or adjudication.success),
             dramatic=bool(
@@ -458,7 +458,7 @@ class NarrativeEngine:
             ),
         )
         working_state = working_state.model_copy(update={"arc": arc})
-        arc_result: Optional[DirectorFrame] = arc_director.frame(
+        arc_result: Optional[DirectorFrame] = arc_planner.frame(
             working_state, goal=goal
         )
 
@@ -719,6 +719,9 @@ class NarrativeEngine:
             # 双向对齐（只增不减）
             world_state.turn = max(world_state.turn, project.scene_count)
             project.scene_count = max(project.scene_count, world_state.turn)
+            # 5. 回忆型状态投影到 memory（权威真相仍在 world_state）
+            if memory is not None:
+                memory.sync_world_state(world_state, current_scene=scene_idx)
 
         return AdvanceResult(project=project, world_state=world_state)
 

@@ -73,9 +73,9 @@
 | M0-9 | Demo | `xianxia_system.py`（仙侠）与 `sandbox_life.py`（都市沙盒）：角色/地点/伏笔/章节 + 内嵌 map mod 与 skill；Web 界面「试用模板」一键生成可删除项目 | ✅ `src/storyloom/templates/` |
 | M0-10 | 测试 | 导演 Agent 裁决、`Fact` 过滤、存档回放、manifest 校验、导演模式回归、记忆分层 / 压缩 / 降级、三后端检索 | ✅ `tests/test_m0.py` · `test_m0_api.py` · `test_memory_compression.py` |
 | M0-11 | `memory/state.py` | `WorldState.switch_mode` / `apply_override` / `rollback_override` · 模式切换 checkpoint · `FactOverride` 审计与回滚 | ✅ `memory/state.py` |
-| M0-12 | `crews/scene_crew/arc.py` | 起承转合节拍 · 张力目标 · 信息预算 | ✅ `crews/scene_crew/arc.py`（Crew 生成参数） |
+| M0-12 | `crews/scene_crew/outline.py` | 起承转合节拍 · 张力目标 · 信息预算（OutlineAgent 职能） | ✅ `crews/scene_crew/outline.py`（Crew 生成参数） |
 | M0-13 | `crews/scene_crew/crew.py` | NPC 自主：记忆 → 反思 → 计划 → 提案（EnsembleAgent 输出 `npc_actions`） | ✅ `SceneCrew.npc_actions` |
-| M0-14 | `memory/` 分层记忆 v2 | 核心层 `working → short_term → long_term → canon`（三层策略可配）· 短期超阈值压缩进长期 · 长期低重要性且与活跃伏笔无关时降级到检索库 · 命中后可回温 · `fts` 默认 / `vector` / `hybrid` 同级可选 · 历史场景与资产回填 · 重启恢复 · `secrets` 可见性过滤 | ✅ `memory/` 包 + `src/storyloom/config/memory_config.default.yaml`（默认种子）+ 每项目 `memory_configs` |
+| M0-14 | `memory/` 分层记忆 v2 | 核心层 `working → short_term → long_term → key_events`（三层策略可配）· 短期超阈值压缩进长期 · 长期低重要性且与活跃伏笔无关时降级到检索库 · 命中后可回温 · `fts` 默认 / `vector` / `hybrid` 同级可选 · 历史场景与资产回填 · 重启恢复 · `secrets` 可见性过滤 | ✅ `memory/` 包 + `src/storyloom/config/memory_config.default.yaml`（默认种子）+ 每项目 `memory_configs` |
 
 > M0-13 的 NPC 自主消费 M0-14 的分层记忆；M0-14 可与 W1/W2 并行，但必须在 NPC 自主之前完成。
 
@@ -86,14 +86,14 @@
 | L0 `working` | 当前场景状态 / 地点 / 在场角色 / 本轮意图 | 总是 | 否 |
 | L1 `short_term` | 最近 K 个场景的详细摘要 | 是 | 是 |
 | L2 `long_term` | 压缩后的章节 / 桥段摘要 | 是 | 是 |
-| L3 `canon` | 身份、世界规则、活跃伏笔、核心设定 | 是（pinned） | 是 |
+| L3 `key_events` | 身份、世界规则、活跃伏笔、核心设定 | 是（pinned） | 是 |
 | L4 `archive` | 环境、世界观、角色背景、已解决伏笔、被降级旧记忆 | 按需检索 | 是 |
 
 - 短期超过 `max_items`（默认 6）→ 取最旧 batch 压缩为长期；
-- 长期超过 `max_items`（默认 8）→ 压缩为 canon / arc；
+- 长期超过 `max_items`（默认 8）→ 压缩为 key_events / arc；
 - 长期重要性低于 0.35、连续 10 场景未命中、无活跃伏笔、非 pinned → 降级到 L4；
 - 降级记忆被检索并采用 2 次 → 回温为 `long_term`；
-- 核心三层（`short_term` / `long_term` / `canon`）的容量、压缩与降级策略默认来自 `memory_config.default.yaml`，每项目可独立覆盖并落库到 `memory_configs`；
+- 核心三层（`short_term` / `long_term` / `key_events`）的容量、压缩与降级策略默认来自 `memory_config.default.yaml`，每项目可独立覆盖并落库到 `memory_configs`；
 - 检索后端 `fts` 默认，`vector` / `hybrid` 同级可选；无 embedding 时自动降级；
 
 ### 2.3 运行时架构预留（M0 就留对，不大手术）
@@ -195,7 +195,7 @@
 | API | `/game/...` 端点 + `/extensions/resolve` + `/memory`，全部 async | `api/routers/` | P0 ✅ |
 | 前端 | 游戏模式：对话框 / 选项 / backlog / 存档 | `frontend/src/components/GamePanel.vue` | P0 ✅ |
 | 双模式策略 | `SceneCrew.adjudicate(mode=)` / 模式切换 checkpoint / `FactOverride` 回滚 | `memory/state.py` | P0 ✅ |
-| 叙事节拍 | `ArcState`：起承转合 + 张力目标 + 信息预算 | `crews/scene_crew/arc.py` | P0 ✅ |
+| 叙事节拍 | `ArcState`：起承转合 + 张力目标 + 信息预算 | `crews/scene_crew/outline.py` | P0 ✅ |
 | NPC 自主 | `SceneCrew.npc_actions`：记忆 → 反思 → 计划 → 提案 | `crews/scene_crew/crew.py` | P0 ✅ |
 | Demo | 试用模板（仙侠 / 都市沙盒） | `src/storyloom/templates/xianxia_system.py` · `sandbox_life.py` | P1 ✅ |
 

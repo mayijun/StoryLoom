@@ -12,7 +12,9 @@ from typing import Any, Dict, List, Literal, Optional
 import yaml
 from pydantic import BaseModel, Field
 
-MemoryTier = Literal["working", "short_term", "long_term", "canon", "archive"]
+MemoryTier = Literal[
+    "working", "short_term", "long_term", "key_events", "archive"
+]
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "memory_config.default.yaml"
 
@@ -94,15 +96,15 @@ class MemorySettings(BaseModel):
     """memory_config.default.yaml 的运行时视图"""
 
     tiers: List[TierSpec] = Field(default_factory=list)
-    canon_max_items: int = 20
-    # 正史溢出时默认在正史内部合并，不再写入世界书
-    canon_compress_into: MemoryTier = "canon"
-    canon_compress_max_chars: int = 240
-    canon_compress_hint: str = ""
+    key_events_max_items: int = 20
+    # 关键事件溢出时默认在层内合并，不再写入世界书
+    key_events_compress_into: MemoryTier = "key_events"
+    key_events_compress_max_chars: int = 240
+    key_events_compress_hint: str = ""
     # 兼容旧配置的全局降级参数
     demotion_threshold: float = 0.35
     demotion_miss_scenes: int = 10
-    # 按层配置的降级阈值：长期记忆与历史事件都可以冷却到世界书
+    # 按层配置的降级阈值：长期记忆与关键事件都可以冷却到世界书
     # 留空时回落到全局 demotion_threshold / demotion_miss_scenes
     demotion_rules: Dict[str, DemotionRule] = Field(default_factory=dict)
     reheat_hits: int = 2
@@ -126,7 +128,7 @@ class MemorySettings(BaseModel):
             TierSpec.model_validate(item)
             for item in raw.get("tiers", [])
         ]
-        canon = raw.get("canon", {})
+        key_events = raw.get("key_events", {}) or {}
         demotion = raw.get("demotion", {}) or {}
         retrieval = raw.get("retrieval", {})
         legacy_threshold = float(
@@ -134,7 +136,7 @@ class MemorySettings(BaseModel):
         )
         legacy_miss = int(demotion.get("miss_scenes", 10))
         long_rule_raw = demotion.get("long_term", {}) or {}
-        canon_rule_raw = demotion.get("canon", {}) or {}
+        key_rule_raw = demotion.get("key_events", {}) or {}
         demotion_rules = {
             "long_term": DemotionRule(
                 importance_threshold=float(
@@ -146,23 +148,27 @@ class MemorySettings(BaseModel):
                     long_rule_raw.get("miss_scenes", legacy_miss)
                 ),
             ),
-            "canon": DemotionRule(
+            "key_events": DemotionRule(
                 importance_threshold=float(
-                    canon_rule_raw.get("importance_threshold", 0.30)
+                    key_rule_raw.get("importance_threshold", 0.30)
                 ),
                 miss_scenes=int(
-                    canon_rule_raw.get("miss_scenes", 20)
+                    key_rule_raw.get("miss_scenes", 20)
                 ),
             ),
         }
         return cls(
             tiers=tiers,
-            canon_max_items=int(canon.get("max_items", 20)),
-            canon_compress_into=canon.get("compress_into", "canon"),
-            canon_compress_max_chars=int(
-                canon.get("compress_max_chars", 240)
+            key_events_max_items=int(key_events.get("max_items", 20)),
+            key_events_compress_into=key_events.get(
+                "compress_into", "key_events"
             ),
-            canon_compress_hint=str(canon.get("compress_hint", "")),
+            key_events_compress_max_chars=int(
+                key_events.get("compress_max_chars", 240)
+            ),
+            key_events_compress_hint=str(
+                key_events.get("compress_hint", "")
+            ),
             demotion_threshold=legacy_threshold,
             demotion_miss_scenes=legacy_miss,
             demotion_rules=demotion_rules,
@@ -175,11 +181,11 @@ class MemorySettings(BaseModel):
         """导出为 YAML / 数据库使用的配置结构"""
         return {
             "tiers": [spec.model_dump() for spec in self.tiers],
-            "canon": {
-                "max_items": self.canon_max_items,
-                "compress_into": self.canon_compress_into,
-                "compress_max_chars": self.canon_compress_max_chars,
-                "compress_hint": self.canon_compress_hint,
+            "key_events": {
+                "max_items": self.key_events_max_items,
+                "compress_into": self.key_events_compress_into,
+                "compress_max_chars": self.key_events_compress_max_chars,
+                "compress_hint": self.key_events_compress_hint,
             },
             "demotion": {
                 **{
@@ -206,7 +212,7 @@ class MemorySettings(BaseModel):
                     ),
                     TierSpec(
                         name="long_term", max_items=8,
-                        compress_batch=4, compress_into="canon",
+                        compress_batch=4, compress_into="key_events",
                         compress_max_chars=160,
                     ),
                 ]

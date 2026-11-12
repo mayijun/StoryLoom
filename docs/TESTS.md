@@ -236,18 +236,17 @@
 | 用例 | 验证点 |
 |---|---|
 | `test_short_to_long_uses_llm_compression_prompt` | 短期→长期使用 LLM 压缩提示词 |
-| `test_long_to_history_keeps_only_key_events` | 长期→canon 只保留关键事件 |
+| `test_long_to_history_keeps_only_key_events` | 长期→key_events 只保留关键事件 |
 | `test_fallback_compression_drops_scenery_keeps_key_fact` | LLM 压缩失败时确定性兜底保留关键事实 |
-| `test_history_overflow_merges_inside_history_not_world_book` | canon 溢出在正史内部合并，不写世界书 |
+| `test_history_overflow_merges_inside_history_not_world_book` | key_events 溢出在关键事件内部合并，不写世界书 |
 | `test_minor_long_term_memory_demotes_to_world_book_and_reheats` | 低价值长期记忆降级 + 命中回温 |
 | `test_simulated_31_turn_playthrough_tier_flow` | 31 回合模拟的完整层级流转 |
-| `test_prompt_block_separates_history_and_world_book` | prompt 中正史与世界书分区 |
+| `test_prompt_block_separates_history_and_world_book` | prompt 中关键事件与世界书分区 |
 | `test_turn_working_context_uses_player_action_text` | 回合工作记忆使用玩家行动文本 |
 | `test_creator_can_configure_each_layer_threshold` | 每层阈值可独立配置 |
 | `test_demotion_rules_fall_back_to_global_thresholds` | 分层未配置时回退全局阈值 |
-| `test_easiest_threshold_demotes_long_and_canon_to_world_book` | 最宽松阈值下长期与正史均可降级 |
+| `test_easiest_threshold_demotes_long_and_key_events_to_world_book` | 最宽松阈值下长期与关键事件均可降级 |
 | `test_demotion_skips_pinned_and_active_foreshadowing` | pinned 与活跃伏笔不降级 |
-| `test_legacy_pinned_canon_is_normalized_on_load` | 旧配置 pinned canon 加载时归一化 |
 
 ---
 

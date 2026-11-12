@@ -235,7 +235,7 @@
 - `counts.archive >= 16`（5 个角色 + 5 条秘密 + 6 个地点，已生成场景还会更多）；
 - `items` 中存在 `source="backfill"` 的场景索引；
 - `prompt_block` 可读，`tiers` 为配置中的有序层；
-- `settings` 为项目当前生效的记忆配置（tiers / canon / demotion / retrieval）。
+- `settings` 为项目当前生效的记忆配置（tiers / key_events / demotion / retrieval）。
 
 > 这一步验证「作品数据是事实来源，记忆索引可重建」，对应验收 A13。
 
@@ -339,8 +339,8 @@ G17 请求体示例：
    - 返回 `backend="hybrid"`，`settings.retrieval.backend` 同步为 `hybrid`；
    - 无 embedding 时自动退化为 fts，生成不中断（A14）。
 3. `PATCH` 回 `fts`，计数不变。
-4. 同一端点还可按字段调整 `tiers` / `canon` / `demotion` / `retrieval`：
-   `canon` / `demotion` / `retrieval` 递归合并，`tiers` 整体替换；
+4. 同一端点还可按字段调整 `tiers` / `key_events` / `demotion` / `retrieval`：
+   `key_events` / `demotion` / `retrieval` 递归合并，`tiers` 整体替换；
    例如 `{"tiers": [...], "demotion": {"long_term": {"importance_threshold": 0.3}}}`；
    配置按项目落库；请求体结构错误返回 422，配置校验失败返回 400，且不改动已有配置。
 

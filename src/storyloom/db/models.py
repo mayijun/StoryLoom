@@ -143,7 +143,7 @@ class TaskConfigRow(Base):
 class MemoryConfigRow(Base):
     """项目级记忆层配置（memory_config.default.yaml 的数据库版本）
 
-    每个项目一份，payload 与 YAML 结构一致（tiers / canon / demotion /
+    每个项目一份，payload 与 YAML 结构一致（tiers / key_events / demotion /
     retrieval），便于按项目单独调节记忆策略。
     """
 
@@ -357,7 +357,7 @@ class MemoryRow(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     project_id: Mapped[str] = mapped_column(String(64), index=True)
 
-    tier: Mapped[str] = mapped_column(String(32), index=True)  # short/long/canon/archive
+    tier: Mapped[str] = mapped_column(String(32), index=True)  # short/long/key_events/archive
     text: Mapped[str] = mapped_column(Text)
     summary: Mapped[str] = mapped_column(Text, default="")
     importance: Mapped[float] = mapped_column(Float, default=0.5)

@@ -24,6 +24,13 @@ def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:8]}"
 
 
+#: 值得进入「关键事件」层的事件类型；其余事件只留在运行时。
+_KEY_EVENT_KINDS = frozenset({
+    "death", "betrayal", "contract", "reveal",
+    "foreshadow_resolve", "override", "mode_switch",
+})
+
+
 class Fact(BaseModel):
     """客观事实：GM 是唯一维护者"""
 
@@ -283,6 +290,81 @@ class WorldState(BaseModel):
                 e.model_dump(mode="json") for e in self.events[-5:]
             ],
         }
+
+    # ---------------- 记忆投影 ----------------
+
+    def memory_projection(self) -> List[Dict[str, Any]]:
+        """把回忆型状态投影成 memory 条目。
+
+        权威真相仍以 WorldState 为准；这里只生成可供 RAG 召回的记忆视图：
+        - facts / relationships / promises → long_term
+        - 关键事件 → key_events
+        静态地点与角色资产由 MemoryIndexer 单独回填，不在这里重复。
+        """
+        items: List[Dict[str, Any]] = []
+
+        for fact in self.facts.values():
+            if fact.truth == "unknown":
+                continue
+            items.append({
+                "id": f"ws:fact:{fact.id}",
+                "tier": "long_term",
+                "text": f"{fact.subject}{fact.predicate}{fact.object}",
+                "visibility": self._fact_visibility(fact),
+                "importance": 0.7,
+                "tags": ["world_state", "fact"],
+            })
+
+        for key, value in self.relationships.items():
+            items.append({
+                "id": f"ws:rel:{key}",
+                "tier": "long_term",
+                "text": f"关系 {key} = {value}",
+                "visibility": "public",
+                "importance": 0.6,
+                "tags": ["world_state", "relationship"],
+            })
+
+        for promise in self.pending_promises.values():
+            if promise.fulfilled:
+                continue
+            deadline = (
+                f"（期限 {promise.deadline_minutes} 分钟）"
+                if promise.deadline_minutes
+                else ""
+            )
+            items.append({
+                "id": f"ws:promise:{promise.promise_id}",
+                "tier": "long_term",
+                "text": f"未兑现承诺：{promise.description}{deadline}",
+                "visibility": "public",
+                "importance": 0.8,
+                "tags": ["world_state", "promise"],
+            })
+
+        for event in self.events:
+            if not (
+                event.kind in _KEY_EVENT_KINDS
+                or bool(event.data.get("key_event"))
+            ):
+                continue
+            items.append({
+                "id": f"ws:event:{event.event_id}",
+                "tier": "key_events",
+                "text": event.summary,
+                "visibility": "public",
+                "importance": 0.85,
+                "tags": ["world_state", "event"],
+            })
+
+        return items
+
+    def _fact_visibility(self, fact: "Fact") -> str:
+        """已知者只有单个角色时投影为私有记忆，避免越权泄漏。"""
+        known = {name for name in fact.known_by if name not in ("gm", "director")}
+        if len(known) == 1 and len(self.characters) > 1:
+            return f"private:{next(iter(known))}"
+        return "public"
 
     # ---------------- 合并 ----------------
 

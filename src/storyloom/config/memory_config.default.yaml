@@ -1,6 +1,6 @@
 # 分层记忆 v2 默认配置（种子）
 # 本文件只用于首次播种与重置；运行时的项目配置保存在数据库 memory_configs 表。
-# 核心记忆只有三层：short_term → long_term → canon（历史事件）；
+# 核心记忆只有三层：short_term → long_term → key_events（关键事件）；
 # archive（世界书）是检索层，保存项目资产与被冷却的旧记忆。
 tiers:
   - name: short_term
@@ -12,14 +12,14 @@ tiers:
   - name: long_term
     max_items: 8
     compress_batch: 4
-    compress_into: canon
+    compress_into: key_events
     compress_max_chars: 160
     compress_hint: "只保留改变主线走向的关键事件与转折，一行一个事件，忽略日常互动"
 
-canon:
+key_events:
   max_items: 20
-  # 正史溢出时在正史内部合并；不写入世界书，避免正史与世界书职责重叠
-  compress_into: canon
+  # 关键事件溢出时在本层内部合并；不写入世界书，避免两层职责重叠
+  compress_into: key_events
   compress_max_chars: 240
   compress_hint: "只记录改变世界格局或主线走向的事件：转折、死亡、背叛、契约、身份揭示、伏笔回收"
 
@@ -29,7 +29,7 @@ demotion:
   long_term:
     importance_threshold: 0.35
     miss_scenes: 10
-  canon:
+  key_events:
     importance_threshold: 0.30
     miss_scenes: 20
   # 全局默认（旧配置兼容，分层未配置时使用）

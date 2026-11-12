@@ -2,7 +2,7 @@
 Copyright (C) 2026 Ma Yijun (ma.yijun@outlook.com)
 This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 
-分层核心记忆：working → short_term → long_term → canon，archive 按需检索。
+分层核心记忆：working → short_term → long_term → key_events，archive 按需检索。
 
 原则：
 - 近期高保真、远期高压缩、冷记忆可召回、再命中可回温；
@@ -90,12 +90,12 @@ class LayeredMemory:
 
     @staticmethod
     def _normalize_loaded(item: MemoryItem) -> MemoryItem:
-        """迁移旧版压缩产物：正史不再由系统 pin，重要度按当前规则重算，
-        否则旧存档里的历史事件永远无法按创作者阈值冷却。"""
-        if item.tier == "canon" and item.source == "compressed":
+        """旧版压缩产物不再由系统 pin，重要度按当前规则重算，
+        否则旧存档里的关键事件永远无法按创作者阈值冷却。"""
+        if item.tier == "key_events" and item.source == "compressed":
             item.pinned = False
             item.importance = score_compressed_importance(
-                item.text, stage="canon"
+                item.text, stage="key_events"
             )
         return item
 
@@ -223,10 +223,59 @@ class LayeredMemory:
         )
         return self._put(item)
 
+    # ---------------- 世界状态投影 ----------------
+
+    def sync_world_state(
+        self, state: Any, current_scene: Optional[int] = None
+    ) -> List[MemoryItem]:
+        """把 WorldState 的回忆型投影写入记忆层。
+
+        权威真相仍由 WorldState 持有；这里只维护可供召回的记忆视图。
+        已冷却到世界书的条目保持在世界书，不因每回合同步而复活。
+        """
+        scene = state.turn if current_scene is None else current_scene
+        projection = state.memory_projection()
+        keep = {raw["id"] for raw in projection}
+        touched: List[MemoryItem] = []
+
+        for raw in projection:
+            existing = self.items.get(raw["id"])
+            if existing is not None and existing.text == raw["text"]:
+                continue
+            tier = raw["tier"]
+            if existing is not None and existing.tier not in (
+                "long_term", "key_events"
+            ):
+                tier = existing.tier  # 已降级 / 归档的条目保持原位
+            item = MemoryItem(
+                id=raw["id"],
+                project_id=self.project_id,
+                tier=tier,
+                text=raw["text"],
+                summary=summarize(raw["text"]),
+                importance=raw.get("importance", 0.5),
+                scene_index=scene,
+                last_hit_scene=scene,
+                visibility=raw.get("visibility", "public"),
+                tags=list(raw.get("tags", [])),
+                source="world_state",
+            )
+            if existing is not None:
+                item.hits = existing.hits
+                item.adoptions = existing.adoptions
+            touched.append(self._put(item))
+
+        for item in list(self.items.values()):
+            if item.source == "world_state" and item.id not in keep:
+                self._drop(item.id)
+        # 生命周期（压缩 / 降级）交给下一次 add_scene 统一处理，
+        # 避免每回合同步都触发一次压缩抖动。
+        return touched
+
     # ---------------- 压缩 ----------------
 
     def consolidate(self) -> List[MemoryItem]:
-        """短期超阈值 → 长期；长期超阈值 → 正史；正史溢出在正史内部合并"""
+        """短期超阈值 → 长期；长期超阈值 → 关键事件；关键事件溢出在层内合并"""
         created: List[MemoryItem] = []
 
         for spec in self.settings.tiers:
@@ -242,55 +291,63 @@ class LayeredMemory:
                 if item is not None:
                     created.append(item)
 
-        if self.settings.canon_compress_into == "archive":
-            # 兼容旧配置：正史溢出写入检索库
+        if self.settings.key_events_compress_into == "archive":
+            # 兼容旧配置：关键事件溢出写入检索库
             while True:
-                canon_items = self._items_in("canon")
-                if len(canon_items) <= self.settings.canon_max_items:
+                key_items = self._items_in("key_events")
+                if len(key_items) <= self.settings.key_events_max_items:
                     break
-                overflow = len(canon_items) - self.settings.canon_max_items
-                batch = canon_items[: max(1, overflow)]
+                overflow = (
+                    len(key_items) - self.settings.key_events_max_items
+                )
+                batch = key_items[: max(1, overflow)]
                 item = self._compress(
                     batch,
                     TierSpec(
-                        name="canon",
-                        max_items=self.settings.canon_max_items,
+                        name="key_events",
+                        max_items=self.settings.key_events_max_items,
                         compress_batch=len(batch),
                         compress_into="archive",
-                        compress_max_chars=self.settings.canon_compress_max_chars,
-                        compress_hint=self.settings.canon_compress_hint,
+                        compress_max_chars=(
+                            self.settings.key_events_compress_max_chars
+                        ),
+                        compress_hint=(
+                            self.settings.key_events_compress_hint
+                        ),
                     ),
                 )
                 if item is not None:
                     created.append(item)
         else:
-            created.extend(self._merge_canon_overflow())
+            created.extend(self._merge_key_events_overflow())
         return created
 
-    def _merge_canon_overflow(self) -> List[MemoryItem]:
-        """正史溢出时合并最旧事件；没有关键事件就丢弃，不污染世界书。"""
+    def _merge_key_events_overflow(self) -> List[MemoryItem]:
+        """关键事件溢出时合并最旧事件；没有关键事件就丢弃，不污染世界书。"""
         created: List[MemoryItem] = []
-        if self.settings.canon_max_items <= 0:
+        if self.settings.key_events_max_items <= 0:
             return created
         while True:
-            canon_items = self._items_in("canon")
-            if len(canon_items) <= self.settings.canon_max_items:
+            key_items = self._items_in("key_events")
+            if len(key_items) <= self.settings.key_events_max_items:
                 break
-            overflow = len(canon_items) - self.settings.canon_max_items
+            overflow = len(key_items) - self.settings.key_events_max_items
             batch_size = max(1, overflow)
             # 只溢出 1 条时，与次旧条目一起合并，保证层数确实下降
-            if batch_size == 1 and len(canon_items) >= 2:
+            if batch_size == 1 and len(key_items) >= 2:
                 batch_size = 2
-            batch = canon_items[:batch_size]
+            batch = key_items[:batch_size]
             item = self._compress(
                 batch,
                 TierSpec(
-                    name="canon",
-                    max_items=self.settings.canon_max_items,
+                    name="key_events",
+                    max_items=self.settings.key_events_max_items,
                     compress_batch=batch_size,
-                    compress_into="canon",
-                    compress_max_chars=self.settings.canon_compress_max_chars,
-                    compress_hint=self.settings.canon_compress_hint,
+                    compress_into="key_events",
+                    compress_max_chars=(
+                        self.settings.key_events_compress_max_chars
+                    ),
+                    compress_hint=self.settings.key_events_compress_hint,
                 ),
             )
             if item is not None:
@@ -300,7 +357,7 @@ class LayeredMemory:
     def _compress(
         self, batch: List[MemoryItem], spec: TierSpec
     ) -> Optional[MemoryItem]:
-        """把一批记忆压缩到目标层；正史没有关键事件时返回 None（直接丢弃）。"""
+        """把一批记忆压缩到目标层；关键事件层没有可保留事件时返回 None。"""
         target = spec.compress_into
         max_chars = spec.compress_max_chars
         prompt = build_compress_prompt(
@@ -321,7 +378,7 @@ class LayeredMemory:
         if not text:
             text = fallback_compress(batch, target, max_chars=max_chars)
         text = clamp_compressed_text(
-            text, max_chars, multiline=(target == "canon")
+            text, max_chars, multiline=(target == "key_events")
         )
 
         for child in batch:
@@ -337,7 +394,7 @@ class LayeredMemory:
             text=text,
             summary=text[:200],
             importance=score_compressed_importance(text, stage=target),
-            # 正史也可按创作者配置的阈值冷却到世界书，因此默认不 pin
+            # 关键事件也可按创作者配置的阈值冷却到世界书，因此默认不 pin
             pinned=False,
             scene_index=last_scene,
             # 刚压缩产生的记忆从当前场景开始计算冷却，避免立即降级
@@ -352,13 +409,13 @@ class LayeredMemory:
     # ---------------- 降级 / 回温 ----------------
 
     def evaluate_demotion(self, current_scene: int) -> List[MemoryItem]:
-        """低价值长期记忆 / 历史事件 → 检索库（archive）
+        """低价值长期记忆 / 关键事件 → 检索库（archive）
 
         每一层使用创作者配置的降级规则（settings.rule_for），
-        因此长期记忆与正史可以有不同的重要度阈值和沉睡场景数。
+        因此长期记忆与关键事件可以有不同的重要度阈值和沉睡场景数。
         """
         demoted: List[MemoryItem] = []
-        for tier in ("long_term", "canon"):
+        for tier in ("long_term", "key_events"):
             rule = self.settings.rule_for(tier)
             for item in list(self._items_in(tier)):
                 if should_demote(
@@ -439,7 +496,7 @@ class LayeredMemory:
         labels = {
             "short_term": "近期剧情",
             "long_term": "长期剧情",
-            "canon": "历史事件",
+            "key_events": "关键事件",
         }
         for spec in self.settings.tiers:
             items = [
@@ -452,19 +509,19 @@ class LayeredMemory:
             for item in items:
                 body = (
                     item.text
-                    if spec.name == "canon"
+                    if spec.name == "key_events"
                     else (item.summary or item.text)
                 )
                 lines.append(f"  - {body}")
-        canon = [
-            item for item in self._items_in("canon")
+        key_events = [
+            item for item in self._items_in("key_events")
             if item.visible_to(viewer)
         ]
-        if canon and not any(
-            spec.name == "canon" for spec in self.settings.tiers
+        if key_events and not any(
+            spec.name == "key_events" for spec in self.settings.tiers
         ):
-            lines.append("【历史事件】")
-            for item in canon:
+            lines.append("【关键事件】")
+            for item in key_events:
                 lines.append(f"  - {item.text}")
         return "\n".join(lines)
 
@@ -492,7 +549,7 @@ class LayeredMemory:
     def counts(self) -> Dict[str, int]:
         """核心记忆只统计持久化三层 + 世界书；当前场景不作为一个记忆层。"""
         result: Dict[str, int] = {}
-        for tier in ("short_term", "long_term", "canon", "archive"):
+        for tier in ("short_term", "long_term", "key_events", "archive"):
             result[tier] = len(self._items_in(tier))
         return result
 

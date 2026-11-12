@@ -19,7 +19,7 @@ This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 - ProtagonistAgent   重要角色，1 角色 = 1 实例
 - EnsembleAgent      "群演"，1 实例承载 N 个次要角色，压缩成本
 - DirectorAgent      导演，统一负责意外、伏笔、场景意图与一致性自检
-- OutlineAgent       大纲规划
+- OutlineAgent       大纲规划 + ARC 节拍
 - ProseAgent         润色 / 叙事者
 """
 
@@ -233,7 +233,7 @@ class SceneCrew:
 
     @agent
     def outline(self) -> Agent:
-        """大纲 Agent：章节级 / 卷级结构规划，需要长上下文"""
+        """大纲 Agent：章节级 / 卷级结构规划，同时负责 ARC 节拍（起承转合 / 张力 / 信息预算）"""
         return Agent(
             config=self._config("outline"),
             llm=self._llm("outline"),

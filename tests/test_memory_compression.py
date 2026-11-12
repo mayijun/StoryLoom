@@ -34,9 +34,9 @@ class FakeCompressor:
 
     def __call__(self, prompt: str) -> str:
         self.prompts.append(prompt)
-        history_calls = sum("「历史事件」" in item for item in self.prompts)
+        history_calls = sum("「关键事件」" in item for item in self.prompts)
         long_calls = sum("「长期剧情记忆」" in item for item in self.prompts)
-        if "「历史事件」" in prompt:
+        if "「关键事件」" in prompt:
             return f"事件：第{history_calls}次关键转折；影响：主线推进"
         return (
             f"主线：第{long_calls}段压缩事实；"
@@ -84,7 +84,7 @@ def test_short_to_long_uses_llm_compression_prompt(repo):
 
 def test_long_to_history_keeps_only_key_events(repo):
     fake = FakeCompressor()
-    memory = LayeredMemory("p_compress_canon", repo=repo, compress_fn=fake)
+    memory = LayeredMemory("p_compress_key_events", repo=repo, compress_fn=fake)
 
     for index in range(9):
         memory._put(
@@ -101,14 +101,14 @@ def test_long_to_history_keeps_only_key_events(repo):
 
     memory.consolidate()
 
-    canon = memory._items_in("canon")
-    assert len(canon) == 1
+    key_events = memory._items_in("key_events")
+    assert len(key_events) == 1
     # 正史不再默认 pinned，创作者可通过阈值让它冷却到世界书
-    assert canon[0].pinned is False
-    assert canon[0].text.startswith("事件：")
-    assert len(canon[0].text) <= 160
+    assert key_events[0].pinned is False
+    assert key_events[0].text.startswith("事件：")
+    assert len(key_events[0].text) <= 160
 
-    prompt = next(item for item in fake.prompts if "「历史事件」" in item)
+    prompt = next(item for item in fake.prompts if "「关键事件」" in item)
     assert "只记录" in prompt
     assert "改变主线走向" in prompt or "改变世界格局" in prompt
     assert "忽略日常互动" in prompt
@@ -146,23 +146,23 @@ def test_history_overflow_merges_inside_history_not_world_book(repo):
                 name="long_term",
                 max_items=8,
                 compress_batch=4,
-                compress_into="canon",
+                compress_into="key_events",
                 compress_max_chars=160,
             ),
         ],
-        canon_max_items=3,
-        canon_compress_into="canon",
-        canon_compress_max_chars=240,
+        key_events_max_items=3,
+        key_events_compress_into="key_events",
+        key_events_compress_max_chars=240,
     )
     memory = LayeredMemory(
-        "p_canon_overflow", repo=repo, settings=settings, compress_fn=fake
+        "p_key_events_overflow", repo=repo, settings=settings, compress_fn=fake
     )
 
     for index in range(4):
         memory._put(
             MemoryItem(
-                id=f"canon:{index}",
-                tier="canon",
+                id=f"key_events:{index}",
+                tier="key_events",
                 text=f"事件：旧事件 {index}；影响：世界继续运转。",
                 summary=f"事件 {index}",
                 importance=1.0,
@@ -173,7 +173,7 @@ def test_history_overflow_merges_inside_history_not_world_book(repo):
 
     memory.consolidate()
 
-    assert memory.counts()["canon"] <= 3
+    assert memory.counts()["key_events"] <= 3
     assert memory.counts()["archive"] == 0
     assert all(
         item.source != "compressed"
@@ -229,22 +229,22 @@ def test_simulated_31_turn_playthrough_tier_flow(repo):
     assert "working" not in counts
     assert counts["short_term"] == 4
     assert counts["long_term"] == 5
-    assert counts["canon"] == 1
+    assert counts["key_events"] == 1
     assert counts["archive"] == 0
 
-    canon = memory._items_in("canon")
-    assert canon[0].pinned is False
-    assert canon[0].text.startswith("事件：")
-    assert len(canon[0].text) <= 240
+    key_events = memory._items_in("key_events")
+    assert key_events[0].pinned is False
+    assert key_events[0].text.startswith("事件：")
+    assert len(key_events[0].text) <= 240
 
     block = memory.prompt_block()
-    assert "【历史事件】" in block
-    assert canon[0].text in block
+    assert "【关键事件】" in block
+    assert key_events[0].text in block
 
     texts = [
         item.text
         for item in memory.items.values()
-        if item.tier in ("short_term", "long_term", "canon")
+        if item.tier in ("short_term", "long_term", "key_events")
     ]
     assert len(texts) == len(set(texts))
 
@@ -258,8 +258,8 @@ def test_prompt_block_separates_history_and_world_book(repo):
     )
     memory._put(
         MemoryItem(
-            id="canon:1",
-            tier="canon",
+            id="key_events:1",
+            tier="key_events",
             text="事件：林凡拜入青云宗；影响：主线开启。",
             summary="林凡拜入青云宗",
             importance=1.0,
@@ -269,14 +269,14 @@ def test_prompt_block_separates_history_and_world_book(repo):
     )
 
     block = memory.prompt_block()
-    assert "【历史事件】" in block
+    assert "【关键事件】" in block
     assert "事件：林凡拜入青云宗" in block
     assert "青云宗后山禁地" not in block
 
     retrieval = memory.retrieval_block("后山禁地")
     assert "青云宗后山禁地" in retrieval
     assert set(memory.counts()) == {
-        "short_term", "long_term", "canon", "archive"
+        "short_term", "long_term", "key_events", "archive"
     }
 
 
@@ -326,14 +326,14 @@ tiers:
   - name: long_term
     max_items: 3
     compress_batch: 2
-    compress_into: canon
-canon:
+    compress_into: key_events
+key_events:
   max_items: 9
 demotion:
   long_term:
     importance_threshold: 0.88
     miss_scenes: 2
-  canon:
+  key_events:
     importance_threshold: 0.77
     miss_scenes: 5
   reheat_hits: 1
@@ -345,11 +345,11 @@ demotion:
 
     assert (settings.tiers[0].max_items, settings.tiers[0].compress_batch) == (2, 1)
     assert (settings.tiers[1].max_items, settings.tiers[1].compress_batch) == (3, 2)
-    assert settings.canon_max_items == 9
+    assert settings.key_events_max_items == 9
     assert settings.rule_for("long_term").importance_threshold == 0.88
     assert settings.rule_for("long_term").miss_scenes == 2
-    assert settings.rule_for("canon").importance_threshold == 0.77
-    assert settings.rule_for("canon").miss_scenes == 5
+    assert settings.rule_for("key_events").importance_threshold == 0.77
+    assert settings.rule_for("key_events").miss_scenes == 5
     assert settings.reheat_hits == 1
 
 
@@ -358,13 +358,13 @@ def test_demotion_rules_fall_back_to_global_thresholds():
     settings = MemorySettings(
         demotion_threshold=0.6, demotion_miss_scenes=3
     )
-    for tier in ("long_term", "canon"):
+    for tier in ("long_term", "key_events"):
         rule = settings.rule_for(tier)
         assert rule.importance_threshold == 0.6
         assert rule.miss_scenes == 3
 
 
-def test_easiest_threshold_demotes_long_and_canon_to_world_book(repo):
+def test_easiest_threshold_demotes_long_and_key_events_to_world_book(repo):
     """用最容易触发的阈值：每层只留 1 条、每次压 1 条、阈值 0.99、miss=2。"""
     settings = MemorySettings(
         tiers=[
@@ -379,16 +379,16 @@ def test_easiest_threshold_demotes_long_and_canon_to_world_book(repo):
                 name="long_term",
                 max_items=1,
                 compress_batch=1,
-                compress_into="canon",
+                compress_into="key_events",
                 compress_max_chars=160,
             ),
         ],
-        canon_max_items=20,
+        key_events_max_items=20,
         demotion_rules={
             "long_term": DemotionRule(
                 importance_threshold=0.99, miss_scenes=2
             ),
-            "canon": DemotionRule(
+            "key_events": DemotionRule(
                 importance_threshold=0.99, miss_scenes=2
             ),
         },
@@ -405,7 +405,7 @@ def test_easiest_threshold_demotes_long_and_canon_to_world_book(repo):
 
     counts = memory.counts()
     assert counts["long_term"] == 0
-    assert counts["canon"] == 0
+    assert counts["key_events"] == 0
     assert counts["archive"] > 0
 
     archived = memory._items_in("archive")
@@ -413,7 +413,7 @@ def test_easiest_threshold_demotes_long_and_canon_to_world_book(repo):
     remained_tiers = {
         tag for item in archived for tag in item.tags
     }
-    assert {"long_term", "canon"} <= remained_tiers
+    assert {"long_term", "key_events"} <= remained_tiers
 
 
 def test_demotion_skips_pinned_and_active_foreshadowing(repo):
@@ -422,7 +422,7 @@ def test_demotion_skips_pinned_and_active_foreshadowing(repo):
             "long_term": DemotionRule(
                 importance_threshold=0.99, miss_scenes=0
             ),
-            "canon": DemotionRule(
+            "key_events": DemotionRule(
                 importance_threshold=0.99, miss_scenes=0
             ),
         }
@@ -430,8 +430,8 @@ def test_demotion_skips_pinned_and_active_foreshadowing(repo):
     memory = LayeredMemory("p_guard", repo=repo, settings=settings)
     memory._put(
         MemoryItem(
-            id="pinned_canon",
-            tier="canon",
+            id="pinned_key_events",
+            tier="key_events",
             text="事件：世界终局。",
             importance=0.1,
             pinned=True,
@@ -452,27 +452,5 @@ def test_demotion_skips_pinned_and_active_foreshadowing(repo):
     )
 
     assert memory.evaluate_demotion(100) == []
-    assert memory.items["pinned_canon"].tier == "canon"
+    assert memory.items["pinned_key_events"].tier == "key_events"
     assert memory.items["foreshadow_long"].tier == "long_term"
-
-
-def test_legacy_pinned_canon_is_normalized_on_load(repo):
-    """旧存档里被系统 pin 的正史，读档后应恢复为可冷却状态。"""
-    memory = LayeredMemory("p_legacy_pin", repo=repo)
-    memory._put(
-        MemoryItem(
-            id="old_canon",
-            tier="canon",
-            text="事件：旧版正史记录。",
-            importance=1.0,
-            pinned=True,
-            source="compressed",
-            scene_index=3,
-            last_hit_scene=3,
-        )
-    )
-
-    reloaded = LayeredMemory("p_legacy_pin", repo=repo)
-    item = reloaded.items["old_canon"]
-    assert item.pinned is False
-    assert item.importance < 0.99

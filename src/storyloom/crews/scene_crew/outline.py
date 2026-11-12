@@ -2,10 +2,12 @@
 Copyright (C) 2026 Ma Yijun (ma.yijun@outlook.com)
 This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 
-叙事节拍：起承转合 + 张力目标 + 信息预算。
+叙事节拍（ARC）：起承转合 + 张力目标 + 信息预算。
 
-由 Flow 在 `director_frame` 阶段生成，作为 `SceneCrew.adjudicate(frame=...)`
-的输入参数；M0 使用确定性策略，接口预留给 M1 的 TFC 动态计算。
+ARC 是 OutlineAgent 的职能之一：大纲负责卷章结构，节拍是结构在运行时的
+投影。由 Flow 在 `director_frame` 阶段生成，作为
+`SceneCrew.adjudicate(frame=...)` 的输入参数；M0 使用确定性策略，
+接口预留给 M1 的 TFC 动态计算。
 """
 
 from typing import List
@@ -45,8 +47,8 @@ class DirectorFrame(BaseModel):
     hints: List[str] = Field(default_factory=list)
 
 
-class ArcDirector:
-    """确定性节拍推进"""
+class OutlinePlanner:
+    """OutlineAgent 的运行时节拍推进器（确定性）"""
 
     def frame(self, state: WorldState, goal: str = "") -> DirectorFrame:
         arc = state.arc
@@ -93,4 +95,4 @@ class ArcDirector:
         return arc
 
 
-__all__ = ["ArcDirector", "DirectorFrame"]
+__all__ = ["OutlinePlanner", "DirectorFrame"]

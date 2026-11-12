@@ -404,7 +404,7 @@ class MemoryPatchRequest(BaseModel):
 
     backend: Optional[Literal["fts", "vector", "hybrid"]] = None
     tiers: Optional[List[Dict[str, Any]]] = None
-    canon: Optional[Dict[str, Any]] = None
+    key_events: Optional[Dict[str, Any]] = None
     demotion: Optional[Dict[str, Any]] = None
     retrieval: Optional[Dict[str, Any]] = None
 

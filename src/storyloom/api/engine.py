@@ -987,14 +987,16 @@ class StoryEngine:
             "counts": memory.counts(),
             "settings": memory.settings.to_dict(),
             "tiers": [spec.model_dump(mode="json") for spec in memory.settings.tiers],
-            "canon": {
-                "max_items": memory.settings.canon_max_items,
-                "compress_into": memory.settings.canon_compress_into,
-                "compress_max_chars": memory.settings.canon_compress_max_chars,
+            "key_events": {
+                "max_items": memory.settings.key_events_max_items,
+                "compress_into": memory.settings.key_events_compress_into,
+                "compress_max_chars": (
+                    memory.settings.key_events_compress_max_chars
+                ),
             },
             "demotion": {
                 tier: memory.settings.rule_for(tier).model_dump(mode="json")
-                for tier in ("long_term", "canon")
+                for tier in ("long_term", "key_events")
             },
             "reheat_hits": memory.settings.reheat_hits,
             "items": items,
