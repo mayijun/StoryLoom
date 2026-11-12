@@ -17,7 +17,6 @@ class CharacterAsset(BaseModel):
     importance_tier: Literal["primary", "secondary", "background"]
     persona: str            # 性格、说话习惯
     motivation: str         # 当前动机
-    secrets: str = ""       # 隐藏设定，只在需要时通过 RAG 提供
 
 
 class LocationAsset(BaseModel):
@@ -64,6 +63,10 @@ class Foreshadowing(BaseModel):
     scenes_since_last_mention: int = 0     # 距上次提及过了几个场景
     linked_characters: List[str] = Field(default_factory=list)
     linked_surprise_ids: List[str] = Field(default_factory=list)
+    # 描述与真相的记忆可见性：默认仅导演（全知视角）可见；
+    # known_by 表示“一开始就知道这条伏笔”的角色，例如某个配角天生知情。
+    visibility: Literal["public", "restricted"] = "restricted"
+    known_by: List[str] = Field(default_factory=list)
 
 
 class SurpriseType(str, Enum):

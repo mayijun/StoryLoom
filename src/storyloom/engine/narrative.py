@@ -166,6 +166,8 @@ def apply_foreshadow_ops(project: NovelProject, ops: List[dict]) -> None:
                 target_revelation=new_data.get("target_revelation", ""),
                 linked_characters=new_data.get("linked_characters", []),
                 max_dormant_scenes=new_data.get("max_dormant_scenes", 5),
+                visibility=new_data.get("visibility", "restricted"),
+                known_by=new_data.get("known_by", []),
             )
             project.foreshadowings.append(new_f)
             print(f"  🌱 新伏笔已种下: {new_f.description}")
@@ -616,7 +618,13 @@ class NarrativeEngine:
 
         # ---- Step 2: 动态 Crew（option） ----
         actor_log = ""
-        rag_context = self.memory.retrieval_block(scene_brief, k=3) if self.memory else ""
+        rag_context = (
+            self.memory.retrieval_block(
+                scene_brief, k=3, viewer="director"
+            )
+            if self.memory
+            else ""
+        )
 
         if enable_crew and mode == "director" and self.crew is not None:
             actor_log = await self._run_dynamic_crew(
@@ -624,6 +632,7 @@ class NarrativeEngine:
                 present_chars=present_chars,
                 director_json=director_json,
                 rag_context=rag_context,
+                memory_query=scene_brief,
             )
         else:
             # 游戏模式、禁用 Crew、或 crew 不可用 → actor_log 直接从 pre_context 取
@@ -700,6 +709,8 @@ class NarrativeEngine:
         ops = director_json.get("foreshadow_ops", [])
         if ops and isinstance(ops, list):
             apply_foreshadow_ops(project, ops)
+            if memory is not None:
+                memory.sync_foreshadowings(project.foreshadowings)
 
         # 3. memory.add_scene（两种模式都调，但 memory=None 时跳过）
         scene_idx = project.scene_count
@@ -832,8 +843,10 @@ class NarrativeEngine:
         """构造 DirectorAgent 的提示词"""
         # memory 上下文
         if self.memory is not None:
-            memory_block = self.memory.prompt_block()
-            rag_context = self.memory.retrieval_block(scene_brief, k=3)
+            memory_block = self.memory.prompt_block(viewer="director")
+            rag_context = self.memory.retrieval_block(
+                scene_brief, k=3, viewer="director"
+            )
         else:
             memory_block = ""
             rag_context = ""
@@ -916,7 +929,7 @@ class NarrativeEngine:
             "}\n"
             "\n"
             "foreshadow_ops 里每个操作的格式：\n"
-            "- plant: {\"action\":\"plant\",\"new_foreshadow\":{\"description\":\"...\",\"linked_characters\":[...],\"target_revelation\":\"...\"}}\n"
+            "- plant: {\"action\":\"plant\",\"new_foreshadow\":{\"description\":\"...\",\"linked_characters\":[...],\"target_revelation\":\"...\",\"visibility\":\"restricted|public\",\"known_by\":[...]}}\n"
             "- reinforce/resolve/subvert: {\"action\":\"...\",\"foreshadow_id\":\"fs_xxx\"}\n"
             "没有伏笔要操作时 foreshadow_ops 填空数组。\n"
             "consistency 里自检人设/时间线/设定冲突；major 冲突把 severity 标记在 conflicts 里。"
@@ -959,6 +972,7 @@ class NarrativeEngine:
         present_chars: List[str],
         director_json: Dict[str, Any],
         rag_context: str,
+        memory_query: str = "",
     ) -> str:
         """
         动态 Crew 组装 + kickoff。
@@ -986,10 +1000,20 @@ class NarrativeEngine:
             ensure_ascii=False,
             indent=2,
         )
-        memory_block = self.memory.prompt_block() if self.memory else ""
+
+        def char_memory(char) -> tuple[str, str]:
+            if not self.memory:
+                return "", rag_context
+            return (
+                self.memory.prompt_block(viewer=char.name),
+                self.memory.retrieval_block(
+                    memory_query, k=3, viewer=char.name
+                ),
+            )
 
         for char in primary_chars:
             agent = self.crew.protagonist(char)
+            memory_block, char_rag = char_memory(char)
             agents.append(agent)
             tasks.append(
                 Task(
@@ -998,7 +1022,7 @@ class NarrativeEngine:
                         f"内心想法、台词和行动。\n"
                         f"简洁、符合人设，只写行动日志式的描述。"
                         f"\n\n导演意图:\n{intent_str}\n\n"
-                        f"RAG 上下文:\n{rag_context}\n\n"
+                        f"RAG 上下文:\n{char_rag}\n\n"
                         f"记忆:\n{memory_block}\n"
                     ),
                     expected_output=(
@@ -1013,6 +1037,7 @@ class NarrativeEngine:
             ensemble = self.crew.ensemble(secondary_chars)
             agents.append(ensemble)
             for char in secondary_chars:
+                memory_block, char_rag = char_memory(char)
                 tasks.append(
                     Task(
                         description=(
@@ -1021,7 +1046,8 @@ class NarrativeEngine:
                             f"不要替其他角色发言。\n"
                             f"给出{char.name}在这一刻的简短反应/台词。"
                             f"\n\n导演意图:\n{intent_str}\n\n"
-                            f"RAG:\n{rag_context}\n"
+                            f"RAG:\n{char_rag}\n\n"
+                            f"记忆:\n{memory_block}\n"
                         ),
                         expected_output=(
                             f"{char.name} 的简短行动描述（1~2 句）"
@@ -1095,6 +1121,235 @@ class NarrativeEngine:
                 }
             )
 
+        return issues
+
+    # ------------------------------------------------------------------
+    # 回溯伏笔冲突检查
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _scene_index_of(label: str) -> Optional[int]:
+        if not label:
+            return None
+        token = str(label).rsplit("_", 1)[-1]
+        return int(token) if token.isdigit() else None
+
+    def _hardcode_foreshadow_checks(
+        self,
+        project: NovelProject,
+        fs: Foreshadowing,
+        scenes: Optional[List[Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """回溯插入伏笔前的结构检查（不调用 LLM）。"""
+        issues: List[Dict[str, Any]] = []
+        names = {c.name for c in project.characters}
+        for name in fs.known_by:
+            if name not in names and name != "crowd":
+                issues.append(
+                    {
+                        "severity": "major",
+                        "conflict": f"知情角色不存在：{name}",
+                    }
+                )
+        for name in fs.linked_characters:
+            if name not in names and name != "crowd":
+                issues.append(
+                    {
+                        "severity": "major",
+                        "conflict": f"关联角色不存在：{name}",
+                    }
+                )
+
+        idx = self._scene_index_of(fs.planted_in_scene)
+        if idx is None:
+            issues.append(
+                {
+                    "severity": "major",
+                    "conflict": f"无法解析埋设场景：{fs.planted_in_scene}",
+                }
+            )
+        elif idx > project.scene_count:
+            issues.append(
+                {
+                    "severity": "major",
+                    "conflict": (
+                        f"埋设场景 {fs.planted_in_scene} 晚于当前进度 "
+                        f"scene_{project.scene_count}"
+                    ),
+                }
+            )
+
+        for other in project.foreshadowings:
+            if other.foreshadow_id == fs.foreshadow_id:
+                continue
+            same_desc = other.description.strip() == fs.description.strip()
+            other_truth = other.target_revelation.strip()
+            same_truth = bool(other_truth) and (
+                other_truth == fs.target_revelation.strip()
+            )
+            if same_desc and other_truth != fs.target_revelation.strip():
+                issues.append(
+                    {
+                        "severity": "major",
+                        "conflict": (
+                            f"与已有伏笔 {other.foreshadow_id} 描述相同"
+                            "但真相不同"
+                        ),
+                    }
+                )
+            elif same_truth and not same_desc:
+                issues.append(
+                    {
+                        "severity": "minor",
+                        "conflict": (
+                            f"与已有伏笔 {other.foreshadow_id} 真相相同，"
+                            "可能是重复伏笔"
+                        ),
+                    }
+                )
+
+        if scenes and idx is not None:
+            target = None
+            for scene in scenes:
+                scene_id = (
+                    scene.get("scene_id")
+                    if isinstance(scene, dict)
+                    else getattr(scene, "scene_id", None)
+                )
+                if scene_id == fs.planted_in_scene:
+                    target = scene
+                    break
+            if target is not None:
+                present = set(
+                    (
+                        target.get("present_characters", [])
+                        if isinstance(target, dict)
+                        else getattr(target, "present_characters", [])
+                    )
+                    or []
+                )
+                for name in fs.known_by:
+                    if name in names and name not in present:
+                        issues.append(
+                            {
+                                "severity": "minor",
+                                "conflict": (
+                                    f"{name} 未出现在埋设场景中，"
+                                    "请确认其知情来源"
+                                ),
+                            }
+                        )
+        return issues
+
+    def _build_foreshadow_conflict_prompt(
+        self, project: NovelProject, fs: Foreshadowing
+    ) -> str:
+        rag = ""
+        if self.memory is not None:
+            rag = self.memory.retrieval_block(
+                f"{fs.description} {fs.target_revelation}",
+                k=6,
+                viewer="director",
+            )
+        payload = {
+            "foreshadow": {
+                "foreshadow_id": fs.foreshadow_id,
+                "description": fs.description,
+                "target_revelation": fs.target_revelation,
+                "planted_in_scene": fs.planted_in_scene,
+                "visibility": fs.visibility,
+                "known_by": fs.known_by,
+                "linked_characters": fs.linked_characters,
+            },
+            "project": {
+                "scene_count": project.scene_count,
+                "characters": [
+                    {
+                        "name": c.name,
+                        "persona": c.persona,
+                        "motivation": c.motivation,
+                    }
+                    for c in project.characters
+                ],
+                "locations": [
+                    {"name": l.name, "description": l.description}
+                    for l in project.locations
+                ],
+            },
+            "existing_foreshadowings": [
+                {
+                    "foreshadow_id": f.foreshadow_id,
+                    "description": f.description,
+                    "target_revelation": f.target_revelation,
+                    "status": f.status.value,
+                    "planted_in_scene": f.planted_in_scene,
+                    "known_by": f.known_by,
+                }
+                for f in project.foreshadowings
+            ],
+            "relevant_memories": rag,
+        }
+        return (
+            "你是小说的世界观一致性审校员。作者准备回溯插入一条伏笔："
+            "它埋设在过去，但在已有正文中可能没有提到。\n"
+            "请检查这条伏笔的描述、真相、知情角色是否与已有角色设定、"
+            "历史场景记忆、世界书条目或其它伏笔冲突。\n"
+            "只输出 JSON，不要 Markdown 代码围栏：\n"
+            '{"passed": true, "conflicts": '
+            '[{"severity": "major|minor", "conflict": "...", '
+            '"evidence": "..."}]}\n'
+            "没有冲突时 conflicts 为空数组。\n\n"
+            + json.dumps(payload, ensure_ascii=False, indent=2)
+        )
+
+    async def check_foreshadow_conflicts(
+        self,
+        project: NovelProject,
+        fs: Foreshadowing,
+        scenes: Optional[List[Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """回溯伏笔的结构检查 + 导演视角 LLM 一致性检查。"""
+        issues = self._hardcode_foreshadow_checks(project, fs, scenes)
+        idx = self._scene_index_of(fs.planted_in_scene)
+        retroactive = idx is not None and idx < project.scene_count
+        if not retroactive or self.crew is None:
+            return issues
+
+        prompt = self._build_foreshadow_conflict_prompt(project, fs)
+        raw = await self._kickoff(
+            agent=self.crew.director(), prompt=prompt, timeout_s=60.0
+        )
+        if raw is None:
+            issues.append(
+                {
+                    "severity": "minor",
+                    "conflict": "LLM 一致性检查未执行（模型不可用或超时）",
+                }
+            )
+            return issues
+        try:
+            payload = parse_json_block(raw)
+        except Exception:
+            issues.append(
+                {
+                    "severity": "minor",
+                    "conflict": "LLM 一致性检查返回无法解析",
+                }
+            )
+            return issues
+        for conflict in payload.get("conflicts", []) or []:
+            if not isinstance(conflict, dict):
+                continue
+            severity = conflict.get("severity", "minor")
+            if severity not in ("major", "minor"):
+                severity = "minor"
+            issues.append(
+                {
+                    "severity": severity,
+                    "conflict": str(conflict.get("conflict", "")),
+                    "evidence": str(conflict.get("evidence", "")),
+                }
+            )
         return issues
 
     @staticmethod

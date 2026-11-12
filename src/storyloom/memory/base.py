@@ -15,6 +15,14 @@ from pydantic import BaseModel, Field
 MemoryTier = Literal[
     "working", "short_term", "long_term", "key_events", "archive"
 ]
+MemoryVisibility = Literal["public", "restricted"]
+
+#: 全知视角：导演 / GM / 旁白可以看到所有受限记忆。
+OMNISCIENT_VIEWERS = frozenset({"gm", "director", "narrator"})
+#: 无名路人的虚拟主体；具名角色仍各自记录。
+CROWD_VIEWER = "crowd"
+#: known_by 中的公开哨兵。
+PUBLIC_VIEWERS = frozenset({"all", "public", "*"})
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "memory_config.default.yaml"
 
@@ -35,8 +43,9 @@ class MemoryItem(BaseModel):
     adoptions: int = 0
     last_hit_scene: int = 0
 
-    # public / private:<角色名>
-    visibility: str = "public"
+    visibility: MemoryVisibility = "public"
+    #: restricted 时可见的角色名；可含 "crowd"（无名路人）
+    known_by: List[str] = Field(default_factory=list)
     tags: List[str] = Field(default_factory=list)
     source: str = "scene"
     active_foreshadow: bool = False
@@ -48,9 +57,13 @@ class MemoryItem(BaseModel):
     def visible_to(self, viewer: Optional[str]) -> bool:
         if self.visibility == "public":
             return True
+        if PUBLIC_VIEWERS.intersection(self.known_by):
+            return True
+        if viewer in OMNISCIENT_VIEWERS:
+            return True
         if not viewer:
             return False
-        return self.visibility == f"private:{viewer}"
+        return viewer in self.known_by
 
     @classmethod
     def from_row(cls, row: Dict[str, Any]) -> "MemoryItem":
@@ -67,6 +80,7 @@ class MemoryItem(BaseModel):
             adoptions=row.get("adoptions", 0),
             last_hit_scene=row.get("last_hit_scene", 0),
             visibility=row.get("visibility", "public"),
+            known_by=list(row.get("known_by") or []),
             tags=list(row.get("tags") or []),
             source=row.get("source", "scene"),
             active_foreshadow=row.get("active_foreshadow", False),

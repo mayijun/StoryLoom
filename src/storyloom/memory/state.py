@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 
 from pydantic import BaseModel, Field
 
+from storyloom.memory.base import OMNISCIENT_VIEWERS, PUBLIC_VIEWERS
 from storyloom.memory.models import NovelProject
 
 
@@ -306,11 +307,13 @@ class WorldState(BaseModel):
         for fact in self.facts.values():
             if fact.truth == "unknown":
                 continue
+            visibility, known_by = self._fact_scope(fact)
             items.append({
                 "id": f"ws:fact:{fact.id}",
                 "tier": "long_term",
                 "text": f"{fact.subject}{fact.predicate}{fact.object}",
-                "visibility": self._fact_visibility(fact),
+                "visibility": visibility,
+                "known_by": known_by,
                 "importance": 0.7,
                 "tags": ["world_state", "fact"],
             })
@@ -359,12 +362,19 @@ class WorldState(BaseModel):
 
         return items
 
-    def _fact_visibility(self, fact: "Fact") -> str:
-        """已知者只有单个角色时投影为私有记忆，避免越权泄漏。"""
-        known = {name for name in fact.known_by if name not in ("gm", "director")}
-        if len(known) == 1 and len(self.characters) > 1:
-            return f"private:{next(iter(known))}"
-        return "public"
+    def _fact_scope(self, fact: "Fact") -> Tuple[str, List[str]]:
+        """把 Fact.known_by 投影成 (visibility, known_by)。
+
+        只有显式公开哨兵才是 public；两个知情者不等于公开。
+        """
+        known = {
+            name
+            for name in fact.known_by
+            if name not in OMNISCIENT_VIEWERS
+        }
+        if PUBLIC_VIEWERS.intersection(known):
+            return "public", []
+        return "restricted", sorted(known)
 
     # ---------------- 合并 ----------------
 

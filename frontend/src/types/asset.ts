@@ -35,6 +35,8 @@ export interface Foreshadowing {
   scenes_since_last_mention: number
   max_dormant_scenes: number
   linked_characters: string[]
+  visibility?: 'public' | 'restricted'
+  known_by?: string[]
 }
 
 export const FORESHADOW_STATUS_META: Record<ForeshadowStatus, {

@@ -35,7 +35,6 @@ def test_character_importance_tier():
         motivation="套情报",
     )
     assert char.importance_tier == "secondary"
-    assert char.secrets == ""
 
 
 def test_foreshadowing_defaults():
@@ -48,6 +47,8 @@ def test_foreshadowing_defaults():
     assert f.reinforcement_count == 0
     assert f.scenes_since_last_mention == 0
     assert f.foreshadow_id.startswith("fs_")
+    assert f.visibility == "restricted"
+    assert f.known_by == []
 
 
 def test_project_lookup_and_defaults():

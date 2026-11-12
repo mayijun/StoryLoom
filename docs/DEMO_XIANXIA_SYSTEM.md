@@ -49,6 +49,8 @@
 
 > 「玩家」放在第一位，保证 `WorldState` / 前端默认视角稳定。
 > 「执法堂守卫」的名字含「守卫」，用于触发护卫拦截规则。
+> `secrets` 仍通过 `CharacterCreate` 传入，但唯一存储是 `memory_items` 中
+> `secret:<角色>` 的 restricted 条目：只有本人与全知视角可见，`characters` 表不再保存。
 
 ### 2.2 地点（**按此顺序添加，第一个必须是「演武场」**）
 
@@ -232,7 +234,7 @@
 
 预期：
 
-- `counts.archive >= 16`（5 个角色 + 5 条秘密 + 6 个地点，已生成场景还会更多）；
+- `counts.archive >= 16`（5 个角色 + 5 条秘密记忆 + 6 个地点，已生成场景还会更多）；
 - `items` 中存在 `source="backfill"` 的场景索引；
 - `prompt_block` 可读，`tiers` 为配置中的有序层；
 - `settings` 为项目当前生效的记忆配置（tiers / key_events / demotion / retrieval）。
@@ -362,7 +364,7 @@ G17 请求体示例：
 | A11 短期压缩 / 重启恢复 | 追加生成第 7 个短场景（超过短期上限 6）后重启，检查 `counts` 中短期已压缩、长期/常驻已恢复 |
 | A13 历史场景回填 | §3.5 |
 | A14 检索后端切换 | §4.4 |
-| A15 角色 secrets | `GET .../memory` 中 secret 条目的 `visibility` 为 `private:<角色>`；默认 `prompt_block` 不含 secret，按角色取 prompt 时只有本人可见 |
+| A15 角色 secrets | `GET .../memory` 中 secret 条目为 `restricted + known_by=[角色]`；默认 `prompt_block` 不含 secret，按角色取 prompt 时只有本人可见 |
 
 ---
 

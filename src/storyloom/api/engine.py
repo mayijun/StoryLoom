@@ -167,7 +167,6 @@ class StoryEngine:
                     importance_tier=c["importance_tier"],
                     persona=c["persona"],
                     motivation=c["motivation"],
-                    secrets=c.get("secrets", ""),
                 )
                 for c in repo.list_characters(meta["project_id"])
             ],
@@ -192,6 +191,8 @@ class StoryEngine:
                 scenes_since_last_mention=f["scenes_since_last_mention"],
                 linked_characters=list(f.get("linked_characters", [])),
                 linked_surprise_ids=list(f.get("linked_surprise_ids", [])),
+                visibility=f.get("visibility", "restricted"),
+                known_by=list(f.get("known_by", [])),
             )
             for f in repo.list_foreshadowings(meta["project_id"])
         ]
@@ -296,16 +297,18 @@ class StoryEngine:
         self.memories.pop(project_id, None)
         return meta
 
-    def add_character(self, project_id, char: CharacterAsset):
+    def add_character(
+        self, project_id, char: CharacterAsset, secrets: str = ""
+    ):
         project = self._get_or_load_project(project_id)
-        # 先落库（upsert：重名则更新）
+        # 角色秘密的唯一存储是 restricted 记忆条目
         get_repository().upsert_character(
             project_id,
             name=char.name,
             importance_tier=char.importance_tier,
             persona=char.persona,
             motivation=char.motivation,
-            secrets=char.secrets,
+            secrets=secrets,
         )
         # 同步内存：若已存在则替换，否则追加
         project.characters = [
@@ -321,13 +324,48 @@ class StoryEngine:
                 f"{char.name}：{char.persona}。动机：{char.motivation}",
                 tags=["character", "asset"],
             )
-            if char.secrets:
+            if secrets:
                 memory.add_archive_item(
                     f"secret:{char.name}",
-                    f"{char.name}的秘密：{char.secrets}",
+                    secrets,
                     tags=["secret", "asset"],
-                    visibility=f"private:{char.name}",
+                    visibility="restricted",
+                    known_by=[char.name],
+                    source="asset",
                 )
+            else:
+                memory._drop(f"secret:{char.name}")
+
+    def character_payloads(self, project_id: str) -> list[dict]:
+        """角色资产 + 从记忆条目回填的 secrets（供编辑器读取）。"""
+        project = self._get_or_load_project(project_id)
+        prefix = f"{project_id}::secret:"
+        secrets: dict[str, str] = {}
+        for row in get_repository().list_memory_items(project_id):
+            sid = row["id"]
+            if sid.startswith(prefix):
+                secrets[sid[len(prefix):]] = row["text"]
+        return [
+            {**c.model_dump(), "secrets": secrets.get(c.name, "")}
+            for c in project.characters
+        ]
+
+    def delete_character(self, project_id: str, name: str) -> bool:
+        project = self._get_or_load_project(project_id)
+        ok = get_repository().delete_character_asset(name, project_id)
+        if not ok:
+            return False
+        project.characters = [
+            c for c in project.characters if c.name != name
+        ]
+        get_repository().update_project_stats(
+            project_id, character_count=len(project.characters)
+        )
+        memory = self.memories.get(project_id)
+        if memory is not None:
+            memory._drop(f"char:{name}")
+            memory._drop(f"secret:{name}")
+        return True
 
     def add_location(self, project_id, loc: LocationAsset):
         project = self._get_or_load_project(project_id)
@@ -359,6 +397,8 @@ class StoryEngine:
             scenes_since_last_mention=fs.scenes_since_last_mention,
             linked_characters=fs.linked_characters,
             linked_surprise_ids=fs.linked_surprise_ids,
+            visibility=fs.visibility,
+            known_by=fs.known_by,
         )
         project.foreshadowings = [
             f for f in project.foreshadowings
@@ -366,6 +406,23 @@ class StoryEngine:
         ] + [fs]
         get_repository().update_project_stats(
             project_id, foreshadowing_count=len(project.foreshadowings)
+        )
+        memory = self.memories.get(project_id)
+        if memory is not None:
+            memory.sync_foreshadowings(project.foreshadowings)
+
+    async def check_foreshadow_conflicts(
+        self, project_id: str, fs: Foreshadowing
+    ) -> list[dict]:
+        """回溯伏笔的结构检查 + 导演视角 LLM 一致性检查。"""
+        project = self._get_or_load_project(project_id)
+        engine = NarrativeEngine(
+            crew=self._crew_for(project_id),
+            memory=self.memory_for(project_id),
+            project=project,
+        )
+        return await engine.check_foreshadow_conflicts(
+            project, fs, get_repository().list_scenes(project_id)
         )
 
     def transition_foreshadowing(
@@ -418,6 +475,8 @@ class StoryEngine:
             scenes_since_last_mention=fs.scenes_since_last_mention,
             linked_characters=fs.linked_characters,
             linked_surprise_ids=fs.linked_surprise_ids,
+            visibility=fs.visibility,
+            known_by=fs.known_by,
         )
 
     def delete_foreshadowing(self, project_id, foreshadow_id: str) -> bool:
@@ -432,6 +491,9 @@ class StoryEngine:
                 project_id,
                 foreshadowing_count=len(project.foreshadowings),
             )
+            memory = self.memories.get(project_id)
+            if memory is not None:
+                memory.sync_foreshadowings(project.foreshadowings)
         return ok
 
     async def generate_scene(
@@ -555,6 +617,8 @@ class StoryEngine:
                 scenes_since_last_mention=f.scenes_since_last_mention,
                 max_dormant_scenes=f.max_dormant_scenes,
                 linked_characters=f.linked_characters,
+                visibility=f.visibility,
+                known_by=f.known_by,
             )
             for f in project.foreshadowings
         ]
@@ -615,6 +679,7 @@ class StoryEngine:
             project.characters,
             project.locations,
         )
+        memory.sync_foreshadowings(project.foreshadowings)
         if cached is not None:
             memory.configure_working(
                 location=cached.working.location,
@@ -1000,7 +1065,7 @@ class StoryEngine:
             },
             "reheat_hits": memory.settings.reheat_hits,
             "items": items,
-            "prompt_block": memory.prompt_block(),
+            "prompt_block": memory.prompt_block(viewer="director"),
         }
 
     def set_memory_backend(self, project_id: str, backend: str) -> dict:

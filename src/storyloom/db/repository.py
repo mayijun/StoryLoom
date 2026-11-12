@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import yaml
-from sqlalchemy import func, inspect, select
+from sqlalchemy import func, inspect, select, text
 from sqlalchemy.orm import Session
 
 from storyloom.db.base import database_url, get_engine
@@ -144,24 +144,57 @@ class CrewConfigRepository:
         # 补全 projects 表：确保所有 agent/task 引用的 project_id 都存在
         self._ensure_all_project_ids_known()
 
-        # 一次性数据迁移：记忆层 canon → key_events
-        self._migrate_memory_tier_names()
+        # 一次性数据迁移：记忆层 canon / private 旧格式
+        self._migrate_memory_data()
+        # 角色秘密 → 记忆条目；伏笔可见性列
+        self._migrate_character_secrets()
+        self._migrate_foreshadow_visibility()
 
         if legacy:
             self.seed_from_yaml()
 
-    def _migrate_memory_tier_names(self) -> None:
-        """把旧库里的 canon 数据一次性改写为 key_events。
+    def _migrate_memory_data(self) -> None:
+        """一次性改写旧记忆数据：canon → key_events、private:<角色> → known_by。
 
-        硬切后模型层不再接受 canon，这里只做数据搬运，不保留运行时兼容。
+        硬切后模型层不再接受旧格式，这里只做数据搬运，不保留运行时兼容。
         """
         inspector = inspect(self.engine)
         if inspector.has_table("memory_items"):
+            columns = {
+                c["name"] for c in inspector.get_columns("memory_items")
+            }
             with self.engine.begin() as conn:
+                if "known_by" not in columns:
+                    conn.exec_driver_sql(
+                        "ALTER TABLE memory_items "
+                        "ADD COLUMN known_by JSON"
+                    )
                 conn.exec_driver_sql(
                     "UPDATE memory_items SET tier = 'key_events' "
                     "WHERE tier = 'canon'"
                 )
+                rows = conn.execute(
+                    select(MemoryRow.id, MemoryRow.visibility)
+                ).all()
+                for item_id, visibility in rows:
+                    if visibility == "public":
+                        continue
+                    if visibility and visibility.startswith("private:"):
+                        name = visibility.split(":", 1)[1]
+                        known_by = [name] if name else []
+                        values = {
+                            "visibility": "restricted",
+                            "known_by": known_by,
+                        }
+                    elif visibility != "restricted":
+                        values = {"visibility": "public", "known_by": []}
+                    else:
+                        continue
+                    conn.execute(
+                        MemoryRow.__table__.update()
+                        .where(MemoryRow.id == item_id)
+                        .values(**values)
+                    )
         if not inspector.has_table("memory_configs"):
             return
         with self.engine.begin() as conn:
@@ -177,6 +210,108 @@ class CrewConfigRepository:
                     .where(MemoryConfigRow.project_id == project_id)
                     .values(payload=updated)
                 )
+
+    def _migrate_character_secrets(self) -> None:
+        """把旧 characters.secrets 迁成 restricted 记忆条目，然后删除旧列。"""
+        inspector = inspect(self.engine)
+        if not inspector.has_table("characters"):
+            return
+        columns = {c["name"] for c in inspector.get_columns("characters")}
+        if "secrets" not in columns:
+            return
+
+        with self.engine.begin() as conn:
+            legacy = conn.execute(
+                text(
+                    "SELECT project_id, name, secrets FROM characters "
+                    "WHERE secrets IS NOT NULL AND secrets <> ''"
+                )
+            ).all()
+
+        with self.session() as session:
+            for project_id, name, secrets in legacy:
+                storage_id = f"{project_id}::secret:{name}"
+                if session.get(MemoryRow, storage_id) is None:
+                    self._write_secret_memory(
+                        session, project_id, name, secrets
+                    )
+            # 历史条目文本形如“<角色>的秘密：...”，统一成秘密原文
+            rows = session.scalars(
+                select(MemoryRow).where(MemoryRow.id.like("%::secret:%"))
+            ).all()
+            for row in rows:
+                name = row.id.split("::secret:", 1)[1]
+                prefix = f"{name}的秘密："
+                if row.text.startswith(prefix):
+                    row.text = row.text[len(prefix):]
+                    row.summary = row.text[:200]
+
+        try:
+            with self.engine.begin() as conn:
+                conn.exec_driver_sql(
+                    "ALTER TABLE characters DROP COLUMN secrets"
+                )
+        except Exception:
+            # SQLite 老版本不支持 DROP COLUMN；模型已不再映射该列
+            print("  ⚠️ 无法删除 characters.secrets 列，已忽略")
+
+    def _migrate_foreshadow_visibility(self) -> None:
+        """给旧 foreshadowings 表补 visibility / known_by 列。"""
+        inspector = inspect(self.engine)
+        if not inspector.has_table("foreshadowings"):
+            return
+        columns = {c["name"] for c in inspector.get_columns("foreshadowings")}
+        with self.engine.begin() as conn:
+            if "visibility" not in columns:
+                conn.exec_driver_sql(
+                    "ALTER TABLE foreshadowings ADD COLUMN "
+                    "visibility VARCHAR(32) DEFAULT 'restricted'"
+                )
+            if "known_by" not in columns:
+                conn.exec_driver_sql(
+                    "ALTER TABLE foreshadowings ADD COLUMN known_by JSON"
+                )
+            conn.exec_driver_sql(
+                "UPDATE foreshadowings SET visibility = 'restricted' "
+                "WHERE visibility IS NULL OR visibility = ''"
+            )
+            conn.exec_driver_sql(
+                "UPDATE foreshadowings SET known_by = '[]' "
+                "WHERE known_by IS NULL"
+            )
+
+    @staticmethod
+    def _write_secret_memory(
+        session: Session, project_id: str, name: str, secrets: str
+    ) -> None:
+        """角色秘密的唯一存储：archive + restricted + known_by=[角色]。"""
+        storage_id = f"{project_id}::secret:{name}"
+        row = session.get(MemoryRow, storage_id)
+        if not secrets:
+            if row is not None:
+                session.delete(row)
+            return
+        if row is None:
+            row = MemoryRow(
+                id=storage_id,
+                project_id=project_id,
+                tier="archive",
+                text=secrets,
+                summary=secrets[:200],
+                importance=0.8,
+                visibility="restricted",
+                known_by=[name],
+                tags=["secret", "asset"],
+                source="asset",
+            )
+            session.add(row)
+            return
+        row.text = secrets
+        row.summary = secrets[:200]
+        row.visibility = "restricted"
+        row.known_by = [name]
+        row.tags = ["secret", "asset"]
+        row.source = "asset"
 
     @staticmethod
     def _rewrite_memory_payload(
@@ -1046,7 +1181,7 @@ class CrewConfigRepository:
         importance_tier: str,
         persona: str,
         motivation: str,
-        secrets: str = "",
+        secrets: Optional[str] = None,
     ) -> Dict[str, Any]:
         self.create_all()
         self.ensure_project(project_id)
@@ -1064,14 +1199,14 @@ class CrewConfigRepository:
                     importance_tier=importance_tier,
                     persona=persona,
                     motivation=motivation,
-                    secrets=secrets,
                 )
                 session.add(row)
             else:
                 row.importance_tier = importance_tier
                 row.persona = persona
                 row.motivation = motivation
-                row.secrets = secrets
+            if secrets is not None:
+                self._write_secret_memory(session, project_id, name, secrets)
             session.flush()
             return _character_record(row)
 
@@ -1086,6 +1221,11 @@ class CrewConfigRepository:
             if row is None:
                 return False
             session.delete(row)
+            secret = session.get(
+                MemoryRow, f"{project_id}::secret:{name}"
+            )
+            if secret is not None:
+                session.delete(secret)
             return True
 
     # ---------------- 场景/地点（LocationRow） ----------------
@@ -1184,6 +1324,8 @@ class CrewConfigRepository:
         scenes_since_last_mention: int = 0,
         linked_characters: Optional[List[str]] = None,
         linked_surprise_ids: Optional[List[str]] = None,
+        visibility: str = "restricted",
+        known_by: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         self.create_all()
         self.ensure_project(project_id)
@@ -1207,6 +1349,8 @@ class CrewConfigRepository:
                     scenes_since_last_mention=scenes_since_last_mention,
                     linked_characters=list(linked_characters or []),
                     linked_surprise_ids=list(linked_surprise_ids or []),
+                    visibility=visibility,
+                    known_by=list(known_by or []),
                 )
                 session.add(row)
             else:
@@ -1219,6 +1363,8 @@ class CrewConfigRepository:
                 row.scenes_since_last_mention = scenes_since_last_mention
                 row.linked_characters = list(linked_characters or [])
                 row.linked_surprise_ids = list(linked_surprise_ids or [])
+                row.visibility = visibility
+                row.known_by = list(known_by or [])
             session.flush()
             return _foreshadow_record(row)
 
@@ -1299,7 +1445,8 @@ class CrewConfigRepository:
         allowed = {
             "tier", "text", "summary", "importance", "pinned",
             "scene_index", "hits", "adoptions", "last_hit_scene",
-            "visibility", "tags", "source", "active_foreshadow",
+            "visibility", "known_by", "tags", "source",
+            "active_foreshadow",
         }
         with self.session() as session:
             row = session.get(MemoryRow, item_id)
@@ -1598,7 +1745,6 @@ def _character_record(row: CharacterRow) -> Dict[str, Any]:
         "importance_tier": row.importance_tier,
         "persona": row.persona,
         "motivation": row.motivation,
-        "secrets": row.secrets or "",
     }
 
 
@@ -1623,6 +1769,8 @@ def _foreshadow_record(row: ForeshadowRow) -> Dict[str, Any]:
         "scenes_since_last_mention": row.scenes_since_last_mention,
         "linked_characters": list(row.linked_characters or []),
         "linked_surprise_ids": list(row.linked_surprise_ids or []),
+        "visibility": row.visibility or "restricted",
+        "known_by": list(row.known_by or []),
     }
 
 
@@ -1640,6 +1788,7 @@ def _memory_record(row: MemoryRow) -> Dict[str, Any]:
         "adoptions": row.adoptions,
         "last_hit_scene": row.last_hit_scene,
         "visibility": row.visibility,
+        "known_by": list(row.known_by or []),
         "tags": list(row.tags or []),
         "source": row.source,
         "active_foreshadow": row.active_foreshadow,

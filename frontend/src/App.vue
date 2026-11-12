@@ -1247,6 +1247,14 @@ async function doCopyConfig() {
               <div style="margin-top:4px;color:var(--accent);">
                 → {{ fs.target_revelation }}
               </div>
+              <div style="margin-top:2px;font-size:11px;color:var(--text-secondary);">
+                可见性:
+                <template v-if="fs.visibility === 'public'">公开</template>
+                <template v-else-if="fs.known_by?.length">
+                  仅 {{ fs.known_by.map(n => n === 'crowd' ? '路人' : n).join('、') }}
+                </template>
+                <template v-else>仅导演</template>
+              </div>
               <!-- 状态流转按钮 -->
               <div style="display:flex;gap:4px;margin-top:6px;flex-wrap:wrap;">
                 <button

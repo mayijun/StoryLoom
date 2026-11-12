@@ -3,8 +3,13 @@
 import pytest
 
 from storyloom.db import CrewConfigRepository
-from storyloom.memory import LayeredMemory, MemoryIndexer
-from storyloom.memory.models import CharacterAsset, LocationAsset, NovelProject
+from storyloom.memory import LayeredMemory, MemoryIndexer, VectorBackend
+from storyloom.memory.models import (
+    CharacterAsset,
+    Foreshadowing,
+    LocationAsset,
+    NovelProject,
+)
 
 
 @pytest.fixture
@@ -45,12 +50,31 @@ def test_director_flow_retrieves_world_book_from_layered_memory(repo):
     assert memory.items["lore:map"].hits == 1
 
 
+def test_scene_memory_scopes_by_witnesses_and_crowd(repo):
+    memory = LayeredMemory("p_scope", repo=repo)
+    memory.add_scene(
+        1, "张三在密室看见钥匙。", present_characters=["张三"]
+    )
+    memory.add_scene(
+        2, "广场上公开宣读告示。",
+        present_characters=["张三"], crowd=True,
+    )
+
+    assert "钥匙" in memory.prompt_block(viewer="张三")
+    assert "钥匙" not in memory.prompt_block(viewer="李四")
+    assert "钥匙" in memory.prompt_block(viewer="director")
+    assert "告示" in memory.prompt_block(viewer="张三")
+    assert "告示" in memory.prompt_block(viewer="crowd")
+    assert "告示" not in memory.prompt_block(viewer="李四")
+
+
 def test_backfill_refreshes_assets_without_overwriting_layered_scenes(repo):
     memory = LayeredMemory("test_project", repo=repo)
     memory.add_scene(scene_index=1, prose="已生成的正文", key="scene_1")
     memory.add_archive_item("char:旧名", "旧名：已离场。动机：无")
     memory.add_archive_item(
-        "secret:林夏", "林夏的秘密：旧秘密", visibility="private:林夏"
+        "secret:林夏", "林夏的秘密：旧秘密",
+        visibility="restricted", known_by=["林夏"],
     )
     memory.add_archive_item("loc:旧港", "旧港：已废弃")
     memory.add_archive_item("lore:keep", "不应被清理的设定")
@@ -70,7 +94,8 @@ def test_backfill_refreshes_assets_without_overwriting_layered_scenes(repo):
 
     # 已从数据库资产中移除的条目会被清理，其他归档项不受影响
     assert "char:旧名" not in memory.items
-    assert "secret:林夏" not in memory.items
+    # 秘密是独立记忆条目：角色仍存在时不应被回填清理
+    assert "secret:林夏" in memory.items
     assert "loc:旧港" not in memory.items
     assert "lore:keep" in memory.items
     stored = {row["id"] for row in repo.list_memory_items("test_project")}
@@ -80,3 +105,58 @@ def test_backfill_refreshes_assets_without_overwriting_layered_scenes(repo):
     MemoryIndexer(memory).backfill(scenes=[])
     assert "char:林夏" in memory.items
     assert "loc:雾港" in memory.items
+
+
+def test_world_book_matching_respects_viewer_across_backends(repo):
+    secret_text = "林夏是前朝公主，身上有王室胎记。"
+
+    def embed(text: str):
+        return [1.0 if "前朝" in text else 0.0, 1.0]
+
+    backends = [
+        ("fts", {}),
+        ("hybrid", {}),
+        ("vector", {"vector": VectorBackend(embed)}),
+    ]
+    for backend, kwargs in backends:
+        memory = LayeredMemory(
+            f"p_viewer_{backend}", repo=repo, backend=backend, **kwargs
+        )
+        memory.add_archive_item(
+            "secret:林夏",
+            secret_text,
+            visibility="restricted",
+            known_by=["林夏"],
+            source="asset",
+        )
+        assert "前朝公主" in memory.retrieval_block(
+            "前朝公主", viewer="林夏"
+        )
+        assert memory.retrieval_block("前朝公主", viewer="阿泽") == ""
+        assert "前朝公主" in memory.retrieval_block(
+            "前朝公主", viewer="director"
+        )
+
+
+def test_sync_foreshadowings_preserves_later_known_by(repo):
+    memory = LayeredMemory("p_fs_union", repo=repo)
+    fs = Foreshadowing(
+        description="旧航海图",
+        planted_in_scene="scene_1",
+        target_revelation="航海图指向密道入口",
+        known_by=["林夏"],
+    )
+    memory.sync_foreshadowings([fs])
+    truth_id = f"foreshadow_truth:{fs.foreshadow_id}"
+    assert memory.items[truth_id].known_by == ["林夏"]
+
+    # 后续阿泽得知真相：资产侧 known_by 为空也不应覆盖记忆侧
+    fs.known_by = []
+    memory.items[truth_id].known_by = ["林夏", "阿泽"]
+    memory._put(memory.items[truth_id])
+    memory.sync_foreshadowings([fs])
+    assert set(memory.items[truth_id].known_by) == {"林夏", "阿泽"}
+
+    memory.sync_foreshadowings([])
+    assert truth_id not in memory.items
+    assert f"foreshadow:{fs.foreshadow_id}" not in memory.items

@@ -114,8 +114,29 @@ PLANTED ──→ REINFORCED ──→ ACTIVATED ──→ RESOLVED
   embedding，否则不可用）/ `hybrid`（RRF 融合，向量不可用时自动退化为 fts）；
 - **历史回填**：`MemoryIndexer` 把旧项目场景与资产写入 archive，支持中文专名检索；
   已有分层场景时跳过场景回填，但仍从数据库刷新角色与地点资产，并清理已删除或改名的
-  角色、秘密、地点条目（未传入的资产类别不参与清理）；
-- **隐私**：`secrets` 以 `visibility=private:<角色>` 写入检索库，只对本人可见；
+  角色、地点条目（秘密是独立记忆条目，仅在角色删除时清理；未传入的资产类别不参与清理）；
+- **可见性**：`visibility` 只有 `public` / `restricted` 两种；`restricted` 按
+  `known_by: List[str]` 判断，支持多个角色与 `crowd`（无名路人）。`known_by` 为空时
+  只有全知视角（`gm` / `director` / `narrator`）可见；
+- **秘密唯一存储**：角色秘密写成 `secret:<角色>`（`archive + restricted +
+  known_by=[角色]`），`characters` 表不再保存 `secrets`；旧列一次性迁移后删除；
+- **伏笔投影**：`foreshadow:<id>`（描述）与 `foreshadow_truth:<id>`（真相）共享
+  `visibility + known_by`；默认 `restricted + []`（仅全知视角），生成时可指定
+  “天生知道”的角色；同步时 `known_by` 取并集，保留后续“某人得知真相”的更新；
+- **世界书检索**：`retrieve()` 先按 `viewer` 过滤候选池，再交给 `fts` / `vector` /
+  `hybrid`，三种后端共享同一可见性边界；
+- **回溯补录**：新增伏笔先做结构检查（角色存在、场景时间线、重复/矛盾），再由导演
+  视角对相关记忆做一致性检查；major 冲突返回 409，LLM 不可用时降级为 minor 提示；
+- **知情者来源**：`Fact` 投影直接复制 `Fact.known_by`（多个知情者不等于公开）；
+  场景记忆用 `present_characters` 作为目击者集合，`crowd=True` 时加入 `crowd`；
+  关键事件/事件默认公开；
+- **知情者更新**：`Fact.known_by` 是唯一可变入口；`sync_world_state` 同时比较
+  `text + visibility + known_by`，新增知情者后用稳定 id 原地更新；场景目击者不因事后
+  传播而改写；
+- **压缩**：同层内按 `(visibility, known_by)` 分组压缩；跨组必须合并时取交集，
+  交集为空则只对全知视角可见；
+- **按角色注入**：每个角色 Task 用 `prompt_block(viewer=角色名)` /
+  `retrieval_block(..., viewer=角色名)`，导演与润色用 `viewer="director"`；
 - **双模式共用**：导演模式与游戏模式使用同一个项目级 `LayeredMemory`；
   核心层通过 `prompt_block()` 注入，世界书通过 `retrieval_block()` 按需召回，
   正文落库后只写入一次；旧 `CoreMemory` / `SimpleRAGMemory` 与独立 Chroma 索引已移除。
@@ -421,7 +442,7 @@ uv run pytest -q
 ```
 
 覆盖：项目落库与外键、Agent/Task API、迁移与幂等回归、资产模型、场景与章节持久化、
-分层记忆（LRU 淘汰 / 导演检索 / 历史回填 / 压缩阈值）、Flow 兼容层。共 **194 个用例**，
+分层记忆（LRU 淘汰 / 导演检索 / 历史回填 / 压缩阈值）、Flow 兼容层。共 **201 个用例**，
 逐条清单见 [TESTS.md](TESTS.md)。
 
 M0 覆盖（`tests/test_m0*.py` + `test_memory_compression.py`）：导演 Agent 裁决与守卫拦截、移动可达性、`Fact` 可见性、

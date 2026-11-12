@@ -24,9 +24,16 @@ router = APIRouter(prefix="/api/projects/{project_id}/assets", tags=["assets"])
 async def add_character(project_id: str, data: CharacterCreate):
     if project_id not in engine.projects:
         raise HTTPException(404, "Project not found")
-    char = CharacterAsset(**data.model_dump(exclude={"portrait_url", "voice_id"}))
-    engine.add_character(project_id, char)
-    return {"status": "ok", "character": char.model_dump()}
+    char = CharacterAsset(
+        **data.model_dump(
+            exclude={"portrait_url", "voice_id", "secrets"}
+        )
+    )
+    engine.add_character(project_id, char, secrets=data.secrets)
+    return {
+        "status": "ok",
+        "character": {**char.model_dump(), "secrets": data.secrets},
+    }
 
 
 @router.get("/characters")
@@ -34,7 +41,7 @@ async def list_characters(project_id: str):
     p = engine.get_project(project_id)
     if not p:
         raise HTTPException(404)
-    return [c.model_dump() for c in p.characters]
+    return engine.character_payloads(project_id)
 
 
 @router.delete("/characters/{name}")
@@ -42,13 +49,7 @@ async def delete_character(project_id: str, name: str):
     p = engine.get_project(project_id)
     if not p:
         raise HTTPException(404)
-    from storyloom.db import get_repository
-    ok = get_repository().delete_character_asset(name, project_id)
-    if ok:
-        p.characters = [c for c in p.characters if c.name != name]
-        get_repository().update_project_stats(
-            project_id, character_count=len(p.characters)
-        )
+    engine.delete_character(project_id, name)
     return {"status": "ok"}
 
 
@@ -90,8 +91,20 @@ async def add_foreshadowing(project_id: str, data: dict):
     if not p:
         raise HTTPException(404)
     fs = Foreshadowing(**data)
+    conflicts = await engine.check_foreshadow_conflicts(project_id, fs)
+    if any(c.get("severity") == "major" for c in conflicts):
+        raise HTTPException(
+            status_code=409,
+            detail={"conflicts": conflicts},
+        )
     engine.add_foreshadowing(project_id, fs)
-    return {"status": "ok", "foreshadowing": fs.model_dump(mode="json")}
+    return {
+        "status": "ok",
+        "foreshadowing": fs.model_dump(mode="json"),
+        "conflicts": [
+            c for c in conflicts if c.get("severity") != "major"
+        ],
+    }
 
 
 @router.get("/foreshadowings")
@@ -131,6 +144,8 @@ async def transition_foreshadowing(
         scenes_since_last_mention=fs.scenes_since_last_mention,
         max_dormant_scenes=fs.max_dormant_scenes,
         linked_characters=fs.linked_characters,
+        visibility=fs.visibility,
+        known_by=fs.known_by,
     )
 
 

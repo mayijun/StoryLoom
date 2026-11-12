@@ -33,7 +33,7 @@ class HybridBackend:
         pool: Optional[List[MemoryItem]] = None,
     ) -> List[Tuple[MemoryItem, float]]:
         lexical_hits = self.lexical.search(
-            project_id, query, limit=limit, viewer=viewer
+            project_id, query, limit=limit, viewer=viewer, candidates=pool
         )
         if not self.vector.available:
             return lexical_hits

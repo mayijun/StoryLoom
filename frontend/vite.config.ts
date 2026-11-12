@@ -13,6 +13,8 @@ export default defineConfig({
     environment: 'jsdom',
     include: ['src/**/__tests__/**/*.test.ts'],
     restoreMocks: true,
+    // 默认 forks 池会派生子进程，在受限沙箱中会直接失败；线程池无需 fork。
+    pool: 'threads',
   },
   server: {
     port: 5173,

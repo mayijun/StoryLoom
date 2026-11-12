@@ -268,7 +268,6 @@ class CharacterRow(Base):
     importance_tier: Mapped[str] = mapped_column(String(32))  # primary/secondary/background
     persona: Mapped[str] = mapped_column(Text)
     motivation: Mapped[str] = mapped_column(Text)
-    secrets: Mapped[str] = mapped_column(Text, default="")
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
@@ -333,6 +332,8 @@ class ForeshadowRow(Base):
     scenes_since_last_mention: Mapped[int] = mapped_column(Integer, default=0)
     linked_characters: Mapped[List[str]] = mapped_column(JSON, default=list)
     linked_surprise_ids: Mapped[List[str]] = mapped_column(JSON, default=list)
+    visibility: Mapped[str] = mapped_column(String(32), default="restricted")
+    known_by: Mapped[List[str]] = mapped_column(JSON, default=list)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
@@ -368,8 +369,9 @@ class MemoryRow(Base):
     adoptions: Mapped[int] = mapped_column(Integer, default=0)
     last_hit_scene: Mapped[int] = mapped_column(Integer, default=0)
 
-    # public / private:<角色名>
-    visibility: Mapped[str] = mapped_column(String(128), default="public")
+    # public / restricted；restricted 时按 known_by 判断可见角色
+    visibility: Mapped[str] = mapped_column(String(32), default="public")
+    known_by: Mapped[List[str]] = mapped_column(JSON, default=list)
     tags: Mapped[List[str]] = mapped_column(JSON, default=list)
     source: Mapped[str] = mapped_column(String(32), default="scene")
     active_foreshadow: Mapped[bool] = mapped_column(Boolean, default=False)

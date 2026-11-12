@@ -17,7 +17,12 @@ from storyloom.memory import (
     MemoryIndexer,
     VectorBackend,
 )
-from storyloom.memory.models import CharacterAsset, LocationAsset, NovelProject
+from storyloom.memory.models import (
+    CharacterAsset,
+    Foreshadowing,
+    LocationAsset,
+    NovelProject,
+)
 from storyloom.crews.scene_crew.packet import (
     AgentPacket,
     compose_scene,
@@ -57,28 +62,24 @@ def project():
                 importance_tier="primary",
                 persona="刚回到雾港的陌生人",
                 motivation="查清父亲失踪的真相",
-                secrets="你的真实身份是王室的私生子。",
             ),
             CharacterAsset(
                 name="国王",
                 importance_tier="primary",
                 persona="声音不高",
                 motivation="守住王位",
-                secrets="父亲失踪与你有关。",
             ),
             CharacterAsset(
                 name="侍卫长",
                 importance_tier="secondary",
                 persona="甲胄不离身",
                 motivation="保护国王",
-                secrets="他认识你的父亲。",
             ),
             CharacterAsset(
                 name="旅店老板",
                 importance_tier="background",
                 persona="一边擦杯子一边观察客人",
                 motivation="把小店开下去",
-                secrets="航海图是他藏起来的。",
             ),
         ],
         locations=[
@@ -171,6 +172,32 @@ def test_a3_fact_visibility_filters_by_known_by(world):
 
 
 # ---------------- A3b / L3a：_world_context 信息迷雾修复 ----------------
+
+
+def test_a3c_multi_viewer_fact_projection_and_sync(repo, world):
+    """多个知情者不等于公开；新增知情者后原地更新同一条记忆。"""
+    fact = Fact(
+        subject="玩家",
+        predicate="经历",
+        object="曾在北境见过国王",
+        known_by={"玩家", "国王", "gm"},
+    )
+    world.facts[fact.id] = fact
+
+    memory = LayeredMemory("p_multi_viewer", repo=repo)
+    memory.sync_world_state(world, current_scene=1)
+    item = memory.items[f"ws:fact:{fact.id}"]
+    assert item.visibility == "restricted"
+    assert item.known_by == ["国王", "玩家"]
+    assert "经历" in memory.prompt_block(viewer="玩家")
+    assert "经历" in memory.prompt_block(viewer="国王")
+    assert "经历" not in memory.prompt_block(viewer="侍卫长")
+
+    fact.known_by.add("侍卫长")
+    memory.sync_world_state(world, current_scene=2)
+    item = memory.items[f"ws:fact:{fact.id}"]
+    assert "侍卫长" in item.known_by
+    assert "经历" in memory.prompt_block(viewer="侍卫长")
 
 
 def test_a3b_world_context_fog_hides_unseeable(project, world):
@@ -429,14 +456,119 @@ def test_a14_backends_switch_and_degrade(repo):
 
 def test_a15_secrets_visibility(repo, project):
     memory = LayeredMemory("p_a15", repo=repo)
-    MemoryIndexer(memory).backfill(
-        scenes=[], characters=project.characters
+    memory.add_archive_item(
+        "secret:玩家",
+        "你的真实身份是王室的私生子。",
+        tags=["secret", "asset"],
+        visibility="restricted",
+        known_by=["玩家"],
+        source="asset",
+    )
+    memory.add_archive_item(
+        "secret:国王",
+        "父亲失踪与你有关。",
+        tags=["secret", "asset"],
+        visibility="restricted",
+        known_by=["国王"],
+        source="asset",
     )
     assert memory.retrieve("私生子", viewer="国王") == []
     assert [i.id for i in memory.retrieve("私生子", viewer="玩家")] == [
         "secret:玩家"
     ]
+    assert [i.id for i in memory.retrieve("私生子", viewer="director")] == [
+        "secret:玩家"
+    ]
     assert "私生子" not in memory.prompt_block(viewer="国王")
+
+
+def test_character_secret_stored_only_in_memory(repo):
+    repo.upsert_character(
+        "p_secret",
+        "林夏",
+        "primary",
+        "冷静",
+        "寻亲",
+        secrets="她是前朝公主。",
+    )
+    characters = repo.list_characters("p_secret")
+    assert "secrets" not in characters[0]
+
+    items = repo.list_memory_items("p_secret")
+    secret = next(
+        item for item in items if item["id"].endswith("::secret:林夏")
+    )
+    assert secret["text"] == "她是前朝公主。"
+    assert secret["visibility"] == "restricted"
+    assert secret["known_by"] == ["林夏"]
+
+    repo.upsert_character(
+        "p_secret", "林夏", "primary", "冷静", "寻亲", secrets=""
+    )
+    assert not any(
+        item["id"].endswith("::secret:林夏")
+        for item in repo.list_memory_items("p_secret")
+    )
+
+
+def test_foreshadow_truth_visible_to_director_and_known_character(repo):
+    memory = LayeredMemory("p_fs", repo=repo)
+    fs = Foreshadowing(
+        description="旅店墙上的旧航海图",
+        planted_in_scene="scene_1",
+        target_revelation="航海图指向王室密道",
+        known_by=["林夏"],
+    )
+    memory.sync_foreshadowings([fs])
+
+    truth_id = f"foreshadow_truth:{fs.foreshadow_id}"
+    assert [i.id for i in memory.retrieve("王室密道", viewer="林夏")] == [
+        truth_id
+    ]
+    assert memory.retrieve("王室密道", viewer="阿泽") == []
+    assert [
+        i.id for i in memory.retrieve("王室密道", viewer="director")
+    ] == [truth_id]
+    # 描述与真相共享 scope：不知情角色也检索不到线索
+    assert memory.retrieve("航海图", viewer="阿泽") == []
+
+
+def test_foreshadow_retroactive_conflict_blocks(project):
+    engine = NarrativeEngine(project=project)
+    project.scene_count = 3
+    fs = Foreshadowing(
+        description="宫廷密令",
+        planted_in_scene="scene_1",
+        target_revelation="国王早已知道真相",
+        known_by=["不存在的角色"],
+    )
+
+    issues = asyncio.run(engine.check_foreshadow_conflicts(project, fs))
+    assert any(
+        issue["severity"] == "major" and "不存在的角色" in issue["conflict"]
+        for issue in issues
+    )
+
+    class _StubDirectorCrew:
+        def director(self):
+            return object()
+
+    async def _fake_kickoff(agent, prompt, timeout_s=60.0):
+        return (
+            '{"passed": false, "conflicts": ['
+            '{"severity": "major", "conflict": "与历史场景记忆冲突",'
+            ' "evidence": "scene_1 中该角色尚未出场"}]}'
+        )
+
+    engine.crew = _StubDirectorCrew()
+    engine._kickoff = _fake_kickoff
+    fs.known_by = []
+    issues = asyncio.run(engine.check_foreshadow_conflicts(project, fs))
+    assert any(
+        issue["severity"] == "major"
+        and "历史场景记忆" in issue["conflict"]
+        for issue in issues
+    )
 
 
 # ---------------- 自由输入与渲染 ----------------

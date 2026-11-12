@@ -44,7 +44,7 @@
 ## 2. M0：双模式动态世界纵切（含分层记忆 v2）（已完成）
 
 > M0-1 ~ M0-14 全部落地，A1 ~ A15 验收由 `tests/test_m0*.py` 覆盖；
-> 后端合计 **194 项测试全部通过**（完整清单见 [TESTS.md](TESTS.md)），
+> 后端合计 **201 项测试全部通过**（完整清单见 [TESTS.md](TESTS.md)），
 > 作者模式 `scene_brief → prose` 不回归。
 
 ### 2.1 目标
@@ -75,7 +75,7 @@
 | M0-11 | `memory/state.py` | `WorldState.switch_mode` / `apply_override` / `rollback_override` · 模式切换 checkpoint · `FactOverride` 审计与回滚 | ✅ `memory/state.py` |
 | M0-12 | `crews/scene_crew/outline.py` | 起承转合节拍 · 张力目标 · 信息预算（OutlineAgent 职能） | ✅ `crews/scene_crew/outline.py`（Crew 生成参数） |
 | M0-13 | `crews/scene_crew/crew.py` | NPC 自主：记忆 → 反思 → 计划 → 提案（EnsembleAgent 输出 `npc_actions`） | ✅ `SceneCrew.npc_actions` |
-| M0-14 | `memory/` 分层记忆 v2 | 核心层 `working → short_term → long_term → key_events`（三层策略可配）· 短期超阈值压缩进长期 · 长期低重要性且与活跃伏笔无关时降级到检索库 · 命中后可回温 · `fts` 默认 / `vector` / `hybrid` 同级可选 · 历史场景与资产回填 · 重启恢复 · `secrets` 可见性过滤 | ✅ `memory/` 包 + `src/storyloom/config/memory_config.default.yaml`（默认种子）+ 每项目 `memory_configs` |
+| M0-14 | `memory/` 分层记忆 v2 | 核心层 `working → short_term → long_term → key_events`（三层策略可配）· 短期超阈值压缩进长期 · 长期低重要性且与活跃伏笔无关时降级到检索库 · 命中后可回温 · `fts` 默认 / `vector` / `hybrid` 同级可选 · 历史场景与资产回填 · 重启恢复 · `visibility + known_by` 可见性过滤（角色秘密 / 伏笔描述与真相 / 世界书召回） | ✅ `memory/` 包 + `src/storyloom/config/memory_config.default.yaml`（默认种子）+ 每项目 `memory_configs` |
 
 > M0-13 的 NPC 自主消费 M0-14 的分层记忆；M0-14 可与 W1/W2 并行，但必须在 NPC 自主之前完成。
 
@@ -147,7 +147,7 @@
 | A12 | 低重要性长期记忆，连续 10 场景未命中且无活跃伏笔 | 自动降级到检索库；再次检索命中 2 次后回温 | ✅ |
 | A13 | 旧项目已有历史场景 | 索引自动回填；中文专名（如「航海图」）可检索到对应场景 | ✅ |
 | A14 | 切换 `fts` / `vector` / `hybrid` | 后端可切换；无 embedding 时 `vector` / `hybrid` 自动降级，生成不中断 | ✅ |
-| A15 | 角色 `secrets` | 只对本人可见；其他角色 prompt 不出现 | ✅ |
+| A15 | 角色秘密 / 伏笔真相 | `secret:<角色>` 与 `foreshadow_truth:<id>` 按 `visibility + known_by` 过滤；无权角色 prompt 不出现 | ✅ |
 
 ### 2.6 性能指标（已压测）
 
@@ -228,7 +228,7 @@
 | `TECHNICAL.md` | **已实现**的技术细节；M0 内容已同步为已实现 | ✅ |
 | `CONTROL_THEORY.md` | 控制论原理映射与 M0 最小闭环边界 | ✅ |
 | `MODEL_SELECTION.md` | 模型分配策略，含 `memory` 压缩角色与 M0 新角色预留 | ✅ |
-| `TESTS.md` | 后端测试用例清单（194 项，按 P0 / P1 / M0 验收分组） | ✅ |
+| `TESTS.md` | 后端测试用例清单（201 项，按 P0 / P1 / M0 验收分组） | ✅ |
 
 ---
 

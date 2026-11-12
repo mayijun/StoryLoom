@@ -15,8 +15,11 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from storyloom.memory.base import (
+    CROWD_VIEWER,
+    PUBLIC_VIEWERS,
     MemoryItem,
     MemorySettings,
+    MemoryVisibility,
     TierSpec,
     WorkingMemory,
 )
@@ -120,6 +123,7 @@ class LayeredMemory:
                 adoptions=item.adoptions,
                 last_hit_scene=item.last_hit_scene,
                 visibility=item.visibility,
+                known_by=item.known_by,
                 tags=item.tags,
                 source=item.source,
                 active_foreshadow=item.active_foreshadow,
@@ -162,11 +166,27 @@ class LayeredMemory:
         brief: str = "",
         present_characters: Optional[List[str]] = None,
         active_foreshadow: bool = False,
-        visibility: str = "public",
+        known_by: Optional[List[str]] = None,
+        crowd: bool = False,
         key: Optional[str] = None,
     ) -> MemoryItem:
-        """把一个场景写入短期记忆，并触发压缩 / 降级评估"""
+        """把一个场景写入短期记忆，并触发压缩 / 降级评估。
+
+        ``known_by`` 缺省时用 ``present_characters`` 作为目击者集合；
+        两者都未提供时视为公开叙述。``crowd=True`` 表示有未具名路人见证。
+        """
         item_id = f"scene:{key or scene_index}"
+        scope = known_by if known_by is not None else present_characters
+        explicit_scope = scope is not None
+        witnesses = sorted({name for name in (scope or []) if name})
+        if crowd:
+            witnesses = sorted(set(witnesses) | {CROWD_VIEWER})
+            explicit_scope = True
+        if PUBLIC_VIEWERS.intersection(witnesses):
+            visibility: MemoryVisibility = "public"
+            witnesses = []
+        else:
+            visibility = "restricted" if explicit_scope else "public"
         text = prose or brief
         summary = summarize(text)
         importance = score_importance(
@@ -182,6 +202,7 @@ class LayeredMemory:
             importance=importance,
             scene_index=scene_index,
             visibility=visibility,
+            known_by=witnesses,
             tags=["scene"] + (["active_foreshadow"] if active_foreshadow else []),
             source="scene",
             active_foreshadow=active_foreshadow,
@@ -201,10 +222,17 @@ class LayeredMemory:
         scene_index: int = 0,
         importance: Optional[float] = None,
         tags: Optional[List[str]] = None,
-        visibility: str = "public",
+        visibility: MemoryVisibility = "public",
+        known_by: Optional[List[str]] = None,
         source: str = "asset",
     ) -> MemoryItem:
         """直接写入检索库（资产、历史场景回填、被降级旧记忆）"""
+        witnesses = sorted({name for name in (known_by or []) if name})
+        if PUBLIC_VIEWERS.intersection(witnesses):
+            visibility = "public"
+            witnesses = []
+        elif witnesses:
+            visibility = "restricted"
         item = MemoryItem(
             id=item_id,
             project_id=self.project_id,
@@ -218,10 +246,88 @@ class LayeredMemory:
             ),
             scene_index=scene_index,
             visibility=visibility,
+            known_by=witnesses,
             tags=list(tags or []),
             source=source,
         )
         return self._put(item)
+
+    # ---------------- 伏笔投影 ----------------
+
+    def sync_foreshadowings(self, foreshadowings: List[Any]) -> List[MemoryItem]:
+        """把伏笔描述与真相投影成 archive 记忆条目。
+
+        两者共享同一 scope：默认 restricted + []（仅全知视角可见）；
+        创建时指定 known_by 的角色可见（例如某个配角天生知道）。
+        已存在的条目取 known_by 并集，保留后续“某人得知真相”的更新。
+        """
+        keep: set[str] = set()
+        touched: List[MemoryItem] = []
+
+        for fs in foreshadowings:
+            fid = fs.foreshadow_id
+            initial = {
+                name for name in (getattr(fs, "known_by", None) or []) if name
+            }
+            base_visibility = getattr(fs, "visibility", "restricted")
+            entries = [
+                (f"foreshadow:{fid}", fs.description, ["foreshadow", "clue"]),
+            ]
+            truth = (getattr(fs, "target_revelation", "") or "").strip()
+            if truth:
+                entries.append(
+                    (
+                        f"foreshadow_truth:{fid}",
+                        truth,
+                        ["foreshadow", "truth"],
+                    )
+                )
+
+            for item_id, content, tags in entries:
+                keep.add(item_id)
+                existing = self.items.get(item_id)
+                merged = sorted(initial | set(existing.known_by if existing else []))
+                if base_visibility == "public" or PUBLIC_VIEWERS.intersection(
+                    merged
+                ):
+                    visibility: MemoryVisibility = "public"
+                    merged = []
+                else:
+                    visibility = "restricted"
+
+                if (
+                    existing is not None
+                    and existing.text == content
+                    and existing.visibility == visibility
+                    and sorted(existing.known_by) == merged
+                ):
+                    touched.append(existing)
+                    continue
+                if existing is None:
+                    touched.append(
+                        self.add_archive_item(
+                            item_id,
+                            content,
+                            tags=tags,
+                            visibility=visibility,
+                            known_by=merged,
+                            source="foreshadow",
+                        )
+                    )
+                    continue
+                existing.text = content
+                existing.summary = summarize(content)
+                existing.visibility = visibility
+                existing.known_by = merged
+                existing.tags = list(tags)
+                existing.source = "foreshadow"
+                self._put(existing)
+                touched.append(existing)
+
+        for item in list(self.items.values()):
+            if item.source == "foreshadow" and item.id not in keep:
+                self._drop(item.id)
+        return touched
 
     # ---------------- 世界状态投影 ----------------
 
@@ -240,7 +346,14 @@ class LayeredMemory:
 
         for raw in projection:
             existing = self.items.get(raw["id"])
-            if existing is not None and existing.text == raw["text"]:
+            visibility = raw.get("visibility", "public")
+            known_by = sorted(raw.get("known_by") or [])
+            if (
+                existing is not None
+                and existing.text == raw["text"]
+                and existing.visibility == visibility
+                and sorted(existing.known_by) == known_by
+            ):
                 continue
             tier = raw["tier"]
             if existing is not None and existing.tier not in (
@@ -256,7 +369,8 @@ class LayeredMemory:
                 importance=raw.get("importance", 0.5),
                 scene_index=scene,
                 last_hit_scene=scene,
-                visibility=raw.get("visibility", "public"),
+                visibility=visibility,
+                known_by=known_by,
                 tags=list(raw.get("tags", [])),
                 source="world_state",
             )
@@ -285,8 +399,9 @@ class LayeredMemory:
                 layer = self._items_in(spec.name)
                 if len(layer) <= spec.max_items:
                     break
-                batch_size = max(1, min(spec.compress_batch, len(layer)))
-                batch = layer[:batch_size]
+                batch = self._pick_compress_batch(
+                    layer, spec.compress_batch
+                )
                 item = self._compress(batch, spec)
                 if item is not None:
                     created.append(item)
@@ -336,7 +451,7 @@ class LayeredMemory:
             # 只溢出 1 条时，与次旧条目一起合并，保证层数确实下降
             if batch_size == 1 and len(key_items) >= 2:
                 batch_size = 2
-            batch = key_items[:batch_size]
+            batch = self._pick_compress_batch(key_items, batch_size)
             item = self._compress(
                 batch,
                 TierSpec(
@@ -353,6 +468,38 @@ class LayeredMemory:
             if item is not None:
                 created.append(item)
         return created
+
+    @staticmethod
+    def _pick_compress_batch(
+        layer: List[MemoryItem], batch_size: int
+    ) -> List[MemoryItem]:
+        """按可见范围分组选取压缩批次，避免把不同知情者的记忆混在一起。"""
+        groups: Dict[Tuple[str, Tuple[str, ...]], List[MemoryItem]] = {}
+        for item in layer:
+            key = (item.visibility, tuple(sorted(item.known_by)))
+            groups.setdefault(key, []).append(item)
+        size = max(1, batch_size)
+        for items in groups.values():
+            if len(items) >= 2:
+                return items[:size]
+        # 所有分组都只有 1 条：只能跨组合并，由 _scope_for_batch 取交集
+        return layer[: max(1, min(size, len(layer)))]
+
+    @staticmethod
+    def _scope_for_batch(
+        batch: List[MemoryItem],
+    ) -> Tuple[MemoryVisibility, List[str]]:
+        """压缩后的可见范围：公开才公开，否则取各来源 known_by 的交集。"""
+        if any(item.visibility == "public" for item in batch):
+            return "public", []
+        if not batch:
+            return "public", []
+        known = set(batch[0].known_by)
+        for item in batch[1:]:
+            known &= set(item.known_by)
+        if PUBLIC_VIEWERS.intersection(known):
+            return "public", []
+        return "restricted", sorted(known)
 
     def _compress(
         self, batch: List[MemoryItem], spec: TierSpec
@@ -386,6 +533,7 @@ class LayeredMemory:
         if not text:
             return None
 
+        visibility, known_by = self._scope_for_batch(batch)
         last_scene = max(item.scene_index for item in batch)
         item = MemoryItem(
             id=f"mem_{uuid.uuid4().hex[:10]}",
@@ -399,7 +547,8 @@ class LayeredMemory:
             scene_index=last_scene,
             # 刚压缩产生的记忆从当前场景开始计算冷却，避免立即降级
             last_hit_scene=last_scene,
-            visibility="public",
+            visibility=visibility,
+            known_by=known_by,
             tags=sorted({"compressed", target}),
             source="compressed",
             active_foreshadow=any(item.active_foreshadow for item in batch),
@@ -470,7 +619,8 @@ class LayeredMemory:
             )
         else:
             hits = self._backend.search(
-                self.project_id, query, limit=limit, viewer=viewer
+                self.project_id, query, limit=limit,
+                viewer=viewer, candidates=pool,
             )
 
         scene = current_scene

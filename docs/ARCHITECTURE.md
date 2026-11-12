@@ -108,7 +108,8 @@ class Fact(BaseModel):
 （`belief_full`）在 M2 开放。
 
 > 这里的 `Memory` 是**每个 Agent 的经历视图**；项目级的叙事记忆由 §5 的分层记忆系统维护。
-> 两者在 M0 通过 `visibility` / `known_by` 对接：叙事记忆的私有条目只有对应角色可见。
+> 两者通过 `visibility` / `known_by` 对接：`public` 全员可见；`restricted` 只对
+> `known_by` 中的角色（可多人，可含 `crowd`）与全知视角（`gm` / `director` / `narrator`）可见。
 >
 > 实现归属：`Fact` / `WorldState` / `StageDirective` 等运行时状态位于
 > `memory/state.py`；角色、地点、伏笔与项目元数据位于 `memory/models.py`。
@@ -451,9 +452,23 @@ Checkpoint 合并进记忆系统的设计理由：
 
 - 叙事记忆是**项目级**的，供导演、渲染与一致性检查使用；
 - `Fact / Belief / Memory` 是**角色级**的，Agent 只拿 `view(agent_id)`；
-- 叙事记忆中的 `secrets` 等私有条目带 `visibility = private:<name>`，
-  只有对应角色在场时才进入其 prompt；
-- M2 接入完整 `Belief` 后，`known_by` 直接映射为 `visibility` 过滤，不改检索后端协议。
+- 叙事记忆用 `visibility` + `known_by` 表达知情范围：
+  - `public`：所有角色可见；
+  - `restricted`：`known_by` 中的角色可见，支持多人与 `crowd`（无名路人）；
+  - `restricted` + 空 `known_by`：只有全知视角（导演 / GM / 旁白）可见；
+- `secrets` 唯一存储在 `memory_items` 的 `secret:<角色>`（`archive + restricted + known_by=[角色]`），
+  `characters` 表不再保存该字段；旧列在 `create_all` 时一次性迁移后删除；
+- 伏笔描述与真相分别投影为 `foreshadow:<id>` / `foreshadow_truth:<id>`，共享同一
+  `visibility + known_by`：默认仅全知视角可见，生成时可指定“天生知道”的角色；
+- 回溯补录伏笔时先做结构检查（角色是否存在、场景时间线、重复/矛盾），再由导演视角
+  对相关记忆做一致性检查；major 冲突以 409 阻断，LLM 不可用时降级为 minor 提示；
+- 世界书检索在 `LayeredMemory.retrieve` 先按 `viewer` 过滤候选池，再交给
+  `fts` / `vector` / `hybrid`，三种后端共享同一可见性边界；
+- `Fact.known_by` 是**可变权威**：新增知情者后，`sync_world_state` 按稳定 id
+  `ws:fact:<id>` 原地更新对应记忆；场景记忆的 `known_by` 是**目击者集合**，不随事后传播改写；
+- 压缩合并跨可见范围时取 `known_by` 交集，避免把不同知情者的记忆合成公开信息；
+- 群演只是一个 LLM 实例串行扮演多个角色，`known_by` 仍按角色名记录，每个角色 Task
+  用自己的 `viewer` 取记忆。
 
 ---
 

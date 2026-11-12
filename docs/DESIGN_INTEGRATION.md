@@ -100,11 +100,13 @@ StoryLoom 是**作者工作台 + 世界运行时**，不是内容市场，也不
 
 1. **每个角色都有独立动机**：至少一个目标与玩家无关；NPC 不因玩家一句话就改立场。
 2. **主角没有免费外挂**：能力必须带代价（时间、记忆、人情、债、暴露风险）。
-3. **伏笔只写「可见线索」**：`description` 能被角色看见；`target_revelation` 只给导演 Agent，不直接进渲染。
+3. **伏笔只写「可见线索」**：`description` 与 `target_revelation` 都投影为带
+   `visibility` / `known_by` 的记忆条目；默认仅导演可见，指定知情角色后才进入其 prompt。
 4. **章节大纲写「处境」而不是「爽点」**：每章结束留下可被行动回应的具体问题。
 5. **文风 skill 反爽文、反越权**：不替玩家做决定，不自动胜利，不让 NPC 无条件臣服。
 6. **地点与路线服务于后果**：移动有耗时，地点有各自的规则与目击者。
-7. **世界书不泄露秘密**：运行时注入角色动机、地点、活跃伏笔描述，不注入 `secrets` 与 `target_revelation`。
+7. **世界书不泄露秘密**：运行时按 `viewer` 过滤记忆；`secret:` 与伏笔真相默认只进入
+   本人 / 知情角色与全知视角的 prompt，不进入无权角色的渲染上下文。
 
 ### 5.1 仙侠样板的改写方向
 
@@ -135,7 +137,8 @@ StoryLoom 是**作者工作台 + 世界运行时**，不是内容市场，也不
 - `src/storyloom/templates/sandbox_life.py`：现代都市开放沙盒的第二套试用模板。
 - `src/storyloom/memory/models.py`：`NovelProject` 带 `description`，让作品简介进入运行时。
 - `src/storyloom/api/engine.py`：构建 `NovelProject` 时从项目 meta 读取 `description`。
-- `src/storyloom/engine/narrative.py`：渲染阶段构造世界书上下文（不含 secrets / 真相）。
+- `src/storyloom/engine/narrative.py`：渲染阶段按 `viewer` 构造世界书上下文
+  （秘密与伏笔真相只对有权知情者可见）。
 - `src/storyloom/crews/scene_crew/crew.py`：`_prose_prompt` 接收 `style / description / world_book`，
   并加入「世界先于主角、NPC 自主、不替玩家决定」的约束。
 - `frontend/src/components/GamePanel.vue`：世界状态 tab 增加节拍、在场角色、标记、关系；
@@ -150,7 +153,7 @@ StoryLoom 是**作者工作台 + 世界运行时**，不是内容市场，也不
 - 不照搬外部作品的视觉与内容市场。
 - 不新增第二套前端、独立游戏大厅或作品广场。
 - 不在游戏模式里重复创建世界 / 角色。
-- 不把 `secrets` 或 `target_revelation` 注入渲染 prompt。
+- 不把 `restricted` 记忆（`secrets` / 伏笔真相）注入无权角色的渲染 prompt。
 - 不为了「爽感」让导演 Agent 自动放行玩家提案。
 
 ---
@@ -160,5 +163,6 @@ StoryLoom 是**作者工作台 + 世界运行时**，不是内容市场，也不
 1. `pytest tests/test_templates.py tests/test_templates_integration.py` 通过。
 2. 应用模板后，项目标题 / 文风 / 章节标题与新样板一致。
 3. 游戏模式进入后，世界状态 tab 能看到节拍、在场角色、标记 / 关系（有数据时）。
-4. 渲染 prompt 含作品文风与世界书，但不含任何角色的 `secrets` 或伏笔 `target_revelation`。
+4. 渲染 prompt 含作品文风与世界书；`restricted` 记忆只对 `known_by` 中的角色与
+   全知视角出现，无权角色看不到 `secrets` 或伏笔真相。
 5. `npm run test` 中 GamePanel 既有 DOM 断言仍通过。

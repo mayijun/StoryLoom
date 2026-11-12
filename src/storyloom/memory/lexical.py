@@ -63,25 +63,33 @@ class LexicalBackend:
         limit: int = 5,
         viewer: Optional[str] = None,
         tiers: Tuple[str, ...] = ("archive",),
+        candidates: Optional[List[MemoryItem]] = None,
     ) -> List[Tuple[MemoryItem, float]]:
         if not self.available:
             return []
-        rows = self.repo.list_memory_items(project_id)
+        if candidates is not None:
+            items = [item for item in candidates if item.tier in tiers]
+        else:
+            rows = self.repo.list_memory_items(project_id)
+            prefix = f"{project_id}::"
+            items = []
+            for row in rows:
+                if row["tier"] not in tiers:
+                    continue
+                items.append(
+                    MemoryItem.from_row(
+                        {
+                            **row,
+                            "id": (
+                                row["id"][len(prefix):]
+                                if row["id"].startswith(prefix)
+                                else row["id"]
+                            ),
+                        }
+                    )
+                )
         scored: List[Tuple[MemoryItem, float]] = []
-        prefix = f"{project_id}::"
-        for row in rows:
-            if row["tier"] not in tiers:
-                continue
-            item = MemoryItem.from_row(
-                {
-                    **row,
-                    "id": (
-                        row["id"][len(prefix):]
-                        if row["id"].startswith(prefix)
-                        else row["id"]
-                    ),
-                }
-            )
+        for item in items:
             if not item.visible_to(viewer):
                 continue
             body = " ".join(

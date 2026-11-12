@@ -364,6 +364,41 @@ def test_demotion_rules_fall_back_to_global_thresholds():
         assert rule.miss_scenes == 3
 
 
+def test_compression_across_scopes_intersects_known_by(repo):
+    """跨可见范围压缩时取交集，避免把不同知情者的记忆混成公开信息。"""
+    settings = MemorySettings(
+        tiers=[
+            TierSpec(
+                name="short_term", max_items=1,
+                compress_batch=2, compress_into="long_term",
+            ),
+        ],
+        key_events_max_items=20,
+    )
+    memory = LayeredMemory(
+        "p_scope_compress", repo=repo, settings=settings,
+        compress_fn=FakeCompressor(),
+    )
+    memory.add_scene(
+        1, "张三知道的第一条线索。", present_characters=["张三"]
+    )
+    memory.add_scene(
+        2, "李四知道的第二条线索。", present_characters=["李四"]
+    )
+
+    compressed = [
+        item
+        for item in memory._items_in("long_term")
+        if item.source == "compressed"
+    ]
+    assert compressed
+    assert compressed[0].visibility == "restricted"
+    assert compressed[0].known_by == []
+    assert not compressed[0].visible_to("张三")
+    assert not compressed[0].visible_to("李四")
+    assert compressed[0].visible_to("director")
+
+
 def test_easiest_threshold_demotes_long_and_key_events_to_world_book(repo):
     """用最容易触发的阈值：每层只留 1 条、每次压 1 条、阈值 0.99、miss=2。"""
     settings = MemorySettings(

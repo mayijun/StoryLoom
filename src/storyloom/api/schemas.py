@@ -158,6 +158,8 @@ class ForeshadowingView(BaseModel):
     scenes_since_last_mention: int
     max_dormant_scenes: int
     linked_characters: List[str]
+    visibility: Literal["public", "restricted"] = "restricted"
+    known_by: List[str] = Field(default_factory=list)
 
 
 class ForeshadowTransition(BaseModel):

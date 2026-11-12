@@ -184,9 +184,15 @@ def test_apply_template_writes_all_assets(repo):
         "杂役管事",
         "执法堂守卫",
     ]
-    # 主角秘密必须落库（记忆 A15 依赖）
-    player = next(c for c in characters if c["name"] == "玩家")
-    assert "荒古圣体" in player["secrets"]
+    # 主角秘密的唯一存储是 restricted 记忆条目
+    memory_items = repo.list_memory_items("pid_assets")
+    secret = next(
+        item for item in memory_items
+        if item["id"].endswith("::secret:玩家")
+    )
+    assert "荒古圣体" in secret["text"]
+    assert secret["visibility"] == "restricted"
+    assert secret["known_by"] == ["玩家"]
 
     locations = repo.list_locations("pid_assets")
     assert [loc["name"] for loc in locations] == [
