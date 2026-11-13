@@ -18,6 +18,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from storyloom.memory.base import MEMORY_ITEM_MAX_CHARS
 from storyloom.memory.models import CharacterAsset, NovelProject
 from storyloom.memory.scoring import summarize
 
@@ -170,11 +171,11 @@ def resolve_side_stage(
     # 导演直接产出已压缩的分层材料；缺省时做确定性压缩兜底
     short_summary = (
         str(data.get("short_term") or "").strip()
-        or summarize(facts, limit=160)
+        or summarize(facts, limit=MEMORY_ITEM_MAX_CHARS)
     )
     long_summary = (
         str(data.get("long_term") or "").strip()
-        or summarize(facts, limit=100)
+        or summarize(facts, limit=MEMORY_ITEM_MAX_CHARS)
     )
     key_event = str(data.get("key_event") or "").strip()
 

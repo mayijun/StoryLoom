@@ -11,11 +11,14 @@ This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 - LLM 压缩失败时走确定性拼接，不阻断生成。
 """
 
+import re
 import uuid
+import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
 from storyloom.memory.base import (
     CROWD_VIEWER,
+    MEMORY_ITEM_MAX_CHARS,
     PUBLIC_VIEWERS,
     MemoryItem,
     MemorySettings,
@@ -174,6 +177,11 @@ class LayeredMemory:
 
         ``known_by`` 缺省时用 ``present_characters`` 作为目击者集合；
         两者都未提供时视为公开叙述。``crowd=True`` 表示有未具名路人见证。
+
+        写入前会对 prose 做确定性摘要（默认 200 字），摘要本身不应超过
+        ``MEMORY_ITEM_MAX_CHARS``。完整 prose 永远**不**直接入库——
+        如果 Agent 在 ``memory_facts`` 里附带了预压缩事实，narrative 会
+        优先用 ``add_condensed`` 写入目标层，本函数作为短期事实的兜底入口。
         """
         item_id = f"scene:{key or scene_index}"
         scope = known_by if known_by is not None else present_characters
@@ -189,6 +197,7 @@ class LayeredMemory:
             visibility = "restricted" if explicit_scope else "public"
         text = prose or brief
         summary = summarize(text)
+        _warn_if_oversize(summary, "add_scene → short_term")
         importance = score_importance(
             text, brief=brief, active_foreshadow=active_foreshadow
         )
@@ -197,7 +206,7 @@ class LayeredMemory:
             id=item_id,
             project_id=self.project_id,
             tier="short_term",
-            text=text,
+            text=summary,
             summary=summary,
             importance=importance,
             scene_index=scene_index,
@@ -226,7 +235,12 @@ class LayeredMemory:
         known_by: Optional[List[str]] = None,
         source: str = "asset",
     ) -> MemoryItem:
-        """直接写入检索库（资产、历史场景回填、被降级旧记忆）"""
+        """直接写入检索库（资产、历史场景回填、被降级旧记忆）
+
+        调用方应保证 text 不超过 ``MEMORY_ITEM_MAX_CHARS``；超过时
+        只打 warning，不拆分也不截断。
+        """
+        _warn_if_oversize(text, f"add_archive_item {item_id}")
         witnesses = sorted({name for name in (known_by or []) if name})
         if PUBLIC_VIEWERS.intersection(witnesses):
             visibility = "public"
@@ -261,23 +275,36 @@ class LayeredMemory:
         known_by: Optional[List[str]] = None,
         tags: Optional[List[str]] = None,
         importance: Optional[float] = None,
-        source: str = "side_stage",
+        source: str = "agent_memory_fact",
     ) -> MemoryItem:
-        """写入已经由 Agent 压缩好的长期记忆或关键事件。
+        """写入已经由 Agent 压缩好的记忆事实。
+
+        支持全部四层：short_term（压缩摘要）、long_term（压缩产物）、
+        key_events（关键事件）、archive（世界书/资产）。
 
         与 ``add_scene`` 不同，这里不再等待阈值触发压缩：材料本身
         就是压缩产物，直接落到目标层；随后仍受该层容量与降级规则约束。
+
+        调用方应保证 text 不超过 ``MEMORY_ITEM_MAX_CHARS``；超过时
+        只打 warning，不拆分也不截断。
         """
-        if tier not in ("long_term", "key_events"):
+        if tier not in ("short_term", "long_term", "key_events", "archive"):
             raise ValueError(f"不支持的目标层: {tier}")
+        _warn_if_oversize(text, f"add_condensed → {tier}")
         witnesses = sorted({name for name in (known_by or []) if name})
         if PUBLIC_VIEWERS.intersection(witnesses):
             visibility: MemoryVisibility = "public"
             witnesses = []
         else:
             visibility = "restricted" if witnesses else "public"
+
+        if tier == "archive":
+            item_id = f"arch_{uuid.uuid4().hex[:10]}"
+        else:
+            item_id = f"cond_{uuid.uuid4().hex[:10]}"
+
         item = MemoryItem(
-            id=f"cond_{uuid.uuid4().hex[:10]}",
+            id=item_id,
             project_id=self.project_id,
             tier=tier,
             text=text,
@@ -285,7 +312,11 @@ class LayeredMemory:
             importance=(
                 importance
                 if importance is not None
-                else score_compressed_importance(text, stage=tier)
+                else (
+                    score_compressed_importance(text, stage=tier)
+                    if tier in ("long_term", "key_events")
+                    else score_importance(text)
+                )
             ),
             pinned=False,
             scene_index=scene_index,
@@ -297,7 +328,8 @@ class LayeredMemory:
             source=source,
         )
         self._put(item)
-        self.consolidate()
+        if tier in ("short_term", "long_term", "key_events"):
+            self.consolidate()
         return item
 
     # ---------------- 伏笔投影 ----------------
@@ -396,9 +428,11 @@ class LayeredMemory:
             existing = self.items.get(raw["id"])
             visibility = raw.get("visibility", "public")
             known_by = sorted(raw.get("known_by") or [])
+            raw_text = raw["text"]
+            _warn_if_oversize(raw_text, f"sync_world_state → {raw['id']}")
             if (
                 existing is not None
-                and existing.text == raw["text"]
+                and existing.text == raw_text
                 and existing.visibility == visibility
                 and sorted(existing.known_by) == known_by
             ):
@@ -412,8 +446,8 @@ class LayeredMemory:
                 id=raw["id"],
                 project_id=self.project_id,
                 tier=tier,
-                text=raw["text"],
-                summary=summarize(raw["text"]),
+                text=raw_text,
+                summary=summarize(raw_text),
                 importance=raw.get("importance", 0.5),
                 scene_index=scene,
                 last_hit_scene=scene,
@@ -801,3 +835,25 @@ class LayeredMemory:
             self._drop(item_id)
         self.items.clear()
         self.working = WorkingMemory()
+
+
+# ---------------------------------------------------------------------------
+# 模块级辅助
+# ---------------------------------------------------------------------------
+
+def _warn_if_oversize(text: str, caller: str) -> None:
+    """写入前的长度软校验：超过 MEMORY_ITEM_MAX_CHARS 时打 warning。
+
+    不拆分、不截断、不阻断——让调用方在运行时看到 warning，意识到
+    自己输出了超长内容，进而在生产端修复（例如让 Agent 在 JSON
+    的 memory_facts 里输出预压缩版本）。
+    """
+    if not text:
+        return
+    if len(text) > MEMORY_ITEM_MAX_CHARS:
+        warnings.warn(
+            f"[memory] {caller}: 文本长度 {len(text)} > "
+            f"MEMORY_ITEM_MAX_CHARS ({MEMORY_ITEM_MAX_CHARS}). "
+            f"不拆分不截断，调用方应在源头压缩。",
+            stacklevel=2,
+        )

@@ -34,6 +34,7 @@ from storyloom.crews.scene_crew.packet import (
     packet_to_result,
     parse_agent_packet,
 )
+from storyloom.memory.base import MEMORY_ITEM_MAX_CHARS
 from storyloom.crews.scene_crew.offscreen import (
     drop_pending_side_stage,
     parse_pending_request,
@@ -879,14 +880,18 @@ class NarrativeEngine:
             if memory is not None:
                 memory.sync_foreshadowings(project.foreshadowings)
 
-        # 3. memory.add_scene（两种模式都调，但 memory=None 时跳过）
+        # 3. memory 写入：优先用 Agent 在 JSON 里附带的 memory_facts
+        # （预压缩好的核心记忆，调用次数不增加）；缺省时回退到
+        # add_scene（内部会对 prose 做 summarize，不直接存原文）。
         scene_idx = project.scene_count
         if memory is not None:
-            memory.add_scene(
+            _apply_memory_facts(
+                memory=memory,
+                facts=director_json.get("memory_facts"),
                 scene_index=scene_idx,
                 prose=prose,
                 brief=scene_brief,
-                present_characters=present_chars,
+                present_chars=present_chars,
             )
 
         # 4. WorldState 推进（有就推，没有就跳过）
@@ -1810,6 +1815,71 @@ class NarrativeEngine:
                 lines.append(f"- {e['summary']}")
 
         return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# memory_facts 消费：把 Agent 在 JSON 里附带的预压缩记忆写入 memory 层
+# ---------------------------------------------------------------------------
+
+_VALID_TIERS = frozenset({"short_term"})
+
+
+def _apply_memory_facts(
+    *,
+    memory: LayeredMemory,
+    facts: Any,
+    scene_index: int,
+    prose: str,
+    brief: str,
+    present_chars: List[str],
+) -> None:
+    """优先用 Agent 预压缩的 memory_facts 写入；缺省时回退到 add_scene。
+
+    调用次数不增加——memory_facts 就是同一次 JSON 输出的一部分。
+    每条 fact 的 text 必须是压缩好的最终形态，长度 ≤ MEMORY_ITEM_MAX_CHARS。
+    """
+    valid_facts = []
+    if isinstance(facts, list):
+        for item in facts:
+            if not isinstance(item, dict):
+                continue
+            tier = str(item.get("tier") or "short_term")
+            text = str(item.get("text") or "").strip()
+            if not text or tier not in _VALID_TIERS:
+                continue
+            if len(text) > MEMORY_ITEM_MAX_CHARS:
+                # 超长 fact 直接跳过——Agent 没做好压缩，memory 层也不切
+                continue
+            valid_facts.append(item)
+
+    if valid_facts:
+        for fact in valid_facts:
+            memory.add_condensed(
+                tier=str(fact.get("tier") or "short_term"),
+                text=str(fact.get("text") or "").strip(),
+                scene_index=scene_index,
+                known_by=[
+                    str(v).strip()
+                    for v in (fact.get("known_by") or [])
+                    if str(v).strip()
+                ] or None,
+                tags=[
+                    str(v).strip()
+                    for v in (fact.get("tags") or [])
+                    if str(v).strip()
+                ] or None,
+                source="agent_memory_fact",
+            )
+        return
+
+    # 没有 memory_facts（老 Agent 输出 / LLM 不可用）：回退到 add_scene。
+    # add_scene 内部会对 prose 做 summarize 入库，不会直接存原文。
+    memory.add_scene(
+        scene_index=scene_index,
+        prose=prose,
+        brief=brief,
+        present_characters=present_chars,
+    )
 
 
 __all__ = [

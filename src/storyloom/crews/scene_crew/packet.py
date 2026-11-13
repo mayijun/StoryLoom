@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from storyloom.memory.base import MEMORY_ITEM_MAX_CHARS
 from storyloom.memory.state import (
     ActionProposal,
     AdjudicationResult,
@@ -49,6 +50,33 @@ class AgentOperation(BaseModel):
     detail: str = ""
 
 
+_TIER_CHOICES = frozenset({"short_term"})
+
+
+class MemoryFact(BaseModel):
+    """Agent 在同一次 JSON 输出里附带的预压缩记忆事实。
+
+    调用次数不增加——Agent 在输出 prose/narrative/state 的同时，
+    直接给出需要进入 short_term 层的核心事实（场景摘要）。
+    更上层的 long_term / key_events / archive 由 memory 系统后台
+    的 consolidate() + compress.py 负责，Agent 不越过这道边界。
+
+    每条 text 必须已经是压缩好的版本，长度不超过 MEMORY_ITEM_MAX_CHARS。
+    """
+
+    tier: str = "short_term"
+    text: str = ""
+    known_by: List[str] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list)
+
+    def is_valid(self) -> bool:
+        return (
+            self.tier in _TIER_CHOICES
+            and bool(self.text.strip())
+            and len(self.text) <= MEMORY_ITEM_MAX_CHARS
+        )
+
+
 class AgentPacket(BaseModel):
     """所有 Agent 共用的 JSON 信封；未使用的段保持默认值。"""
 
@@ -68,23 +96,123 @@ class AgentPacket(BaseModel):
     npc_actions: List[AgentOperation] = Field(default_factory=list)
     # 质检段
     issues: List[str] = Field(default_factory=list)
+    # 记忆事实段：Agent 在同一次输出里附带的预压缩核心记忆（可选）
+    # 每条必须已经是压缩好的版本，长度 ≤ MEMORY_ITEM_MAX_CHARS
+    memory_facts: List[MemoryFact] = Field(default_factory=list)
 
 
-PACKET_CONTRACT = """\
+PACKET_CONTRACT = f"""\
 只输出一个 JSON 对象，不要 Markdown 代码围栏或额外说明。可用字段：
-{
+{{
   "prose": "正文",
-  "choices": [{"text": "玩家可尝试的自然语言行动", "hint": "风险或代价提示"}],
-  "stage": [{"kind": "bg", "params": {"location": "地点"}}],
+  "choices": [{{"text": "玩家可尝试的自然语言行动", "hint": "风险或代价提示"}}],
+  "stage": [{{"kind": "bg", "params": {{"location": "地点"}}}}],
   "decision": "allow | reject | direct",
   "narrative": "本轮裁决事实",
   "reason": "裁决理由",
-  "state": {"time_delta": 1, "characters": {}, "flags": {}, "relationships": {}},
+  "state": {{"time_delta": 1, "characters": {{}}, "flags": {{}}, "relationships": {{}}}},
   "available": ["可去地点"],
-  "npc_actions": [{"actor": "角色", "kind": "talk|move|observe|other", "target": "", "detail": "自然语言行动"}],
-  "issues": ["一致性问题"]
-}
-只填写当前任务需要的字段，其余可省略。"""
+  "npc_actions": [{{"actor": "角色", "kind": "talk|move|observe|other", "target": "", "detail": "自然语言行动"}}],
+  "issues": ["一致性问题"],
+  "memory_facts": [
+    {{
+      "tier": "short_term",
+      "text": "本回合场景摘要，≤ {MEMORY_ITEM_MAX_CHARS} 字。已经是压缩好的最终形态。",
+      "known_by": ["知晓该事实的角色名，可省略"],
+      "tags": ["scene | foreshadow | ...，可省略"]
+    }}
+  ]
+}}
+只填写当前任务需要的字段，其余可省略。
+
+# ─────────────────────────────────────────────────────
+# memory_facts：Agent 只负责 short_term 一层
+# ─────────────────────────────────────────────────────
+#
+# 你的 JSON 里 **必须** 附带 memory_facts，把本回合场景压缩成
+# 1-3 条写入。memory_facts 是你这次 kickoff 输出的一部分，
+# 调用次数 **不会** 增加。
+#
+# 重要职责边界：
+#
+#   你（Agent）→ 只写 short_term（场景摘要）
+#                  保留人物选择、承诺/契约、关键物品/伏笔线索，
+#                  删除环境描写、情绪渲染、重复对话。
+#
+#   memory 系统后台 → 把 short_term 进一步压缩成
+#                     long_term（主线进展）、
+#                     key_events（关键转折）、
+#                     archive（世界真相/资产）。
+#
+#   你 **不要** 尝试写 long_term / key_events / archive，
+#   这些层级由记忆系统自己的 compress.py 处理。
+#
+# 硬约束：每条 text ≤ {MEMORY_ITEM_MAX_CHARS} 字。
+#
+# ─── 实战示例 ───
+#
+# 假设你写了下面这段 prose（384 字）：
+#
+#   "大厅里点着油蜡火把，昏黄的光在石板地面上投下摇曳的影子。
+#   林慢慢走过一排排祖先画像，脚步声在空旷的大厅里回响。
+#   老管家王福迎了上来，皱纹里藏着忧虑。「少爷，您终于回来了。
+#   老爷当年留下的遗物……我们找到了航海图的残片。」
+#   林心头一震，握紧了口袋里的那枚铜钥匙——那是母亲临终前给他的。
+#   王福压低声音：「地下室入口在壁炉后面，但被老主人加了三道锁。」
+#   他递给林一张泛黄的纸，上面画着X标记，旁边写着一串数字。
+#   林把纸折好塞进怀里，决定今晚就潜入地下室，
+#   去揭开父亲十年前那场失踪案的真相。
+#   窗外雷声滚过，城堡陷入一片昏暗。"
+#
+# 你应该输出下面的 memory_facts：
+#
+#   "memory_facts": [
+#     {{
+#       "tier": "short_term",
+#       "text": "林回到祖宅城堡，老管家王福交出父亲遗留的航海图残片与地下室入口提示（壁炉后，三道锁）。林决心夜里潜入地下室揭开父亲当年失踪真相。",
+#       "tags": ["scene", "foreshadow"]
+#     }}
+#   ]
+#
+# ─── 自检清单 ───
+#
+#   □ 每条 text 都比 prose 短得多（压缩率 ≥ 70%）
+#   □ 每条 text ≤ {MEMORY_ITEM_MAX_CHARS} 字（硬上限）
+#   □ 没有环境描写、没有情绪渲染、没有"仿佛""似乎"
+#   □ 关键事实不丢：人物、地点、行动、结果、承诺、关键物品
+#   □ tier 只写 short_term（long_term/key_events/archive 是 memory 系统后台负责的）
+#   □ known_by 只在信息有保密范围时填（"只有林和王福知道"）
+#   □ tags 让记忆系统在压缩/降级时保留正确分类
+
+# ─────────────────────────────────────────────────────
+# 可用字段定义（JSON 结构）
+# ─────────────────────────────────────────────────────
+{{
+  "prose": "正文",
+  "choices": [{{"text": "玩家可尝试的自然语言行动", "hint": "风险或代价提示"}}],
+  "stage": [{{"kind": "bg", "params": {{"location": "地点"}}}}],
+  "decision": "allow | reject | direct",
+  "narrative": "本轮裁决事实",
+  "reason": "裁决理由",
+  "state": {{"time_delta": 1, "characters": {{}}, "flags": {{}}, "relationships": {{}}}},
+  "available": ["可去地点"],
+  "npc_actions": [{{"actor": "角色", "kind": "talk|move|observe|other", "target": "", "detail": "自然语言行动"}}],
+  "issues": ["一致性问题"],
+  "memory_facts": [
+    {{
+      "tier": "short_term",
+      "text": "本回合场景摘要，≤ {MEMORY_ITEM_MAX_CHARS} 字。已经是压缩好的版本。",
+      "known_by": ["知晓该事实的角色名，可省略"],
+      "tags": ["scene | foreshadow | ...，可省略"]
+    }}
+  ]
+}}
+只填写当前任务需要的字段，其余可省略。
+
+关于 memory_facts：每次输出 **必须** 附带 memory_facts，把这回合场景压缩成
+1-3 条 short_term 写入。调用次数 **不会** 增加——memory_facts 就是你这次
+JSON 输出的一部分。long_term / key_events / archive 由 memory 系统后台负责，
+你不要越权写这些层级。"""
 
 
 def _as_list(value: Any) -> List[Any]:
@@ -163,6 +291,30 @@ def parse_agent_packet(raw: str) -> AgentPacket:
     if decision not in ("allow", "reject", "direct"):
         decision = "allow"
 
+    memory_facts: List[MemoryFact] = []
+    for item in _as_list(data.get("memory_facts")):
+        if not isinstance(item, dict):
+            continue
+        fact = MemoryFact(
+            tier=str(item.get("tier") or "short_term"),
+            text=str(item.get("text") or "").strip(),
+            known_by=[
+                str(v).strip()
+                for v in _as_list(item.get("known_by"))
+                if str(v).strip()
+            ],
+            tags=[
+                str(v).strip()
+                for v in _as_list(item.get("tags"))
+                if str(v).strip()
+            ],
+        )
+        if fact.is_valid():
+            memory_facts.append(fact)
+        else:
+            # 无效 fact 只打警告，不阻断；调用方 narrative 会做最后兜底
+            pass
+
     return AgentPacket(
         prose=str(data.get("prose") or "").strip(),
         choices=choices,
@@ -177,6 +329,7 @@ def parse_agent_packet(raw: str) -> AgentPacket:
         ],
         npc_actions=operations,
         issues=issues,
+        memory_facts=memory_facts,
     )
 
 

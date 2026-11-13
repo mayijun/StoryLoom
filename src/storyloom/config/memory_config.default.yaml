@@ -2,25 +2,29 @@
 # 本文件只用于首次播种与重置；运行时的项目配置保存在数据库 memory_configs 表。
 # 核心记忆只有三层：short_term → long_term → key_events（关键事件）；
 # archive（世界书）是检索层，保存项目资产与被冷却的旧记忆。
+#
+# 所有 tier 的 compress_max_chars 统一对齐 MEMORY_ITEM_MAX_CHARS = 500。
+# 分层的区别不在长度，在压缩保留标准（见 compress_hint）。
+
 tiers:
   - name: short_term
     max_items: 6
     compress_batch: 3
     compress_into: long_term
-    compress_max_chars: 220
+    compress_max_chars: 500
     compress_hint: "保留主线事实、人物选择、承诺/契约、关键物品与伏笔线索，删除环境与情绪描写"
   - name: long_term
     max_items: 8
     compress_batch: 4
     compress_into: key_events
-    compress_max_chars: 160
+    compress_max_chars: 500
     compress_hint: "只保留改变主线走向的关键事件与转折，一行一个事件，忽略日常互动"
 
 key_events:
   max_items: 20
   # 关键事件溢出时在本层内部合并；不写入世界书，避免两层职责重叠
   compress_into: key_events
-  compress_max_chars: 240
+  compress_max_chars: 500
   compress_hint: "只记录改变世界格局或主线走向的事件：转折、死亡、背叛、契约、身份揭示、伏笔回收"
 
 demotion:

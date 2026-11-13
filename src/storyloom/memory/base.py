@@ -26,6 +26,15 @@ PUBLIC_VIEWERS = frozenset({"all", "public", "*"})
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "memory_config.default.yaml"
 
+#: 每条记忆条目的硬上限字符数：short_term / long_term / key_events / archive 全层统一。
+#: RAG embedding 最佳粒度在 300~800 字符区间，取值 500 是这条区间的中点。
+#: 任何写入入口（add_scene / add_condensed / add_archive_item / sync_world_state）
+#: 超过此值时打一条警告日志——**不拆分、不截断**，让源头的 Agent / 调用方
+#: 意识到自己输出了超长内容，进而在生产端修复。
+#: 真正的约束由上层 Agent 的 memory_facts 契约保证（packet.py → narrative.py → add_condensed）：
+#: Agent 在同一次 JSON 输出里直接附带压缩好的核心记忆，调用次数不增加。
+MEMORY_ITEM_MAX_CHARS: int = 500
+
 
 class MemoryItem(BaseModel):
     """一条叙事记忆（核心层或检索库）"""
@@ -95,7 +104,7 @@ class TierSpec(BaseModel):
     max_items: int = 6
     compress_batch: int = 3
     compress_into: MemoryTier = "long_term"
-    compress_max_chars: int = 200
+    compress_max_chars: int = MEMORY_ITEM_MAX_CHARS
     compress_hint: str = ""
 
 
@@ -113,7 +122,7 @@ class MemorySettings(BaseModel):
     key_events_max_items: int = 20
     # 关键事件溢出时默认在层内合并，不再写入世界书
     key_events_compress_into: MemoryTier = "key_events"
-    key_events_compress_max_chars: int = 240
+    key_events_compress_max_chars: int = MEMORY_ITEM_MAX_CHARS
     key_events_compress_hint: str = ""
     # 兼容旧配置的全局降级参数
     demotion_threshold: float = 0.35
@@ -178,7 +187,7 @@ class MemorySettings(BaseModel):
                 "compress_into", "key_events"
             ),
             key_events_compress_max_chars=int(
-                key_events.get("compress_max_chars", 240)
+                key_events.get("compress_max_chars", MEMORY_ITEM_MAX_CHARS)
             ),
             key_events_compress_hint=str(
                 key_events.get("compress_hint", "")
@@ -222,12 +231,12 @@ class MemorySettings(BaseModel):
                     TierSpec(
                         name="short_term", max_items=6,
                         compress_batch=3, compress_into="long_term",
-                        compress_max_chars=220,
+                        compress_max_chars=MEMORY_ITEM_MAX_CHARS,
                     ),
                     TierSpec(
                         name="long_term", max_items=8,
                         compress_batch=4, compress_into="key_events",
-                        compress_max_chars=160,
+                        compress_max_chars=MEMORY_ITEM_MAX_CHARS,
                     ),
                 ]
             )
