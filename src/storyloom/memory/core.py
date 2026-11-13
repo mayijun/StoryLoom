@@ -252,6 +252,54 @@ class LayeredMemory:
         )
         return self._put(item)
 
+    def add_condensed(
+        self,
+        tier: str,
+        text: str,
+        *,
+        scene_index: int = 0,
+        known_by: Optional[List[str]] = None,
+        tags: Optional[List[str]] = None,
+        importance: Optional[float] = None,
+        source: str = "side_stage",
+    ) -> MemoryItem:
+        """写入已经由 Agent 压缩好的长期记忆或关键事件。
+
+        与 ``add_scene`` 不同，这里不再等待阈值触发压缩：材料本身
+        就是压缩产物，直接落到目标层；随后仍受该层容量与降级规则约束。
+        """
+        if tier not in ("long_term", "key_events"):
+            raise ValueError(f"不支持的目标层: {tier}")
+        witnesses = sorted({name for name in (known_by or []) if name})
+        if PUBLIC_VIEWERS.intersection(witnesses):
+            visibility: MemoryVisibility = "public"
+            witnesses = []
+        else:
+            visibility = "restricted" if witnesses else "public"
+        item = MemoryItem(
+            id=f"cond_{uuid.uuid4().hex[:10]}",
+            project_id=self.project_id,
+            tier=tier,
+            text=text,
+            summary=summarize(text),
+            importance=(
+                importance
+                if importance is not None
+                else score_compressed_importance(text, stage=tier)
+            ),
+            pinned=False,
+            scene_index=scene_index,
+            # 刚写入的压缩记忆从当前场景开始冷却，避免立即降级
+            last_hit_scene=scene_index,
+            visibility=visibility,
+            known_by=witnesses,
+            tags=sorted(set(tags or [])),
+            source=source,
+        )
+        self._put(item)
+        self.consolidate()
+        return item
+
     # ---------------- 伏笔投影 ----------------
 
     def sync_foreshadowings(self, foreshadowings: List[Any]) -> List[MemoryItem]:
@@ -606,7 +654,8 @@ class LayeredMemory:
         limit = k or self.settings.top_k
         pool = [
             item for item in self._items_in("archive")
-            if item.visible_to(viewer)
+            # 异步侧台的待推进请求是流程状态，不进入世界书检索
+            if item.source != "side_stage_pending" and item.visible_to(viewer)
         ]
         if self.backend_name == "hybrid":
             hits = self._backend.search(

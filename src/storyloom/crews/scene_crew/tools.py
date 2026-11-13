@@ -6,11 +6,67 @@ CrewAI Tools：供 Agent 在 kickoff 过程中按需调用（function call）。
 
 当前工具：
 - query_active_foreshadows: 查询当前活跃伏笔的详细状态
+- wake_character: 惰性唤醒不在场的重要角色（每次场景有调用预算）
+
+惰性调用原则：
+- 不在场的重要角色默认不创建 Agent、不消耗 LLM 调用；
+- 导演或在场的 ProtagonistAgent 认为剧情需要时，才通过 wake_character
+  临时唤醒该角色，拿到它的想法/台词/行动意图后继续叙事；
+- 导演模式同步唤醒；游戏模式只登记 pending 记忆条目，由引擎在
+  回合间推进（drain_side_stage）后以「侧台回响」送达。
 """
 
-from typing import Any, Optional
+import re
+import uuid
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, List, Optional, Tuple
 
 from crewai.tools import tool
+
+from storyloom.crews.scene_crew.offscreen import (
+    SideStageEvent,
+    detect_participants,
+    queue_side_stage,
+    resolve_side_stage,
+    select_participants,
+    write_side_stage_memory,
+)
+
+_EXPERIENCE_RE = re.compile(
+    r"【沉睡(?:期间)?(?:的)?经历】\s*(.*)$", re.S
+)
+_REPLY_RE = re.compile(r"【此刻(?:的)?回应】\s*(.*)$", re.S)
+
+
+def split_wake_output(text: str) -> Tuple[str, str]:
+    """把唤醒输出拆成「沉睡期间经历」与「此刻回应」。
+
+    模型未按格式输出时，整段内容都视为此刻回应。
+    """
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return "", ""
+
+    reply_match = _REPLY_RE.search(cleaned)
+    if reply_match:
+        reply = reply_match.group(1).strip()
+        prefix = cleaned[: reply_match.start()]
+        exp_match = _EXPERIENCE_RE.search(prefix)
+        experience = exp_match.group(1).strip() if exp_match else ""
+        return experience, reply or cleaned
+
+    exp_match = _EXPERIENCE_RE.search(cleaned)
+    if exp_match:
+        experience = exp_match.group(1).strip()
+        remainder = cleaned[exp_match.end():].strip()
+        return experience, remainder or cleaned
+
+    return "", cleaned
+
+
+if TYPE_CHECKING:  # 仅用于类型提示，避免与 crew.py 循环导入
+    from storyloom.crews.scene_crew.crew import SceneCrew
+    from storyloom.memory.models import CharacterAsset, NovelProject
 
 
 @tool("query_active_foreshadows")
@@ -73,3 +129,465 @@ def query_active_foreshadows(
         )
 
     return "\n".join(lines)
+
+
+@dataclass
+class WakeRecord:
+    """一次惰性唤醒的完整记录，供叙事与排查使用。"""
+
+    character: str
+    reason: str
+    source: str
+    response: str
+    experience: str = ""
+    side_stage: Optional[SideStageEvent] = None
+
+
+@dataclass
+class CharacterWakeRegistry:
+    """惰性角色唤醒登记表：为一次场景提供 wake_character 工具。
+
+    设计要点：
+    - 默认不为不在场角色创建 Agent，只有工具被调用才实例化；
+    - 同一角色在本次场景内只真正唤醒一次，重复调用直接返回缓存；
+    - 每次场景有唤醒预算（默认 2 次），避免函数调用被滥用导致成本失控；
+    - 只允许唤醒 primary / secondary 角色，background 交给群像叙事带过；
+    - 唤醒结果统一记录，最后拼进角色日志交给 ProseAgent。
+    """
+
+    crew: "SceneCrew"
+    project: "NovelProject"
+    present_chars: List[str]
+    memory: Any = None
+    scene_brief: str = ""
+    intent: str = ""
+    scene_index: int = 0
+    max_wakes: int = 2
+    max_side_participants: int = 2
+    #: 游戏模式：唤醒只登记，回应在后续回合以「侧台回响」送达
+    defer_side_stage: bool = False
+    records: List[WakeRecord] = field(default_factory=list)
+    _count: int = field(default=0, init=False)
+    _cache: dict = field(default_factory=dict, init=False)
+    _event_cache: dict = field(default_factory=dict, init=False)
+    _remembered_events: set = field(default_factory=set, init=False)
+    _queued: set = field(default_factory=set, init=False)
+
+    @property
+    def wake_count(self) -> int:
+        return self._count
+
+    def wakeable_characters(self) -> List["CharacterAsset"]:
+        """返回允许被唤醒的角色（不在场且非背景）。"""
+        present = set(self.present_chars)
+        return [
+            char
+            for char in self.project.characters
+            if char.name not in present
+            and char.importance_tier != "background"
+        ]
+
+    def prompt_block(self) -> str:
+        """给持有 wake_character tool 的 Agent 的提示块。"""
+        candidates = self.wakeable_characters()
+        mode_hint = (
+            "游戏模式：唤醒是异步的。调用后本回合只得到「已登记」，"
+            "对方的回应与沉睡期间的互动会在后续回合以「侧台回响」送达；"
+            "本回合请按「消息已发出、尚未收到回复」处理，"
+            "不要让在场角色替对方回答。\n"
+            if self.defer_side_stage
+            else "导演模式：唤醒是同步的，响应会立刻回到本场角色日志。\n"
+        )
+        if not candidates:
+            return f"【可唤醒角色】: （无，所有重要角色均已在场）\n{mode_hint}"
+        names = ", ".join(
+            f"{c.name}（{c.importance_tier}）" for c in candidates
+        )
+        return (
+            f"【可唤醒角色（不在场，按需 function call）】: {names}\n"
+            '调用方式：wake_character(character="角色名", '
+            'reason="为什么需要他/她，以及希望他/她回应什么", '
+            'involves="可选：他/她沉睡期间可能互动的其他不在场角色名，逗号分隔")。\n'
+            "若你知道被唤醒角色最近和其他沉睡角色有互动，务必填写 involves："
+            "侧台导演会一次性裁决互动并补全所有参与者的记忆，避免各说各话。\n"
+            "只有剧情确实需要该角色通过消息、回忆、远程联络或突然到场参与时才调用；"
+            "已在场角色不要唤醒；"
+            f"本场最多唤醒 {self.max_wakes} 人。\n"
+            f"{mode_hint}"
+        )
+
+    def make_tool(self, source: str) -> Any:
+        """为指定来源（导演 / 某位在场主角）生成一个绑定本场景的唤醒工具。"""
+
+        @tool("wake_character")
+        def wake_character(
+            character: str,
+            reason: str = "",
+            involves: str = "",
+        ) -> str:
+            """唤醒一名不在场的重要角色，获取他/她此刻的想法、台词或行动意图。
+
+            仅在剧情确实需要该角色通过消息、回忆、远程联络或突然到场参与时调用。
+            已在场角色不需要调用；本次场景最多唤醒 2 名角色。
+            游戏模式下本工具只登记异步唤醒，回应会在后续回合送达。
+
+            Args:
+                character: 角色姓名，必须在作品的 important 角色列表中。
+                reason: 为什么需要唤醒他/她，以及希望他/她回应什么。
+                involves: 可选。他/她沉睡期间可能互动的其他不在场角色名，
+                    逗号分隔。填写后侧台导演会统一裁决互动，并补全所有
+                    参与者的私有记忆。
+            """
+            return self._wake(character, reason, source, involves)
+
+        return wake_character
+
+    def wake(
+        self,
+        character: str,
+        reason: str = "",
+        involves: str = "",
+        source: str = "async",
+    ) -> str:
+        """同步唤醒入口：供异步侧台在回合间推进时复用。"""
+        return self._wake(character, reason, source, involves)
+
+    def _wake(
+        self,
+        character: str,
+        reason: str,
+        source: str,
+        involves: str = "",
+    ) -> str:
+        name = (character or "").strip()
+        char = self.project.get_character(name)
+        if char is None:
+            candidates = ", ".join(
+                c.name for c in self.wakeable_characters()
+            ) or "（无）"
+            return (
+                f"唤醒失败：作品中没有角色「{name}」。"
+                f"可唤醒角色：{candidates}"
+            )
+
+        if char.importance_tier == "background":
+            return (
+                f"「{name}」是背景角色，不单独唤醒；"
+                "请在群像行动日志或正文中一笔带过。"
+            )
+
+        if name in self.present_chars:
+            return (
+                f"「{name}」已在场，无需唤醒；"
+                "直接让在场 Agent 给出反应即可。"
+            )
+
+        if name in self._cache:
+            cached_text, cached_event = self._cache[name]
+            return self._render(
+                name, cached_text, cached=True, event=cached_event
+            )
+
+        if name in self._queued:
+            return (
+                f"「{name}」已登记异步唤醒，回应会在后续回合以"
+                "「侧台回响」送达，无需重复登记。"
+            )
+
+        if self._count >= self.max_wakes:
+            return (
+                f"本次场景的唤醒预算已用完（上限 {self.max_wakes} 次）。"
+                "请基于已有信息继续推进，不要再唤醒新角色。"
+            )
+
+        self._count += 1
+
+        # 游戏模式：异步侧台。不调用任何 Agent，只把请求写成一条
+        # pending 记忆条目，回合间再由 drain_side_stage 推进。
+        if self.defer_side_stage and self.memory is not None:
+            explicit = select_participants(
+                self.project,
+                self.present_chars,
+                name,
+                involves,
+                limit=self.max_side_participants,
+            )
+            pending_id = queue_side_stage(
+                memory=self.memory,
+                focus=char,
+                participants=[char, *explicit],
+                reason=reason,
+                scene_brief=self.scene_brief,
+                intent=self.intent,
+                scene_index=self.scene_index,
+                source=source,
+            )
+            if pending_id is not None:
+                self._queued.add(name)
+                self.records.append(
+                    WakeRecord(
+                        character=name,
+                        reason=reason.strip(),
+                        source=source,
+                        response=(
+                            "已登记异步唤醒，回应将在后续回合送达"
+                        ),
+                    )
+                )
+                return self._render_deferred(name, explicit)
+
+        # 调用方显式指定了互动对象：先让侧台导演裁决，再带着
+        # 已确认的经历唤醒角色，避免角色先编造再被推翻。
+        explicit = select_participants(
+            self.project,
+            self.present_chars,
+            name,
+            involves,
+            limit=self.max_side_participants,
+        )
+        side_stage: Optional[SideStageEvent] = None
+        canonical_experience = ""
+        if explicit:
+            side_stage = self._resolve_event(
+                char, explicit, reason, ""
+            )
+            if side_stage is not None:
+                canonical_experience = side_stage.perspective_for(name)
+
+        prompt = self._build_prompt(
+            char, reason, source, canonical_experience
+        )
+        try:
+            agent = self.crew.build_protagonist(char)
+            output = agent.kickoff(prompt)
+            text = str(getattr(output, "raw", output) or "").strip()
+        except Exception as exc:  # noqa: BLE001 - 单次唤醒失败不阻断场景
+            return f"唤醒「{name}」失败：{exc}"
+
+        if not text:
+            return f"唤醒「{name}」成功，但对方没有给出有效回应。"
+
+        experience, reply = split_wake_output(text)
+
+        if side_stage is None:
+            # 调用方未指定，就从角色自述里检测是否提到了其他沉睡角色
+            detected = detect_participants(
+                self.project,
+                self.present_chars,
+                name,
+                experience,
+                limit=self.max_side_participants,
+            )
+            if detected:
+                side_stage = self._resolve_event(
+                    char, detected, reason, experience
+                )
+
+        if side_stage is not None:
+            # 侧台事实是权威版本：无论角色自述写了什么，都替换为
+            # 该角色在事件卡中的视角，避免留下自相矛盾的记忆。
+            canonical = side_stage.perspective_for(name)
+            experience = canonical or experience or side_stage.facts
+            self._remember_side_stage(side_stage)
+        else:
+            self._remember_experience(char, experience)
+
+        self._cache[name] = (text, side_stage)
+        self.records.append(
+            WakeRecord(
+                character=name,
+                reason=reason.strip(),
+                source=source,
+                response=reply,
+                experience=experience,
+                side_stage=side_stage,
+            )
+        )
+        return self._render(name, text, event=side_stage)
+
+    def _resolve_event(
+        self,
+        focus: "CharacterAsset",
+        others: List["CharacterAsset"],
+        reason: str,
+        draft_experience: str,
+    ) -> Optional[SideStageEvent]:
+        """同一组参与者在本次场景内只裁决一次。"""
+        participants = [focus, *others]
+        key = tuple(sorted(char.name for char in participants))
+        cached = self._event_cache.get(key)
+        if cached is not None:
+            return cached
+
+        event = resolve_side_stage(
+            crew=self.crew,
+            project=self.project,
+            participants=participants,
+            scene_brief=self.scene_brief,
+            reason=reason,
+            focus=focus.name,
+            intent=self.intent,
+            draft_experience=draft_experience,
+        )
+        if event is not None:
+            self._event_cache[key] = event
+        return event
+
+    def _remember_side_stage(self, event: SideStageEvent) -> None:
+        if event.event_id in self._remembered_events:
+            return
+        self._remembered_events.add(event.event_id)
+        write_side_stage_memory(
+            memory=self.memory,
+            project=self.project,
+            event=event,
+            scene_index=self.scene_index,
+        )
+
+    def _remember_experience(
+        self, char: "CharacterAsset", experience: str
+    ) -> None:
+        """把沉睡期间的经历写入该角色的私有近期记忆，供后续唤醒续接。"""
+        if not experience or self.memory is None:
+            return
+        try:
+            self.memory.add_scene(
+                scene_index=self.scene_index,
+                prose=f"{char.name}（不在场）：{experience}",
+                brief=f"{char.name}沉睡期间的经历",
+                present_characters=[char.name],
+                key=f"offscreen:{char.name}:{uuid.uuid4().hex[:8]}",
+            )
+        except Exception:  # noqa: BLE001 - 记忆写入失败不阻断唤醒
+            pass
+
+    def _render_deferred(
+        self,
+        name: str,
+        others: List["CharacterAsset"],
+    ) -> str:
+        """异步登记的即时回执：告诉调用方本回合不要替对方回答。"""
+        participants = "、".join(char.name for char in others) or "（未指定）"
+        return (
+            f"【已登记异步唤醒 {name}】\n"
+            "游戏模式的侧台是异步的：本次不会让该角色当场回答。\n"
+            f"侧台参与：{participants}\n"
+            "回应与沉睡期间的互动将在后续回合以「侧台回响」送达，"
+            "并同步写入记忆与世界书。\n"
+            "本回合请按「消息已发出、尚未收到回复」处理，"
+            "不要让在场角色替对方回答。"
+        )
+
+    def _render(
+        self,
+        name: str,
+        text: str,
+        cached: bool = False,
+        event: Optional[SideStageEvent] = None,
+    ) -> str:
+        suffix = "（本次场景已唤醒过，返回缓存回应）" if cached else ""
+        experience, reply = split_wake_output(text)
+        parts = [f"【已唤醒 {name}】{suffix}"]
+        if experience:
+            parts.append(f"【沉睡期间经历】{experience}")
+        parts.append(f"【此刻回应】{reply}")
+        if event is not None:
+            parts.append(f"【侧台事实】{event.facts}")
+            for message in event.messages:
+                parts.append(
+                    f"【侧台消息】{message['from']} → "
+                    f"{message['to']}：{message['content']}"
+                )
+        parts.append("（该回应已记入本场角色日志，会交给叙事者使用）")
+        return "\n".join(parts)
+
+    def _build_prompt(
+        self,
+        char: "CharacterAsset",
+        reason: str,
+        source: str,
+        canonical_experience: str = "",
+    ) -> str:
+        """为被唤醒角色构造最小上下文：人设 + 记忆 + 场景 + 唤醒原因。"""
+        memory_block = ""
+        rag = ""
+        if self.memory is not None:
+            try:
+                memory_block = self.memory.prompt_block(viewer=char.name)
+                rag = self.memory.retrieval_block(
+                    reason or self.scene_brief, k=3, viewer=char.name
+                )
+            except Exception:  # noqa: BLE001 - 记忆不可用不阻断唤醒
+                memory_block = ""
+                rag = ""
+
+        present = ", ".join(self.present_chars) or "（无）"
+        intent_block = f"\n【导演意图】\n{self.intent}\n" if self.intent else ""
+        canonical_block = (
+            "\n【侧台已确认的经历（必须以此为准，不得矛盾）】\n"
+            f"{canonical_experience}\n"
+            if canonical_experience
+            else ""
+        )
+        return (
+            f"你被导演临时唤到这一场戏的取景框外，"
+            f"仅以【{char.name}】的身份回应。\n"
+            f"【你是谁】性格/说话习惯: {char.persona}\n"
+            f"当前动机: {char.motivation}\n"
+            f"【此刻场景】{self.scene_brief or '（未提供）'}\n"
+            f"【在场角色】{present}\n"
+            f"【你的位置】你此刻不在上述场景中，只能依据自己的处境、"
+            f"记忆和消息渠道行动。\n"
+            f"【唤醒来源】{source}\n"
+            f"【唤醒原因】{reason or '导演需要你对当前局势做出反应'}\n"
+            f"【你的记忆】\n{memory_block or '（无）'}\n"
+            f"【相关记忆检索】\n{rag or '（无）'}\n"
+            f"{canonical_block}"
+            f"{intent_block}"
+            "输出必须分为两段，顺序固定：\n"
+            "【沉睡期间经历】你上一次出场之后到此刻（不在当前场景的这段时间）"
+            "去了哪、做了什么、见了谁、得知或隐瞒了什么。写 1~3 句具体、可追溯的经历；"
+            "即使只是待着，也要写清当时的状态。若上面已给出侧台确认经历，"
+            "直接据此复述，不要另编。这段经历会被写入你的私有记忆，"
+            "后续唤醒会继续沿用，不能与已有记忆矛盾。\n"
+            "【此刻回应】你此刻的想法、一句台词或一个可执行的行动意图（1~4 句）。\n"
+            "要求：只写这个角色知道的事；不替其他角色说话，"
+            "不描写自己看不到的事，不预知剧情。"
+        )
+
+    def transcript_block(self) -> str:
+        """把唤醒记录拼成一段可注入 actor_log 的文本。"""
+        if not self.records:
+            return ""
+        lines = ["【被唤醒角色的回应】（默认不在场，通过消息/回忆/远程方式参与）"]
+        seen_events = set()
+        for record in self.records:
+            reason = record.reason or "未说明"
+            lines.append(
+                f"- {record.character}"
+                f"（{record.source} 唤醒；原因：{reason}）"
+            )
+            if record.experience:
+                lines.append(f"  沉睡期间经历：{record.experience}")
+            lines.append(f"  此刻回应：{record.response}")
+            event = record.side_stage
+            if event is not None and event.event_id not in seen_events:
+                seen_events.add(event.event_id)
+                lines.append(
+                    "  侧台事实："
+                    f"{event.facts}（参与者："
+                    f"{', '.join(event.participant_names)}）"
+                )
+                for message in event.messages:
+                    lines.append(
+                        f"  侧台消息：{message['from']} → "
+                        f"{message['to']}：{message['content']}"
+                    )
+        return "\n".join(lines)
+
+
+__all__ = [
+    "CharacterWakeRegistry",
+    "WakeRecord",
+    "query_active_foreshadows",
+]

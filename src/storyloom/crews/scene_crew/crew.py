@@ -147,11 +147,26 @@ class SceneCrew:
     @agent
     def protagonist(self, char: Optional[CharacterAsset] = None) -> Agent:
         """主角 Agent：1 角色 = 1 实例，用最有创意表现力的模型"""
+        return self.build_protagonist(char)
+
+    def build_protagonist(
+        self,
+        char: Optional[CharacterAsset] = None,
+        extra_tools: Optional[List[Any]] = None,
+    ) -> Agent:
+        """构建主角 Agent（不经过 @agent 的缓存包装）。
+
+        extra_tools 用于注入按场景动态生成的 function-call 工具
+        （例如唤醒不在场重要角色的 wake_character）。这些工具随场景变化，
+        因此不能走 CrewAI 对 @agent 方法按参数缓存的路径。
+        """
+        tools = list(extra_tools or [])
         if char is None:
             return Agent(
                 config=self._config("protagonist"),
                 llm=self._llm("protagonist"),
                 verbose=True,
+                tools=tools,
             )
         llm = self._llm("protagonist", label=f"protagonist:{char.name}")
         return Agent(
@@ -163,6 +178,7 @@ class SceneCrew:
             ),
             llm=llm,
             verbose=False,
+            tools=tools,
         )
 
     @agent
@@ -198,8 +214,17 @@ class SceneCrew:
         2. 伏笔决策（foreshadow_ops）— 种植/强化/回收/颠覆
         3. 场景/回合意图（director_intent）— goal/tone/key_events
         4. 一致性自检（consistency）— 人设/时间线/设定冲突
+        """
+        return self.build_director()
 
-        Tools: query_active_foreshadows（按需查伏笔详情，不是每次都调）
+    def build_director(
+        self, extra_tools: Optional[List[Any]] = None
+    ) -> Agent:
+        """构建导演 Agent（不经过 @agent 的缓存包装）。
+
+        Tools:
+        - query_active_foreshadows（按需查伏笔详情，不是每次都调）
+        - extra_tools：按场景注入，例如 wake_character 惰性唤醒不在场角色
         """
         from storyloom.crews.scene_crew.tools import query_active_foreshadows
 
@@ -224,11 +249,34 @@ class SceneCrew:
             + "现在全部合并到你一个人身上——一次 kickoff 完成所有决策。"
             + "当需要查看伏笔详细状态（关联角色、预期揭示、即将超时）时，调用 query_active_foreshadows tool。"
         )
+        tools = [query_active_foreshadows, *(extra_tools or [])]
         return Agent(
             config=config,
             llm=self._llm("director"),
             verbose=True,
-            tools=[query_active_foreshadows],
+            tools=tools,
+        )
+
+    def build_offscreen_director(self) -> Agent:
+        """侧台导演：只裁决不在场角色之间的互动，不参与正文生成。
+
+        单独收窄 max_iter 且不挂工具，保证它只做一次结构化 JSON 输出。
+        """
+        return Agent(
+            role="侧台导演",
+            goal=(
+                "裁决不在场角色之间已经发生的互动，输出共同事实、"
+                "各角色视角与需要传递的消息，确保所有参与者的记忆一致。"
+            ),
+            backstory=(
+                "你不出现在正文里，也不替在场角色行动。"
+                "你只负责让沉睡角色在幕后发生的互动有唯一版本，"
+                "并让每个参与者只知道自己有渠道知道的部分。"
+            ),
+            llm=self._llm("director", label="offscreen_director"),
+            verbose=False,
+            allow_delegation=False,
+            max_iter=2,
         )
 
     @agent

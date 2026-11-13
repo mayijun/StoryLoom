@@ -34,6 +34,12 @@ from storyloom.crews.scene_crew.packet import (
     packet_to_result,
     parse_agent_packet,
 )
+from storyloom.crews.scene_crew.offscreen import (
+    drop_pending_side_stage,
+    parse_pending_request,
+    pending_side_stage,
+)
+from storyloom.crews.scene_crew.tools import CharacterWakeRegistry
 from storyloom.memory import LayeredMemory
 from storyloom.memory.models import (
     Foreshadowing,
@@ -292,12 +298,22 @@ class NarrativeEngine:
           → _advance_world(mode="director")
           → 返回 SceneResult(prose, director_json, project, world_state)
         """
+        # 回合间推进：先落地上一轮登记的异步侧台请求
+        side_stage_echo = await self.drain_side_stage(
+            project=project,
+            present_chars=present_chars,
+            scene_brief=scene_brief,
+        )
+        pre_context = (
+            {"side_stage_echo": side_stage_echo} if side_stage_echo else None
+        )
+
         narrate_result = await self._narrate(
             project=project,
             scene_brief=scene_brief,
             present_chars=present_chars,
             mode="director",
-            pre_context=None,
+            pre_context=pre_context,
             enable_crew=True,
             enable_consistency=True,
             max_retries=max_retries,
@@ -394,6 +410,13 @@ class NarrativeEngine:
             except Exception:
                 pass
 
+        # 回合间推进：把上一回合登记的异步侧台请求落地为记忆与世界书
+        side_stage_echo = await self.drain_side_stage(
+            project=project,
+            present_chars=present,
+            scene_brief=action_text.strip() or "(等待)",
+        )
+
         # ② 导演帧（先定节拍，再裁决） + GM adjudicate + idle_turns NPC round
         arc_planner = OutlinePlanner()
         arc_frame = frame or arc_planner.frame(world_state, goal=goal)
@@ -418,6 +441,10 @@ class NarrativeEngine:
                 "player_success": adjudication.success,
                 "outcome": adjudication.outcome,
             }
+
+        if side_stage_echo:
+            pre_context_gm = dict(pre_context_gm or {})
+            pre_context_gm["side_stage_echo"] = side_stage_echo
 
         # idle_turns >= 3 时触发 NPC 事件轮（硬编码降级），事件并入本回合 delta
         if idle_turns >= 3:
@@ -527,6 +554,97 @@ class NarrativeEngine:
         )
 
     # ------------------------------------------------------------------
+    # 回合间推进：异步侧台
+    # ------------------------------------------------------------------
+
+    async def drain_side_stage(
+        self,
+        *,
+        project: NovelProject,
+        present_chars: List[str],
+        scene_brief: str,
+        max_events: int = 2,
+    ) -> str:
+        """把上一回合登记的异步侧台请求落地。
+
+        游戏模式下 ``wake_character`` 只写入一条 pending 记忆条目；
+        下一次进入叙事（游戏回合或导演场景）时在这里统一推进：
+        裁决沉睡角色之间的互动、唤醒目标角色、把事实/视角/消息
+        写入短期记忆与世界书，并返回可注入叙事的「侧台回响」。
+        """
+        if self.crew is None or self.memory is None:
+            return ""
+        pending = pending_side_stage(self.memory)
+        if not pending:
+            return ""
+
+        registry = CharacterWakeRegistry(
+            crew=self.crew,
+            project=project,
+            present_chars=list(present_chars),
+            memory=self.memory,
+            scene_brief=scene_brief,
+            scene_index=project.scene_count,
+            max_wakes=max_events,
+            defer_side_stage=False,
+        )
+        present = set(present_chars)
+        seen_focus: set = set()
+        processed = 0
+
+        for item in pending:
+            if processed >= max_events:
+                break
+            item_id = getattr(item, "id", "")
+            payload = parse_pending_request(getattr(item, "text", "") or "")
+            if not payload:
+                drop_pending_side_stage(self.memory, item_id)
+                continue
+
+            focus = str(payload.get("focus") or "").strip()
+            char = project.get_character(focus)
+            if (
+                char is None
+                or char.importance_tier == "background"
+                or focus in present
+                or focus in seen_focus
+            ):
+                # 角色已删除 / 已到场 / 重复登记：无需远程回复
+                drop_pending_side_stage(self.memory, item_id)
+                continue
+            seen_focus.add(focus)
+
+            others = [
+                str(name)
+                for name in (payload.get("participants") or [])
+                if name and str(name) != focus
+            ]
+            before = len(registry.records)
+            try:
+                await asyncio.to_thread(
+                    registry.wake,
+                    focus,
+                    str(payload.get("reason") or ""),
+                    ", ".join(others),
+                    f"async:{payload.get('source') or 'director'}",
+                )
+            except Exception:  # noqa: BLE001 - 单个请求失败不影响其他
+                pass
+            # 无论成功与否都清理请求，避免每回合反复重试
+            drop_pending_side_stage(self.memory, item_id)
+            if len(registry.records) > before:
+                processed += 1
+
+        block = registry.transcript_block()
+        if not block:
+            return ""
+        return (
+            "【侧台回响】以下远程互动在回合之间已经发生，"
+            "请在本回合自然带入：\n"
+            f"{block}"
+        )
+
+    # ------------------------------------------------------------------
     # 内部统一方法 1: 叙事生成（Director → 可选 Crew → Prose）
     # ------------------------------------------------------------------
 
@@ -556,6 +674,23 @@ class NarrativeEngine:
         一致性: DirectorAgent JSON 的 consistency 字段 + 硬编码规则
                 严重冲突触发 retry
         """
+        # ---- Step 0: 惰性角色唤醒登记表 ----
+        # 不在场的重要角色默认不创建 Agent；导演/在场主角通过 wake_character
+        # tool 唤醒后，回应会进入 actor_log 交给 ProseAgent。
+        wake_registry: Optional[CharacterWakeRegistry] = None
+        if self.crew is not None:
+            wake_registry = CharacterWakeRegistry(
+                crew=self.crew,
+                project=project,
+                present_chars=list(present_chars),
+                memory=self.memory,
+                scene_brief=scene_brief,
+                scene_index=project.scene_count,
+                max_wakes=2,
+                # 游戏模式走异步侧台：只登记，回应在回合间推进后送达
+                defer_side_stage=(mode == "game"),
+            )
+
         # ---- Step 1: DirectorAgent kickoff ----
         director_json = {}
         for attempt in range(max_retries + 1):
@@ -571,8 +706,21 @@ class NarrativeEngine:
                 mode=mode,
                 pre_context=pre_context,
             )
+            if wake_registry is not None:
+                # 只有实际给导演挂了 wake_character tool 时才在 prompt 里
+                # 宣传该能力，避免其他导演调用（如裁定）误用不存在的工具。
+                director_prompt = (
+                    f"{director_prompt}\n{wake_registry.prompt_block()}"
+                )
+            director_agent = self.crew.build_director(
+                extra_tools=(
+                    [wake_registry.make_tool(source="director")]
+                    if wake_registry is not None
+                    else None
+                )
+            )
             raw = await self._kickoff(
-                agent=self.crew.director(),
+                agent=director_agent,
                 prompt=director_prompt,
                 timeout_s=90.0,
             )
@@ -616,6 +764,12 @@ class NarrativeEngine:
         if not director_json:
             director_json = self._fallback_director_json(scene_brief, mode)
 
+        if wake_registry is not None:
+            wake_registry.intent = json.dumps(
+                director_json.get("director_intent", {}),
+                ensure_ascii=False,
+            )
+
         # ---- Step 2: 动态 Crew（option） ----
         actor_log = ""
         rag_context = (
@@ -633,10 +787,23 @@ class NarrativeEngine:
                 director_json=director_json,
                 rag_context=rag_context,
                 memory_query=scene_brief,
+                wake_registry=wake_registry,
             )
         else:
             # 游戏模式、禁用 Crew、或 crew 不可用 → actor_log 直接从 pre_context 取
             actor_log = self._actor_log_from_pre_context(pre_context)
+
+        # 导演或在场主角可能已唤醒不在场角色：把回应并入角色日志，
+        # 让 ProseAgent 真正使用这些「远程参与」的言行。
+        if wake_registry is not None:
+            wake_log = wake_registry.transcript_block()
+            if wake_log:
+                actor_log = f"{actor_log}\n\n{wake_log}".strip()
+
+        # 异步侧台在回合间推进的结果，本回合由叙事者自然带入
+        side_stage_echo = (pre_context or {}).get("side_stage_echo") or ""
+        if side_stage_echo:
+            actor_log = f"{actor_log}\n\n{side_stage_echo}".strip()
 
         # ---- Step 3: ProseAgent kickoff ----
         prose = ""
@@ -881,12 +1048,21 @@ class NarrativeEngine:
 
         pre_context_str = ""
         if pre_context:
-            pre_context_str = (
-                "\n\n【GM 裁决结果】（仅游戏模式有）\n"
-                f"裁决叙事: {pre_context.get('gm_verdict', '')}\n"
-                f"玩家是否成功: {'是' if pre_context.get('player_success') else '否'}\n"
-                f"结局类型: {pre_context.get('outcome', '')}\n"
-            )
+            if mode == "game" and "gm_verdict" in pre_context:
+                pre_context_str = (
+                    "\n\n【GM 裁决结果】\n"
+                    f"裁决叙事: {pre_context.get('gm_verdict', '')}\n"
+                    f"玩家是否成功: {'是' if pre_context.get('player_success') else '否'}\n"
+                    f"结局类型: {pre_context.get('outcome', '')}\n"
+                )
+            echo = pre_context.get("side_stage_echo")
+            if echo:
+                pre_context_str += (
+                    "\n【侧台回响（上一回合异步落地）】\n"
+                    f"{echo}\n"
+                    "请在本场叙事中自然带入这些远程互动，"
+                    "不要重复已发生的事实，也不要替角色补充新的秘密。\n"
+                )
 
         extension_block = ""
         if self.extensions is not None:
@@ -973,6 +1149,7 @@ class NarrativeEngine:
         director_json: Dict[str, Any],
         rag_context: str,
         memory_query: str = "",
+        wake_registry: Optional[CharacterWakeRegistry] = None,
     ) -> str:
         """
         动态 Crew 组装 + kickoff。
@@ -1001,6 +1178,21 @@ class NarrativeEngine:
             indent=2,
         )
 
+        wakeable_names = (
+            [c.name for c in wake_registry.wakeable_characters()]
+            if wake_registry is not None
+            else []
+        )
+        wake_hint = (
+            "\n若你需要联系不在场的重要角色（"
+            + ", ".join(wakeable_names)
+            + "），可调用 wake_character tool 唤醒他/她；"
+            "若知道对方最近和其他沉睡角色有互动，传入 involves；"
+            "不需要时不要调用。\n"
+            if wakeable_names
+            else ""
+        )
+
         def char_memory(char) -> tuple[str, str]:
             if not self.memory:
                 return "", rag_context
@@ -1012,7 +1204,12 @@ class NarrativeEngine:
             )
 
         for char in primary_chars:
-            agent = self.crew.protagonist(char)
+            extra_tools = (
+                [wake_registry.make_tool(source=f"protagonist:{char.name}")]
+                if wake_registry is not None
+                else None
+            )
+            agent = self.crew.build_protagonist(char, extra_tools=extra_tools)
             memory_block, char_rag = char_memory(char)
             agents.append(agent)
             tasks.append(
@@ -1021,7 +1218,8 @@ class NarrativeEngine:
                         f"请以【{char.name}】的身份，给出这一刻的"
                         f"内心想法、台词和行动。\n"
                         f"简洁、符合人设，只写行动日志式的描述。"
-                        f"\n\n导演意图:\n{intent_str}\n\n"
+                        f"\n{wake_hint}"
+                        f"\n导演意图:\n{intent_str}\n\n"
                         f"RAG 上下文:\n{char_rag}\n\n"
                         f"记忆:\n{memory_block}\n"
                     ),
@@ -1402,8 +1600,14 @@ class NarrativeEngine:
         """游戏模式：从 GM 裁决结果构造 actor_log"""
         if not pre_context:
             return ""
+        parts = []
         verdict = pre_context.get("gm_verdict", "")
-        return f"[GM 裁决] {verdict}"
+        if verdict:
+            parts.append(f"[GM 裁决] {verdict}")
+        echo = pre_context.get("side_stage_echo")
+        if echo:
+            parts.append(str(echo))
+        return "\n\n".join(parts)
 
     @staticmethod
     def _fallback_director_json(

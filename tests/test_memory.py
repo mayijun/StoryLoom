@@ -50,6 +50,53 @@ def test_director_flow_retrieves_world_book_from_layered_memory(repo):
     assert memory.items["lore:map"].hits == 1
 
 
+def test_add_condensed_writes_requested_tier_with_scope(repo):
+    memory = LayeredMemory("p_cond", repo=repo)
+    long_item = memory.add_condensed(
+        "long_term",
+        "林晚确认老周替人转移货物，码头线索坐实。",
+        scene_index=3,
+        known_by=["林晚", "老周"],
+        tags=["side_stage"],
+        source="side_stage",
+    )
+    key_item = memory.add_condensed(
+        "key_events",
+        "老周向走私船转移关键木箱，被林晚目击。",
+        scene_index=3,
+        known_by=["林晚", "老周"],
+    )
+
+    assert long_item.tier == "long_term"
+    assert key_item.tier == "key_events"
+    assert long_item.visibility == "restricted"
+    assert long_item.known_by == ["林晚", "老周"]
+    assert long_item.last_hit_scene == 3
+
+    assert "林晚确认老周" in memory.prompt_block(viewer="林晚")
+    assert "林晚确认老周" not in memory.prompt_block(viewer="李四")
+
+    # 重启后仍停留在导演指定的层
+    reloaded = LayeredMemory("p_cond", repo=repo)
+    assert reloaded.items[long_item.id].tier == "long_term"
+    assert reloaded.items[key_item.id].tier == "key_events"
+
+
+def test_pending_side_stage_is_hidden_from_world_book_retrieval(repo):
+    memory = LayeredMemory("p_pending", repo=repo)
+    memory.add_archive_item(
+        "side_stage_pending:asp_1",
+        '{"focus": "林晚", "reason": "确认码头目击者"}',
+        tags=["side_stage_pending"],
+        visibility="restricted",
+        known_by=[],
+        source="side_stage_pending",
+    )
+
+    assert memory.retrieval_block("码头目击者", viewer="director") == ""
+    assert memory.retrieval_block("码头目击者") == ""
+
+
 def test_scene_memory_scopes_by_witnesses_and_crowd(repo):
     memory = LayeredMemory("p_scope", repo=repo)
     memory.add_scene(
