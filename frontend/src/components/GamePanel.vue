@@ -670,7 +670,7 @@ const statusBar = () => {
             <div v-if="!historyItems.length" class="empty">暂无关键事件</div>
             <ul v-else class="tier-items worldbook-items">
               <li v-for="item in historyItems" :key="item.id">
-                <div class="tier-text">{{ item.text }}</div>
+                <div class="tier-text">{{ item.tags?.includes('classical_storage') ? (item.summary || item.text) : item.text }}</div>
                 <div class="tier-tags">
                   <span>{{ itemSourceLabel(item) }}</span>
                   <span>{{ visibilityLabel(item) }}</span>

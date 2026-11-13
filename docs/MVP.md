@@ -91,9 +91,11 @@
 
 - 短期超过 `max_items`（默认 6）→ 取最旧 batch 压缩为长期；
 - 长期超过 `max_items`（默认 8）→ 压缩为 key_events / arc；
+- 关键事件溢出 → 按近期相关性与使用热度选择冷事件，完整迁入 L4，不合并或丢弃；
 - 长期重要性低于 0.35、连续 10 场景未命中、无活跃伏笔、非 pinned → 降级到 L4；
-- 降级记忆被检索并采用 2 次 → 回温为 `long_term`；
+- 普通降级记忆被检索并采用 2 次 → 回温为 `long_term`；溢出的关键事件回温为 `key_events`；
 - 核心三层（`short_term` / `long_term` / `key_events`）的容量、压缩与降级策略默认来自 `memory_config.default.yaml`，每项目可独立覆盖并落库到 `memory_configs`；
+- `compression.style=classical` 时压缩结果以文言存储，同时保留白话展示版；玩家/导演界面与所有 Agent prompt 始终读白话；
 - 检索后端 `fts` 默认，`vector` / `hybrid` 同级可选；无 embedding 时自动降级；
 
 ### 2.3 运行时架构预留（M0 就留对，不大手术）

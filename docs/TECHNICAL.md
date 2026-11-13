@@ -101,13 +101,23 @@ PLANTED ──→ REINFORCED ──→ ACTIVATED ──→ RESOLVED
 - **按项目配置**：记忆配置落 SQLite `memory_configs` 表（`MemoryConfigRow`），
   新建项目时自动从 YAML 播种，旧项目首次读取或运行迁移脚本时补种；
   `GET /api/projects/{id}/memory` 返回生效中的 `settings`；`PATCH` 按字段更新，
-  `key_events` / `demotion` / `retrieval` 递归合并、`tiers` 整体替换，合并结果经
+  `key_events` / `demotion` / `retrieval` / `compression` 递归合并、`tiers` 整体替换，合并结果经
   `MemorySettings` 校验后整体落库；`scripts/migrate_config_store.py` 可为已有项目补种或重置；
+- **压缩语言**：`compression.style` 可选 `vernacular`（默认）或 `classical`；
+  文言模式只改变存储文本（`memory_items.text`），同时把白话展示版写入 `summary`，
+  `prompt_block()` / `retrieval_block()` / 玩家与导演界面始终读取白话版；
+  LLM 未按约定返回双轨内容时退回白话压缩，Agent `memory_facts` 缺少
+  `display_text` 时回退到 `add_scene`，保证展示面不出现文言；
 - **生命周期**：短期超 `max_items` 取最旧 `compress_batch` 条压缩进长期；
-  长期超限压缩进 key_events；长期记忆与历史事件都可按各自阈值冷却到 archive：
+  长期超限压缩进 key_events；关键事件超限时不合并或丢弃，而是以 working、短期、
+  长期记忆为近期上下文，按 embedding 相关性（不可用则词法命中）及使用、时间热度，
+  将最冷事件连同原 ID、全文、重要度、可见性与统计原样迁入 archive；
+  pinned 与活跃伏笔不迁出，受保护事件可暂时超过容量；
+  长期记忆与历史事件都可按各自阈值冷却到 archive：
   `demotion.long_term` / `demotion.key_events` 分别配置 `importance_threshold` 与
   `miss_scenes`（重要度低于阈值且连续 N 场景未命中，且非 pinned / 无活跃伏笔）；
-  archive 命中 `reheat_hits` 次 → 回温为 long_term；
+  archive 命中 `reheat_hits` 次 → 普通冷却记忆回温为 long_term，
+  带 `key_event_overflow` 标记的事件回温为 key_events；
 - **持久化**：SQLite `memory_items` 表（`db/models.py`），按 `project_id + id` 隔离；
   重启后自动恢复；作品数据是事实来源，索引可重建；
 - **检索后端**：`fts`（默认，SQLite LIKE + 中文二元组打分）/ `vector`（需显式注入
@@ -153,6 +163,8 @@ demotion:
   long_term: { importance_threshold: 0.35, miss_scenes: 10 }
   key_events:     { importance_threshold: 0.30, miss_scenes: 20 }
   reheat_hits: 2
+compression:
+  style: vernacular     # vernacular | classical（文言存储 + 白话展示）
 ```
 
 ### 🎲 可控随机性

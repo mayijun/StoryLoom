@@ -13,7 +13,7 @@
 | `test_templates_integration.py` | 14 | 模板端到端集成 |
 | `test_chapter_structure.py` | 13 | 章节结构与场景归属 |
 | `test_m0.py` | 27 | M0 验收 A1–A15 + 运行时保护 |
-| `test_memory_compression.py` | 13 | 记忆分层压缩 / 降级回温 / 按层阈值 |
+| `test_memory_compression.py` | 20 | 记忆分层压缩 / 无损溢出 / 文言双轨 / 降级回温 / 按层阈值 |
 | `test_m0_api.py` | 13 | M0 API（game / memory / extensions） |
 | `test_db_config.py` | 7 | Agent/Task 配置种子与迁移 |
 | `test_flow.py` | 6 | 作者模式 Flow 与伏笔操作 |
@@ -244,14 +244,20 @@
 | `test_turn_timeout_returns_timeout_status` | 回合超时返回 timeout 状态 |
 | `test_turn_quota_exceeded` | 回合配额耗尽拒绝 |
 
-### 3.3 记忆分层压缩与配置 — `test_memory_compression.py`（13）
+### 3.3 记忆分层压缩与配置 — `test_memory_compression.py`（20）
 
 | 用例 | 验证点 |
 |---|---|
 | `test_short_to_long_uses_llm_compression_prompt` | 短期→长期使用 LLM 压缩提示词 |
 | `test_long_to_history_keeps_only_key_events` | 长期→key_events 只保留关键事件 |
 | `test_fallback_compression_drops_scenery_keeps_key_fact` | LLM 压缩失败时确定性兜底保留关键事实 |
-| `test_history_overflow_merges_inside_history_not_world_book` | key_events 溢出在关键事件内部合并，不写世界书 |
+| `test_key_events_overflow_cools_coldest_without_losing_information` | 两种旧配置均无损迁出冷事件，持久化后保留全文并回温到 key_events |
+| `test_key_event_overflow_uses_embedding_relevance` | embedding 根据近期剧情语义相关性保留热事件 |
+| `test_protected_key_events_may_exceed_capacity_without_data_loss` | pinned 与活跃伏笔可超容量常驻，不压缩或丢弃 |
+| `test_classical_compression_keeps_vernacular_for_display` | 文言压缩后 prompt / 检索 / 存档均保留白话展示版 |
+| `test_classical_compression_without_display_falls_back_to_vernacular` | 模型未返回白话版时退回白话压缩，展示面不出现文言 |
+| `test_agent_memory_fact_uses_display_text_in_classical_mode` | Agent fact 的 display_text 进入展示摘要 |
+| `test_agent_memory_fact_without_display_falls_back_to_prose` | 缺少 display_text 时跳过 fact 并回退到白话场景摘要 |
 | `test_minor_long_term_memory_demotes_to_world_book_and_reheats` | 低价值长期记忆降级 + 命中回温 |
 | `test_simulated_31_turn_playthrough_tier_flow` | 31 回合模拟的完整层级流转 |
 | `test_prompt_block_separates_history_and_world_book` | prompt 中关键事件与世界书分区 |

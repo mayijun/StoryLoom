@@ -22,7 +22,7 @@ tiers:
 
 key_events:
   max_items: 20
-  # 关键事件溢出时在本层内部合并；不写入世界书，避免两层职责重叠
+  # 兼容字段：溢出始终按冷热程度无损迁入世界书，不合并、压缩或丢弃。
   compress_into: key_events
   compress_max_chars: 500
   compress_hint: "只记录改变世界格局或主线走向的事件：转折、死亡、背叛、契约、身份揭示、伏笔回收"
@@ -44,3 +44,8 @@ demotion:
 retrieval:
   backend: fts        # fts | vector | hybrid
   top_k: 5
+
+compression:
+  # vernacular: 白话存储；classical: 文言存储 + 白话展示。
+  # 文言模式只提高存储密度，玩家/导演界面与 Agent prompt 始终读白话版。
+  style: vernacular

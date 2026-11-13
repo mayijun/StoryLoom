@@ -12,11 +12,18 @@ This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 """
 
 import re
-from typing import Iterable, List, Sequence
+from typing import Iterable, List, Sequence, Tuple
 
 from storyloom.memory.base import MemoryItem
 
 _SENTENCE_SPLIT = re.compile(r"[。！？!?；;\n]+")
+_CLASSICAL_STORAGE = re.compile(
+    r"【(?:文言存储|存储|文言)】\s*(.*?)(?=【(?:白话展示|展示|白话)】|$)",
+    re.S,
+)
+_VERNACULAR_DISPLAY = re.compile(
+    r"【(?:白话展示|展示|白话)】\s*(.*)$", re.S
+)
 
 # 与主线 / 伏笔 / 世界格局相关的信号词
 _HIGH_VALUE = (
@@ -47,6 +54,7 @@ def build_compress_prompt(
     items: Sequence[MemoryItem],
     max_chars: int,
     hint: str = "",
+    classical: bool = False,
 ) -> str:
     """构造压缩提示：目标层不同，保留标准不同。"""
     if target_tier == "key_events":
@@ -74,8 +82,53 @@ def build_compress_prompt(
         ]
     if hint:
         rules.insert(1, f"额外约束：{hint}")
+    if classical:
+        rules.extend(
+            [
+                "存储语言要求：",
+                f"1. 「文言存储」用文言文书写，尽量提高信息密度，不超过 {max_chars} 字；",
+                "2. 「白话展示」用现代白话文表达完全相同的信息，供玩家与导演阅读；",
+                "3. 严格按以下格式输出，不要标题、序号、解释或 Markdown：",
+                "【文言存储】",
+                "……",
+                "【白话展示】",
+                "……",
+            ]
+        )
     material = _material(items, limit=4000)
     return "\n".join(rules + ["", "【待压缩记录】", material])
+
+
+def parse_compressed_output(
+    raw: str, classical: bool = False
+) -> Tuple[str, str, bool]:
+    """解析 LLM 压缩输出。
+
+    返回 ``(存储文本, 白话展示文本, 是否双轨)``。文言模式下若模型没有按
+    约定同时给出两段，返回空存储文本，由调用方回退到确定性白话压缩，
+    确保展示面绝不出现文言文。
+    """
+    raw = (raw or "").strip()
+    if not classical or not raw:
+        return raw, raw, False
+    storage = _CLASSICAL_STORAGE.search(raw)
+    display = _VERNACULAR_DISPLAY.search(raw)
+    if storage is None and display is None:
+        # 没有标记：无法确认是文言还是白话，按白话双轨处理最安全。
+        return raw, raw, False
+    if storage is None or display is None:
+        return "", "", False
+    storage_text = _strip_fence(storage.group(1))
+    display_text = _strip_fence(display.group(1))
+    if not storage_text or not display_text:
+        return "", "", False
+    return storage_text, display_text, True
+
+
+def _strip_fence(text: str) -> str:
+    text = text.strip()
+    text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+    return re.sub(r"\s*```$", "", text).strip()
 
 
 def _material(items: Sequence[MemoryItem], limit: int = 4000) -> str:
@@ -228,4 +281,5 @@ __all__ = [
     "clamp_compressed_text",
     "fallback_compress",
     "is_empty_compression",
+    "parse_compressed_output",
 ]

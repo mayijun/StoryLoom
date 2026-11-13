@@ -120,7 +120,8 @@ class MemorySettings(BaseModel):
 
     tiers: List[TierSpec] = Field(default_factory=list)
     key_events_max_items: int = 20
-    # 关键事件溢出时默认在层内合并，不再写入世界书
+    # 旧配置字段仅为兼容保留：关键事件溢出统一无损冷却到 archive，
+    # 不再按 compress_into 合并或压缩，也不使用以下长度与提示词配置。
     key_events_compress_into: MemoryTier = "key_events"
     key_events_compress_max_chars: int = MEMORY_ITEM_MAX_CHARS
     key_events_compress_hint: str = ""
@@ -133,6 +134,12 @@ class MemorySettings(BaseModel):
     reheat_hits: int = 2
     backend: Literal["fts", "vector", "hybrid"] = "fts"
     top_k: int = 5
+    # 压缩存储语言：vernacular 白话；classical 文言存储 + 白话展示
+    compression_style: Literal["vernacular", "classical"] = "vernacular"
+
+    @property
+    def classical_compression(self) -> bool:
+        return self.compression_style == "classical"
 
     def rule_for(self, tier: str) -> DemotionRule:
         rule = self.demotion_rules.get(tier)
@@ -154,6 +161,7 @@ class MemorySettings(BaseModel):
         key_events = raw.get("key_events", {}) or {}
         demotion = raw.get("demotion", {}) or {}
         retrieval = raw.get("retrieval", {})
+        compression = raw.get("compression", {}) or {}
         legacy_threshold = float(
             demotion.get("importance_threshold", 0.35)
         )
@@ -198,6 +206,7 @@ class MemorySettings(BaseModel):
             reheat_hits=int(demotion.get("reheat_hits", 2)),
             backend=retrieval.get("backend", "fts"),
             top_k=int(retrieval.get("top_k", 5)),
+            compression_style=compression.get("style", "vernacular"),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -220,6 +229,7 @@ class MemorySettings(BaseModel):
                 "reheat_hits": self.reheat_hits,
             },
             "retrieval": {"backend": self.backend, "top_k": self.top_k},
+            "compression": {"style": self.compression_style},
         }
 
     @classmethod

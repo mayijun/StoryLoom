@@ -13,13 +13,14 @@ import asyncio
 import pytest
 
 from storyloom.db import CrewConfigRepository, reset_engines, reset_repositories
-from storyloom.engine.narrative import NarrativeEngine, TurnBoot
+from storyloom.engine.narrative import NarrativeEngine, TurnBoot, _apply_memory_facts
 from storyloom.memory import (
     DemotionRule,
     LayeredMemory,
     MemoryItem,
     MemorySettings,
     TierSpec,
+    VectorBackend,
 )
 from storyloom.memory.scoring import score_compressed_importance
 from storyloom.memory.models import CharacterAsset, LocationAsset, NovelProject
@@ -131,7 +132,10 @@ def test_fallback_compression_drops_scenery_keeps_key_fact(repo):
     assert all(len(item.text) <= 220 for item in memory._items_in("long_term"))
 
 
-def test_history_overflow_merges_inside_history_not_world_book(repo):
+@pytest.mark.parametrize("compress_into", ["key_events", "archive"])
+def test_key_events_overflow_cools_coldest_without_losing_information(
+    repo, compress_into
+):
     fake = FakeCompressor()
     settings = MemorySettings(
         tiers=[
@@ -151,34 +155,178 @@ def test_history_overflow_merges_inside_history_not_world_book(repo):
             ),
         ],
         key_events_max_items=3,
-        key_events_compress_into="key_events",
+        key_events_compress_into=compress_into,
         key_events_compress_max_chars=240,
+        reheat_hits=2,
     )
     memory = LayeredMemory(
-        "p_key_events_overflow", repo=repo, settings=settings, compress_fn=fake
+        f"p_key_events_overflow_{compress_into}",
+        repo=repo,
+        settings=settings,
+        compress_fn=fake,
     )
-
-    for index in range(4):
-        memory._put(
-            MemoryItem(
-                id=f"key_events:{index}",
-                tier="key_events",
-                text=f"事件：旧事件 {index}；影响：世界继续运转。",
-                summary=f"事件 {index}",
-                importance=1.0,
-                pinned=True,
-                scene_index=index,
-            )
+    memory._put(
+        MemoryItem(
+            id="long:recent",
+            tier="long_term",
+            text="林凡正在青云宗守护封印。",
+            summary="林凡守护青云宗封印",
+            scene_index=10,
+            last_hit_scene=10,
         )
+    )
+    events = [
+        MemoryItem(
+            id="key_events:hot",
+            tier="key_events",
+            text="林凡在青云宗击败来敌，改变主线。",
+            summary="林凡在青云宗击败来敌",
+            importance=0.95,
+            scene_index=0,
+            last_hit_scene=0,
+            visibility="restricted",
+            known_by=["林凡"],
+        ),
+        MemoryItem(
+            id="key_events:cold",
+            tier="key_events",
+            text="北境旧王病逝，诸国格局改变。",
+            summary="北境旧王病逝",
+            importance=0.9,
+            scene_index=1,
+            last_hit_scene=1,
+        ),
+        MemoryItem(
+            id="key_events:warm",
+            tier="key_events",
+            text="南海舰队叛变，改变海上格局。",
+            summary="南海舰队叛变",
+            importance=0.85,
+            scene_index=2,
+            hits=1,
+            last_hit_scene=2,
+        ),
+        MemoryItem(
+            id="key_events:new",
+            tier="key_events",
+            text="西漠神女公开真实身份。",
+            summary="西漠神女公开身份",
+            importance=0.8,
+            scene_index=3,
+            last_hit_scene=3,
+        ),
+    ]
+    original_ids = {item.id for item in events}
+    for item in events:
+        memory._put(item)
+    original_cold = memory.items["key_events:cold"].model_copy(deep=True)
 
     memory.consolidate()
 
-    assert memory.counts()["key_events"] <= 3
-    assert memory.counts()["archive"] == 0
-    assert all(
-        item.source != "compressed"
-        for item in memory._items_in("archive")
+    assert memory.counts()["key_events"] == 3
+    assert memory.counts()["archive"] == 1
+    assert set(memory.items) == original_ids | {"long:recent"}
+    assert memory.items["key_events:hot"].tier == "key_events"
+    cold = memory.items["key_events:cold"]
+    assert cold.tier == "archive"
+    assert cold.source == "demoted"
+    assert {"demoted", "key_event_overflow"}.issubset(cold.tags)
+    for field in (
+        "id", "text", "summary", "importance", "scene_index",
+        "hits", "adoptions", "last_hit_scene", "visibility", "known_by",
+    ):
+        assert getattr(cold, field) == getattr(original_cold, field)
+    assert fake.prompts == []
+
+    reloaded = LayeredMemory(
+        memory.project_id, repo=repo, settings=settings, compress_fn=fake
     )
+    assert reloaded.items[cold.id].tier == "archive"
+    assert reloaded.items[cold.id].text == original_cold.text
+
+    memory.retrieve("北境旧王", current_scene=11)
+    assert cold.tier == "archive"
+    memory.retrieve("北境旧王", current_scene=12)
+    assert cold.tier == "key_events"
+    assert cold.source == "reheated"
+    assert cold.text == original_cold.text
+
+    # 回温后由下一次整理按最新热度选冷事件，不回退到压缩或丢弃。
+    memory.consolidate()
+    assert memory.counts()["key_events"] == 3
+    assert memory.counts()["archive"] == 1
+    assert set(memory.items) == original_ids | {"long:recent"}
+    assert cold.tier == "key_events"
+    assert fake.prompts == []
+
+
+def test_key_event_overflow_uses_embedding_relevance(repo):
+    def embedding(text: str) -> list[float]:
+        if "dragon" in text.lower() or "龙" in text:
+            return [1.0, 0.0]
+        return [0.0, 1.0]
+
+    memory = LayeredMemory(
+        "p_key_events_embedding",
+        repo=repo,
+        settings=MemorySettings(tiers=[], key_events_max_items=1),
+        vector=VectorBackend(embedding_fn=embedding),
+    )
+    memory._put(
+        MemoryItem(
+            id="long:recent",
+            tier="long_term",
+            text="dragon attacks the city",
+            summary="dragon attacks",
+        )
+    )
+    memory._put(
+        MemoryItem(
+            id="key_events:semantic_hot",
+            tier="key_events",
+            text="巨龙摧毁王城。",
+            summary="巨龙摧毁王城",
+            scene_index=0,
+        )
+    )
+    memory._put(
+        MemoryItem(
+            id="key_events:cold",
+            tier="key_events",
+            text="北境旧王病逝。",
+            summary="北境旧王病逝",
+            scene_index=1,
+        )
+    )
+
+    memory.consolidate()
+
+    assert memory.items["key_events:semantic_hot"].tier == "key_events"
+    assert memory.items["key_events:cold"].tier == "archive"
+
+
+def test_protected_key_events_may_exceed_capacity_without_data_loss(repo):
+    fake = FakeCompressor()
+    memory = LayeredMemory(
+        "p_key_events_protected",
+        repo=repo,
+        settings=MemorySettings(tiers=[], key_events_max_items=1),
+        compress_fn=fake,
+    )
+    memory._put(
+        MemoryItem(id="key:pinned", tier="key_events", pinned=True)
+    )
+    memory._put(
+        MemoryItem(
+            id="key:foreshadow", tier="key_events", active_foreshadow=True
+        )
+    )
+
+    memory.consolidate()
+
+    assert memory.counts()["key_events"] == 2
+    assert memory.counts()["archive"] == 0
+    assert fake.prompts == []
 
 
 def test_minor_long_term_memory_demotes_to_world_book_and_reheats(repo):
@@ -489,3 +637,153 @@ def test_demotion_skips_pinned_and_active_foreshadowing(repo):
     assert memory.evaluate_demotion(100) == []
     assert memory.items["pinned_key_events"].tier == "key_events"
     assert memory.items["foreshadow_long"].tier == "long_term"
+
+
+class DualCompressor:
+    """文言存储 + 白话展示的伪装压缩模型。"""
+
+    def __init__(self, with_display: bool = True) -> None:
+        self.prompts: list[str] = []
+        self.with_display = with_display
+
+    def __call__(self, prompt: str) -> str:
+        self.prompts.append(prompt)
+        if not self.with_display:
+            return "【文言存储】\n林凡入青云，败敌，主线易。"
+        return (
+            "【文言存储】\n林凡入青云，败敌，主线易。\n"
+            "【白话展示】\n林凡进入青云宗，击败敌人，主线发生变化。"
+        )
+
+
+def _classical_settings() -> MemorySettings:
+    return MemorySettings(
+        tiers=[
+            TierSpec(
+                name="short_term",
+                max_items=2,
+                compress_batch=2,
+                compress_into="long_term",
+                compress_max_chars=200,
+            )
+        ],
+        compression_style="classical",
+    )
+
+
+def _seed_short_term(memory: LayeredMemory) -> None:
+    for index in range(3):
+        memory._put(
+            MemoryItem(
+                id=f"short:{index}",
+                tier="short_term",
+                text="林凡进入青云宗，击败敌人，主线发生变化。",
+                summary="林凡进入青云宗，击败敌人，主线发生变化。",
+                scene_index=index,
+            )
+        )
+
+
+def test_classical_compression_keeps_vernacular_for_display(repo):
+    fake = DualCompressor()
+    settings = _classical_settings()
+    assert MemorySettings.from_dict(settings.to_dict()).classical_compression
+    memory = LayeredMemory(
+        "p_classical_dual", repo=repo, settings=settings, compress_fn=fake
+    )
+    _seed_short_term(memory)
+
+    memory.consolidate()
+
+    assert "文言存储" in fake.prompts[0]
+    item = memory._items_in("long_term")[0]
+    assert item.text == "林凡入青云，败敌，主线易。"
+    assert item.summary == "林凡进入青云宗，击败敌人，主线发生变化。"
+    assert "classical_storage" in item.tags
+
+    block = memory.prompt_block(viewer="director")
+    assert item.summary in block
+    assert item.text not in block
+    item.tier = "archive"
+    memory._put(item)
+    rag = memory.retrieval_block(
+        "林凡进入青云宗，击败敌人", viewer="director"
+    )
+    assert item.summary in rag
+    assert item.text not in rag
+
+    reloaded = LayeredMemory(
+        memory.project_id, repo=repo, settings=settings, compress_fn=fake
+    )
+    stored = reloaded.items[item.id]
+    assert stored.text == item.text
+    assert stored.summary == item.summary
+
+
+def test_classical_compression_without_display_falls_back_to_vernacular(repo):
+    fake = DualCompressor(with_display=False)
+    memory = LayeredMemory(
+        "p_classical_fallback",
+        repo=repo,
+        settings=_classical_settings(),
+        compress_fn=fake,
+    )
+    _seed_short_term(memory)
+
+    memory.consolidate()
+
+    item = memory._items_in("long_term")[0]
+    assert item.text == item.summary
+    assert "classical_storage" not in item.tags
+    assert "林凡入青云" not in item.text
+    assert "林凡进入青云宗" in item.text
+    assert "林凡入青云" not in memory.prompt_block(viewer="director")
+
+
+def test_agent_memory_fact_uses_display_text_in_classical_mode(repo):
+    memory = LayeredMemory(
+        "p_classical_agent",
+        repo=repo,
+        settings=MemorySettings(tiers=[], compression_style="classical"),
+    )
+    _apply_memory_facts(
+        memory=memory,
+        facts=[
+            {
+                "tier": "short_term",
+                "text": "林凡入青云，败敌。",
+                "display_text": "林凡进入青云宗，击败敌人。",
+            }
+        ],
+        scene_index=1,
+        prose="林凡进入青云宗，击败敌人。",
+        brief="",
+        present_chars=["林凡"],
+    )
+
+    item = memory._items_in("short_term")[0]
+    assert item.text == "林凡入青云，败敌。"
+    assert item.summary == "林凡进入青云宗，击败敌人。"
+    assert "classical_storage" in item.tags
+    assert "林凡入青云" not in memory.prompt_block(viewer="director")
+
+
+def test_agent_memory_fact_without_display_falls_back_to_prose(repo):
+    memory = LayeredMemory(
+        "p_classical_agent_fallback",
+        repo=repo,
+        settings=MemorySettings(tiers=[], compression_style="classical"),
+    )
+    _apply_memory_facts(
+        memory=memory,
+        facts=[{"tier": "short_term", "text": "林凡入青云，败敌。"}],
+        scene_index=1,
+        prose="林凡进入青云宗，击败敌人，主线因此改变。",
+        brief="",
+        present_chars=["林凡"],
+    )
+
+    items = memory._items_in("short_term")
+    assert items
+    assert all("林凡入青云" not in item.summary for item in items)
+    assert "林凡入青云" not in memory.prompt_block(viewer="director")

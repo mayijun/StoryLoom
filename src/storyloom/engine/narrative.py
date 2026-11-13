@@ -1082,6 +1082,21 @@ class NarrativeEngine:
                     + "\n"
                 )
 
+        classical_memory = bool(
+            self.memory is not None
+            and self.memory.settings.classical_compression
+        )
+        memory_fact_schema = (
+            '  "memory_facts": [ { "tier": "short_term", "text": "…", '
+            '"display_text": "…", "known_by": [], "tags": [] } ]\n'
+        )
+        memory_fact_rule = (
+            "memory_facts 用 text 存文言文，display_text 存同义白话文；"
+            "缺少 display_text 的记忆会被丢弃。"
+            if classical_memory
+            else "memory_facts 的 text 用白话文；display_text 可省略。"
+        )
+
         return (
             "你是本作导演兼创作总指挥。\n"
             f"{mode_hint}\n"
@@ -1098,7 +1113,7 @@ class NarrativeEngine:
             f"{extension_block}\n"
             "\n"
             "请输出一个 JSON 对象（不要 Markdown 代码围栏），"
-            "包含以下四个部分：\n"
+            "包含以下部分：\n"
             "{\n"
             '  "surprise_idea": { "type": "...", "description": "...", '
             '"should_happen": true, "severity": "minor|moderate|major", '
@@ -1106,9 +1121,11 @@ class NarrativeEngine:
             '  "director_intent": { "goal": "...", "tone": "...", '
             '"key_events": ["..."], "do_not_happen": ["..."] },\n'
             '  "foreshadow_ops": [ { "action": "plant|reinforce|resolve|subvert", ... } ],\n'
-            '  "consistency": { "passed": true, "conflicts": [], "retry_suggestion": "" }\n'
+            '  "consistency": { "passed": true, "conflicts": [], "retry_suggestion": "" },\n'
+            f"{memory_fact_schema}"
             "}\n"
             "\n"
+            f"{memory_fact_rule}\n"
             "foreshadow_ops 里每个操作的格式：\n"
             "- plant: {\"action\":\"plant\",\"new_foreshadow\":{\"description\":\"...\",\"linked_characters\":[...],\"target_revelation\":\"...\",\"visibility\":\"restricted|public\",\"known_by\":[...]}}\n"
             "- reinforce/resolve/subvert: {\"action\":\"...\",\"foreshadow_id\":\"fs_xxx\"}\n"
@@ -1837,7 +1854,10 @@ def _apply_memory_facts(
 
     调用次数不增加——memory_facts 就是同一次 JSON 输出的一部分。
     每条 fact 的 text 必须是压缩好的最终形态，长度 ≤ MEMORY_ITEM_MAX_CHARS。
+    文言存储模式下必须同时提供 display_text（白话版）；缺少时跳过该条，
+    避免文言文出现在玩家 / 导演界面。
     """
+    classical = memory.settings.classical_compression
     valid_facts = []
     if isinstance(facts, list):
         for item in facts:
@@ -1845,18 +1865,25 @@ def _apply_memory_facts(
                 continue
             tier = str(item.get("tier") or "short_term")
             text = str(item.get("text") or "").strip()
+            display = str(item.get("display_text") or "").strip()
             if not text or tier not in _VALID_TIERS:
                 continue
             if len(text) > MEMORY_ITEM_MAX_CHARS:
                 # 超长 fact 直接跳过——Agent 没做好压缩，memory 层也不切
                 continue
-            valid_facts.append(item)
+            if len(display) > MEMORY_ITEM_MAX_CHARS:
+                continue
+            if classical and not display:
+                # 文言模式缺少白话展示版 → 回退到 add_scene 处理 prose
+                continue
+            valid_facts.append((item, display))
 
     if valid_facts:
-        for fact in valid_facts:
+        for fact, display in valid_facts:
             memory.add_condensed(
                 tier=str(fact.get("tier") or "short_term"),
                 text=str(fact.get("text") or "").strip(),
+                display_text=display or None,
                 scene_index=scene_index,
                 known_by=[
                     str(v).strip()

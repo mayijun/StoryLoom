@@ -398,6 +398,8 @@ WorldState
 
 核心层固定为 `short_term → long_term → key_events` 三档（`working` / `archive` 是端点）；
 三档的容量与压缩由 `tiers` 有序列表配置，降级 / 回温由 `demotion` 配置。
+关键事件溢出不压缩：系统按近期剧情相关性、命中与场景时间选择冷事件，保留完整条目迁入
+`archive`，再次命中达到阈值后回到 `key_events`；pinned 与活跃伏笔不迁出。
 优先级：`MemorySettings` 代码默认 < `memory_config.default.yaml` 种子 < 项目 `memory_configs`；
 种子只在项目首次读取时导入，之后以数据库配置为准。层名受 `MemoryTier`
 枚举约束，当前不支持新增自定义层。

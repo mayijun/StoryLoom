@@ -31,9 +31,10 @@ from storyloom.memory.compress import (
     clamp_compressed_text,
     fallback_compress,
     is_empty_compression,
+    parse_compressed_output,
 )
 from storyloom.memory.hybrid import HybridBackend
-from storyloom.memory.lexical import LexicalBackend
+from storyloom.memory.lexical import LexicalBackend, score_text
 from storyloom.memory.scoring import (
     score_compressed_importance,
     score_importance,
@@ -101,7 +102,7 @@ class LayeredMemory:
         if item.tier == "key_events" and item.source == "compressed":
             item.pinned = False
             item.importance = score_compressed_importance(
-                item.text, stage="key_events"
+                _prompt_text(item), stage="key_events"
             )
         return item
 
@@ -276,6 +277,7 @@ class LayeredMemory:
         tags: Optional[List[str]] = None,
         importance: Optional[float] = None,
         source: str = "agent_memory_fact",
+        display_text: Optional[str] = None,
     ) -> MemoryItem:
         """写入已经由 Agent 压缩好的记忆事实。
 
@@ -285,12 +287,19 @@ class LayeredMemory:
         与 ``add_scene`` 不同，这里不再等待阈值触发压缩：材料本身
         就是压缩产物，直接落到目标层；随后仍受该层容量与降级规则约束。
 
+        ``text`` 是存储版本；``display_text`` 是给玩家/导演看的白话版本。
+        文言存储时调用方必须提供 ``display_text``，否则摘要也会是文言。
         调用方应保证 text 不超过 ``MEMORY_ITEM_MAX_CHARS``；超过时
         只打 warning，不拆分也不截断。
         """
         if tier not in ("short_term", "long_term", "key_events", "archive"):
             raise ValueError(f"不支持的目标层: {tier}")
         _warn_if_oversize(text, f"add_condensed → {tier}")
+        display = (display_text or "").strip()
+        if display and display != text:
+            tags = sorted(set(tags or []) | {"classical_storage"})
+        else:
+            tags = sorted(set(tags or []))
         witnesses = sorted({name for name in (known_by or []) if name})
         if PUBLIC_VIEWERS.intersection(witnesses):
             visibility: MemoryVisibility = "public"
@@ -308,14 +317,16 @@ class LayeredMemory:
             project_id=self.project_id,
             tier=tier,
             text=text,
-            summary=summarize(text),
+            summary=display or summarize(text),
             importance=(
                 importance
                 if importance is not None
                 else (
-                    score_compressed_importance(text, stage=tier)
+                    score_compressed_importance(
+                        display or text, stage=tier
+                    )
                     if tier in ("long_term", "key_events")
-                    else score_importance(text)
+                    else score_importance(display or text)
                 )
             ),
             pinned=False,
@@ -324,7 +335,7 @@ class LayeredMemory:
             last_hit_scene=scene_index,
             visibility=visibility,
             known_by=witnesses,
-            tags=sorted(set(tags or [])),
+            tags=tags,
             source=source,
         )
         self._put(item)
@@ -471,8 +482,8 @@ class LayeredMemory:
     # ---------------- 压缩 ----------------
 
     def consolidate(self) -> List[MemoryItem]:
-        """短期超阈值 → 长期；长期超阈值 → 关键事件；关键事件溢出在层内合并"""
-        created: List[MemoryItem] = []
+        """短期超阈值 → 长期；长期超阈值 → 关键事件；关键事件无损冷却。"""
+        changed: List[MemoryItem] = []
 
         for spec in self.settings.tiers:
             if spec.compress_into == spec.name:
@@ -486,70 +497,95 @@ class LayeredMemory:
                 )
                 item = self._compress(batch, spec)
                 if item is not None:
-                    created.append(item)
+                    changed.append(item)
 
-        if self.settings.key_events_compress_into == "archive":
-            # 兼容旧配置：关键事件溢出写入检索库
-            while True:
-                key_items = self._items_in("key_events")
-                if len(key_items) <= self.settings.key_events_max_items:
-                    break
-                overflow = (
-                    len(key_items) - self.settings.key_events_max_items
-                )
-                batch = key_items[: max(1, overflow)]
-                item = self._compress(
-                    batch,
-                    TierSpec(
-                        name="key_events",
-                        max_items=self.settings.key_events_max_items,
-                        compress_batch=len(batch),
-                        compress_into="archive",
-                        compress_max_chars=(
-                            self.settings.key_events_compress_max_chars
-                        ),
-                        compress_hint=(
-                            self.settings.key_events_compress_hint
-                        ),
-                    ),
-                )
-                if item is not None:
-                    created.append(item)
-        else:
-            created.extend(self._merge_key_events_overflow())
-        return created
+        changed.extend(self._cool_key_events_overflow())
+        return changed
 
-    def _merge_key_events_overflow(self) -> List[MemoryItem]:
-        """关键事件溢出时合并最旧事件；没有关键事件就丢弃，不污染世界书。"""
-        created: List[MemoryItem] = []
-        if self.settings.key_events_max_items <= 0:
-            return created
-        while True:
-            key_items = self._items_in("key_events")
-            if len(key_items) <= self.settings.key_events_max_items:
-                break
-            overflow = len(key_items) - self.settings.key_events_max_items
-            batch_size = max(1, overflow)
-            # 只溢出 1 条时，与次旧条目一起合并，保证层数确实下降
-            if batch_size == 1 and len(key_items) >= 2:
-                batch_size = 2
-            batch = self._pick_compress_batch(key_items, batch_size)
-            item = self._compress(
-                batch,
-                TierSpec(
-                    name="key_events",
-                    max_items=self.settings.key_events_max_items,
-                    compress_batch=batch_size,
-                    compress_into="key_events",
-                    compress_max_chars=(
-                        self.settings.key_events_compress_max_chars
-                    ),
-                    compress_hint=self.settings.key_events_compress_hint,
-                ),
+    def _cool_key_events_overflow(self) -> List[MemoryItem]:
+        """把最冷的关键事件原样迁入世界书，不压缩、合并或丢弃。"""
+        key_items = self._items_in("key_events")
+        capacity = max(0, self.settings.key_events_max_items)
+        overflow = len(key_items) - capacity
+        if overflow <= 0:
+            return []
+
+        candidates = [
+            item for item in key_items
+            if not item.pinned and not item.active_foreshadow
+        ]
+        if not candidates:
+            # 显式常驻与活跃伏笔优先；受保护事件允许暂时超过容量。
+            return []
+
+        recent_texts = [
+            self.working.intent,
+            self.working.scene_brief,
+            *(
+                item.summary or item.text
+                for item in (
+                    self._items_in("short_term") + self._items_in("long_term")
+                )
+            ),
+        ]
+        recent_context = "\n".join(text for text in recent_texts if text)
+        lexical_scores = {
+            item.id: score_text(
+                recent_context,
+                " ".join([item.text, item.summary, " ".join(item.tags)]),
             )
-            if item is not None:
-                created.append(item)
-        return created
+            for item in candidates
+        }
+
+        vector_scores: Dict[str, float] = {}
+        if recent_context and self.vector.available:
+            # 关键事件可被 WorldState 原地更新，评分前刷新文本对应的向量。
+            for item in candidates:
+                self.vector.remove(item.id)
+                self.vector.add(item)
+            vector_scores = {
+                item.id: score
+                for item, score in self.vector.search(
+                    self.project_id,
+                    recent_context,
+                    limit=len(candidates),
+                    viewer="director",
+                    candidates=candidates,
+                )
+            }
+        # 向量覆盖全部候选时以语义相关性为主、词法命中为辅；
+        # embedding 不可用或失败时，全部候选统一退回词法相关性。
+        use_vector = len(vector_scores) == len(candidates)
+
+        def heat(item: MemoryItem) -> Tuple[Any, ...]:
+            if use_vector:
+                relevance = vector_scores[item.id]
+                lexical_tiebreak = lexical_scores[item.id]
+            else:
+                relevance = lexical_scores[item.id]
+                lexical_tiebreak = 0.0
+            return (
+                relevance,
+                lexical_tiebreak,
+                item.hits,
+                item.adoptions,
+                item.last_hit_scene,
+                item.scene_index,
+                item.created_at,
+                item.id,
+            )
+
+        candidates.sort(key=heat)
+        cooled: List[MemoryItem] = []
+        for item in candidates[:overflow]:
+            item.tier = "archive"
+            item.source = "demoted"
+            item.tags = sorted(
+                set(item.tags) | {"demoted", "key_event_overflow"}
+            )
+            self._put(item)
+            cooled.append(item)
+        return cooled
 
     @staticmethod
     def _pick_compress_batch(
@@ -589,25 +625,39 @@ class LayeredMemory:
         """把一批记忆压缩到目标层；关键事件层没有可保留事件时返回 None。"""
         target = spec.compress_into
         max_chars = spec.compress_max_chars
+        classical = self.settings.classical_compression
         prompt = build_compress_prompt(
             target,
             batch,
             max_chars=max_chars,
             hint=spec.compress_hint,
+            classical=classical,
         )
 
         text = ""
+        display = ""
+        paired = False
         if self.compress_fn is not None:
             try:
                 candidate = str(self.compress_fn(prompt)).strip()
-                if candidate and not is_empty_compression(candidate, target):
-                    text = candidate
+                if candidate:
+                    text, display, paired = parse_compressed_output(
+                        candidate, classical=classical
+                    )
+                    if is_empty_compression(text, target):
+                        text, display, paired = "", "", False
             except Exception:
-                text = ""
+                text, display, paired = "", "", False
         if not text:
+            # 无法取得成对的白话展示版时不启用文言，保证展示面可读。
             text = fallback_compress(batch, target, max_chars=max_chars)
+            display = text
+            paired = False
         text = clamp_compressed_text(
             text, max_chars, multiline=(target == "key_events")
+        )
+        display = clamp_compressed_text(
+            display or text, MEMORY_ITEM_MAX_CHARS
         )
 
         for child in batch:
@@ -617,13 +667,16 @@ class LayeredMemory:
 
         visibility, known_by = self._scope_for_batch(batch)
         last_scene = max(item.scene_index for item in batch)
+        tags = {"compressed", target}
+        if paired:
+            tags.add("classical_storage")
         item = MemoryItem(
             id=f"mem_{uuid.uuid4().hex[:10]}",
             project_id=self.project_id,
             tier=target,
             text=text,
-            summary=text[:200],
-            importance=score_compressed_importance(text, stage=target),
+            summary=display,
+            importance=score_compressed_importance(display, stage=target),
             # 关键事件也可按创作者配置的阈值冷却到世界书，因此默认不 pin
             pinned=False,
             scene_index=last_scene,
@@ -631,7 +684,7 @@ class LayeredMemory:
             last_hit_scene=last_scene,
             visibility=visibility,
             known_by=known_by,
-            tags=sorted({"compressed", target}),
+            tags=sorted(tags),
             source="compressed",
             active_foreshadow=any(item.active_foreshadow for item in batch),
         )
@@ -668,7 +721,11 @@ class LayeredMemory:
             and item.source == "demoted"
             and item.hits >= self.settings.reheat_hits
         ):
-            item.tier = "long_term"
+            item.tier = (
+                "key_events"
+                if "key_event_overflow" in item.tags
+                else "long_term"
+            )
             item.source = "reheated"
             item.tags = sorted(set(item.tags) | {"reheated"})
             self._put(item)
@@ -740,11 +797,7 @@ class LayeredMemory:
                 continue
             lines.append(f"【{labels.get(spec.name, spec.name)}】")
             for item in items:
-                body = (
-                    item.text
-                    if spec.name == "key_events"
-                    else (item.summary or item.text)
-                )
+                body = _prompt_text(item)
                 lines.append(f"  - {body}")
         key_events = [
             item for item in self._items_in("key_events")
@@ -755,7 +808,7 @@ class LayeredMemory:
         ):
             lines.append("【关键事件】")
             for item in key_events:
-                lines.append(f"  - {item.text}")
+                lines.append(f"  - {_prompt_text(item)}")
         return "\n".join(lines)
 
     def retrieval_block(
@@ -840,6 +893,19 @@ class LayeredMemory:
 # ---------------------------------------------------------------------------
 # 模块级辅助
 # ---------------------------------------------------------------------------
+
+def _prompt_text(item: MemoryItem) -> str:
+    """给玩家 / 导演 / Agent prompt 的展示文本。
+
+    文言存储条目取 ``summary``（白话展示版）；旧数据没有双轨时保持
+    原有行为：关键事件用全文，其他层优先用摘要。
+    """
+    if "classical_storage" in item.tags:
+        return item.summary or item.text
+    if item.tier == "key_events":
+        return item.text
+    return item.summary or item.text
+
 
 def _warn_if_oversize(text: str, caller: str) -> None:
     """写入前的长度软校验：超过 MEMORY_ITEM_MAX_CHARS 时打 warning。

@@ -66,6 +66,8 @@ class MemoryFact(BaseModel):
 
     tier: str = "short_term"
     text: str = ""
+    # text 的白话展示版；文言记忆存储模式下必填，否则可省略
+    display_text: str = ""
     known_by: List[str] = Field(default_factory=list)
     tags: List[str] = Field(default_factory=list)
 
@@ -118,6 +120,7 @@ PACKET_CONTRACT = f"""\
     {{
       "tier": "short_term",
       "text": "本回合场景摘要，≤ {MEMORY_ITEM_MAX_CHARS} 字。已经是压缩好的最终形态。",
+      "display_text": "text 的白话展示版；启用文言记忆存储时必填，否则可省略。",
       "known_by": ["知晓该事实的角色名，可省略"],
       "tags": ["scene | foreshadow | ...，可省略"]
     }}
@@ -148,6 +151,8 @@ PACKET_CONTRACT = f"""\
 #   这些层级由记忆系统自己的 compress.py 处理。
 #
 # 硬约束：每条 text ≤ {MEMORY_ITEM_MAX_CHARS} 字。
+# 若任务提示启用文言记忆存储：text 用文言文，display_text 用同义白话文；
+# 未启用时可省略 display_text。
 #
 # ─── 实战示例 ───
 #
@@ -298,6 +303,7 @@ def parse_agent_packet(raw: str) -> AgentPacket:
         fact = MemoryFact(
             tier=str(item.get("tier") or "short_term"),
             text=str(item.get("text") or "").strip(),
+            display_text=str(item.get("display_text") or "").strip(),
             known_by=[
                 str(v).strip()
                 for v in _as_list(item.get("known_by"))
