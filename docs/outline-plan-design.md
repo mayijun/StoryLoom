@@ -485,7 +485,7 @@ fate_signals: [...]            # 如“玩家违背/顺应命运命题”，只�
 2. [state.py](../src/storyloom/memory/state.py) 的 `WorldState` 增加 `outline_enabled=False`、`fate_enabled=False`、`chapter_plan=None`、`narrative_debt`。
 3. `OutlinePlanner.frame()` 与 `advance()` 增加大纲分支；关闭时逐行保持现有逻辑。
 
-**测试**：`tests/test_outline_plan.py`
+**测试**：`tests/engine/test_outline_plan.py`
 
 - 默认值全部关闭；
 - `WorldState` 序列化 round-trip，旧存档可加载；
@@ -588,8 +588,8 @@ fate_signals: [...]            # 如“玩家违背/顺应命运命题”，只�
 每阶段结束运行：
 
 ```bash
-uv run pytest tests/test_outline_plan.py -q
-uv run pytest tests/test_m0.py tests/test_chapter_structure.py -q   # 回归
+uv run pytest tests/engine/test_outline_plan.py -q
+uv run pytest tests/engine/test_runtime.py tests/db/test_chapters.py -q   # 回归
 uv run pytest -q                                                    # 全量
 ```
 

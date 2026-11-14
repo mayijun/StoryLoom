@@ -358,7 +358,7 @@ G17 请求体示例：
 | A4 存档 → 读档 → 回放 | G12 / G13 |
 | A5 扩展 skill / map | §2.5 + G3 旅行耗时 |
 | A7 前端游戏模式 | G1~G11 可在 GamePanel 复现 |
-| A8 导演改写与审计 | G17（回滚由 `tests/test_m0.py` 覆盖） |
+| A8 导演改写与审计 | G17（回滚由 `tests/memory/test_world_state.py` 覆盖） |
 | A9 NPC 自主 | G14 |
 | A10 模式切换 | G15 / G18 |
 | A11 短期压缩 / 重启恢复 | 追加生成第 7 个短场景（超过短期上限 6）后重启，检查 `counts` 中短期已压缩、长期/常驻已恢复 |
@@ -376,7 +376,7 @@ G17 请求体示例：
 - **自由文本不再做动词路由**：「签到」「瞬移到王宫」这类输入整体交给导演 Agent 裁决，
   由 `map_xianxia` 的出口信息判断可达性；不再有 `move` / `not_found` 的硬编码分词分支。
 - **默认选项上限 8 条**：由 `allowed_actions(...)[:8]` 截断；自由输入不受限制。
-- **回滚没有 HTTP 端点**：`WorldState.rollback_override` 在库层与 `tests/test_m0.py` 中验证。
+- **回滚没有 HTTP 端点**：`WorldState.rollback_override` 在库层与 `tests/memory/test_world_state.py` 中验证。
 - **扩展来源**：内置扩展由试用模板内嵌提供（`src/storyloom/templates/`），`ExtensionRegistry` 启动时自动注册；需要隔离时用 `enabled_extensions`。
 - **作者模式依赖模型 Key**：无 Key 时场景生成会失败；游戏模式无 Key 时走最小兜底叙事，可跑通但裁决不具语义。
 

@@ -2,7 +2,7 @@
 
 > 本文档描述**当前已经实现**的技术细节。
 > 架构与演进方向见 [ARCHITECTURE.md](ARCHITECTURE.md)，
-> M0（双模式动态世界纵切 + 分层记忆 v2）已实现，验收见 `tests/test_m0*.py`。
+> M0（双模式动态世界纵切 + 分层记忆 v2）已实现，验收见 `tests/crews/test_packet.py`、`tests/engine/test_runtime.py`、`tests/memory/test_visibility.py`、`tests/api/test_game.py` 等模块化用例。
 > 后续阶段与差距见 [MVP.md](MVP.md)。
 
 ---
@@ -457,10 +457,10 @@ uv run pytest -q
 ```
 
 覆盖：项目落库与外键、Agent/Task API、迁移与幂等回归、资产模型、场景与章节持久化、
-分层记忆（LRU 淘汰 / 导演检索 / 历史回填 / 压缩阈值）、Flow 兼容层。共 **236 个用例**，
+分层记忆（LRU 淘汰 / 导演检索 / 历史回填 / 压缩阈值）、Flow 兼容层。共 **234 个用例**，
 逐条清单见 [TESTS.md](TESTS.md)。
 
-M0 覆盖（`tests/test_m0*.py` + `test_memory_compression.py`）：导演 Agent 裁决与守卫拦截、移动可达性、`Fact` 可见性、
+M0 覆盖（`tests/crews/test_packet.py` + `tests/engine/` + `tests/memory/` + `tests/api/test_game.py` + `tests/memory/test_compression.py`）：导演 Agent 裁决与守卫拦截、移动可达性、`Fact` 可见性、
 存档回放、manifest 校验与 map mod 旅行覆盖、导演改写审计回滚、idle NPC 事件、
 模式切换 checkpoint、记忆分层 / 压缩 / 降级回温 / 三后端检索 / 历史回填 / secrets、
 自由文本输入、超时与配额、`/game/*` 与 `/memory` `/extensions` API、版本化入口与 Key 注入。

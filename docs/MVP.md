@@ -43,8 +43,8 @@
 
 ## 2. M0：双模式动态世界纵切（含分层记忆 v2）（已完成）
 
-> M0-1 ~ M0-14 全部落地，A1 ~ A15 验收由 `tests/test_m0*.py` 覆盖；
-> 后端合计 **201 项测试全部通过**（完整清单见 [TESTS.md](TESTS.md)），
+> M0-1 ~ M0-14 全部落地，A1 ~ A15 验收由 `tests/crews/`、`tests/engine/`、`tests/memory/`、`tests/api/` 下的模块化用例覆盖；
+> 后端合计 **234 项测试全部通过**（完整清单见 [TESTS.md](TESTS.md)），
 > 作者模式 `scene_brief → prose` 不回归。
 
 ### 2.1 目标
@@ -71,7 +71,7 @@
 | M0-7 | API（**全部 async**） | `POST /game/{pid}/turn` · `GET /game/{pid}/state` · `POST/GET /game/{pid}/saves` · `POST /extensions/resolve` · `PATCH/GET /api/projects/{pid}/memory` | ✅ `api/routers/game.py` · `extensions.py` · `memory.py` |
 | M0-8 | 前端扩展 | 游戏模式：对话框 / 选项 / backlog / 存档读取 | ✅ `frontend/src/components/GamePanel.vue` |
 | M0-9 | Demo | `xianxia_system.py`（仙侠）与 `sandbox_life.py`（都市沙盒）：角色/地点/伏笔/章节 + 内嵌 map mod 与 skill；Web 界面「试用模板」一键生成可删除项目 | ✅ `src/storyloom/templates/` |
-| M0-10 | 测试 | 导演 Agent 裁决、`Fact` 过滤、存档回放、manifest 校验、导演模式回归、记忆分层 / 压缩 / 降级、三后端检索 | ✅ `tests/test_m0.py` · `test_m0_api.py` · `test_memory_compression.py` |
+| M0-10 | 测试 | 导演 Agent 裁决、`Fact` 过滤、存档回放、manifest 校验、导演模式回归、记忆分层 / 压缩 / 降级、三后端检索 | ✅ `tests/crews/test_packet.py` · `tests/engine/test_runtime.py` · `tests/memory/test_visibility.py` · `tests/api/test_game.py` · `tests/memory/test_compression.py` |
 | M0-11 | `memory/state.py` | `WorldState.switch_mode` / `apply_override` / `rollback_override` · 模式切换 checkpoint · `FactOverride` 审计与回滚 | ✅ `memory/state.py` |
 | M0-12 | `crews/scene_crew/outline.py` | 起承转合节拍 · 张力目标 · 信息预算（OutlineAgent 职能） | ✅ `crews/scene_crew/outline.py`（Crew 生成参数） |
 | M0-13 | `crews/scene_crew/crew.py` | NPC 自主：记忆 → 反思 → 计划 → 提案（EnsembleAgent 输出 `npc_actions`） | ✅ `SceneCrew.npc_actions` |

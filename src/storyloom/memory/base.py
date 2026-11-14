@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 MemoryTier = Literal[
     "working", "short_term", "long_term", "key_events", "archive"
@@ -27,6 +27,8 @@ PUBLIC_VIEWERS = frozenset({"all", "public", "*"})
 def normalize_visible_to(
     *,
     visible_to: Optional[List[str]] = None,
+    visibility: Optional[str] = None,
+    known_by: Optional[List[str]] = None,
     default_public: bool = True,
 ) -> List[str]:
     """把可见范围规整成唯一的 ``visible_to`` 列表。
@@ -35,9 +37,23 @@ def normalize_visible_to(
     - ``[]`` 表示仅全知视角（gm / director / narrator）可见；
     - ``crowd`` 与具名角色都是普通 viewer token；
     - 全知 token 不进入存储，由判定函数隐含。
+
+    旧数据兼容：没有 ``visible_to`` 时，按旧的
+    ``visibility`` + ``known_by`` 推导；``private:<角色>``
+    视为该角色可见。
     """
     if visible_to is not None:
         raw = [str(v).strip() for v in visible_to if str(v).strip()]
+    elif visibility is not None or known_by is not None:
+        legacy = (visibility or "").strip()
+        if legacy.startswith("private:"):
+            raw = [legacy.split(":", 1)[1]]
+        elif legacy.lower() in PUBLIC_VIEWERS:
+            raw = ["all"]
+        else:
+            raw = [str(v).strip() for v in (known_by or []) if str(v).strip()]
+            if not raw:
+                raw = [] if legacy or not default_public else ["all"]
     else:
         raw = ["all"] if default_public else []
 
@@ -83,6 +99,24 @@ class MemoryItem(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_visibility(cls, data: Any) -> Any:
+        """旧快照/旧行同时带 visibility 或 known_by 时转成 visible_to。"""
+        if not isinstance(data, dict):
+            return data
+        if not ({"visible_to", "visibility", "known_by"} & data.keys()):
+            return data
+        payload = dict(data)
+        payload["visible_to"] = normalize_visible_to(
+            visible_to=payload.get("visible_to"),
+            visibility=payload.get("visibility"),
+            known_by=payload.get("known_by"),
+        )
+        payload.pop("visibility", None)
+        payload.pop("known_by", None)
+        return payload
+
     def is_visible_to(self, viewer: Optional[str]) -> bool:
         if PUBLIC_VIEWERS.intersection(self.visible_to):
             return True
@@ -94,24 +128,32 @@ class MemoryItem(BaseModel):
 
     @classmethod
     def from_row(cls, row: Dict[str, Any]) -> "MemoryItem":
-        return cls(
-            id=row["id"],
-            project_id=row.get("project_id", ""),
-            tier=row.get("tier", "short_term"),
-            text=row.get("text", ""),
-            summary=row.get("summary", ""),
-            importance=row.get("importance", 0.5),
-            pinned=row.get("pinned", False),
-            scene_index=row.get("scene_index", 0),
-            hits=row.get("hits", 0),
-            adoptions=row.get("adoptions", 0),
-            last_hit_scene=row.get("last_hit_scene", 0),
-            visible_to=list(row.get("visible_to") or []),
-            tags=list(row.get("tags") or []),
-            source=row.get("source", "scene"),
-            active_foreshadow=row.get("active_foreshadow", False),
-            created_at=row.get("created_at") or datetime.now(timezone.utc).isoformat(),
-        )
+        payload = {
+            "id": row["id"],
+            "project_id": row.get("project_id", ""),
+            "tier": row.get("tier", "short_term"),
+            "text": row.get("text", ""),
+            "summary": row.get("summary", ""),
+            "importance": row.get("importance", 0.5),
+            "pinned": row.get("pinned", False),
+            "scene_index": row.get("scene_index", 0),
+            "hits": row.get("hits", 0),
+            "adoptions": row.get("adoptions", 0),
+            "last_hit_scene": row.get("last_hit_scene", 0),
+            "visible_to": row.get("visible_to"),
+            "tags": list(row.get("tags") or []),
+            "source": row.get("source", "scene"),
+            "active_foreshadow": row.get("active_foreshadow", False),
+            "created_at": (
+                row.get("created_at")
+                or datetime.now(timezone.utc).isoformat()
+            ),
+        }
+        if "visible_to" not in row:
+            # 旧库行：交给 legacy validator 从 visibility / known_by 推导。
+            payload["visibility"] = row.get("visibility")
+            payload["known_by"] = row.get("known_by")
+        return cls(**payload)
 
 
 class TierSpec(BaseModel):

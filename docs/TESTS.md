@@ -1,29 +1,40 @@
 # 后端测试用例清单
 
 > 运行：`uv run pytest -q`（根目录）。
-> 当前基线：**17 个文件 / 234 个用例全部通过**。
+> 当前基线：**28 个文件 / 238 个用例全部通过**。
 > 进度口径见 [MVP.md](MVP.md)；性能基线见 `scripts/bench_m0.py`。
 
 | 文件 | 用例数 | 覆盖范围 |
 |---|---|---|
-| `test_project_persistence.py` | 24 | 项目落库、迁移、外键、级联 |
-| `test_templates.py` | 31 | 模板注册 / 应用 / 引擎 / 路由 |
-| `test_scene_asset_persistence.py` | 17 | 场景与资产持久化 |
-| `test_author_p1.py` | 16 | P1：伏笔流转 / 导出 / 指标 / 配置迁移 |
-| `test_templates_integration.py` | 14 | 模板端到端集成 |
-| `test_chapter_structure.py` | 13 | 章节结构与场景归属 |
-| `test_m0.py` | 27 | M0 验收 A1–A15 + 运行时保护 |
-| `test_memory_compression.py` | 23 | 记忆分层压缩 / 按 `visible_to` 分区 / 无损溢出 / 文言双轨 / 降级回温 / 按层阈值 |
-| `test_m0_api.py` | 14 | M0 API（game / memory / extensions） |
-| `test_character_wake.py` | 15 | 角色唤醒与在场校验 |
-| `test_db_config.py` | 7 | Agent/Task 配置种子与迁移 |
-| `test_flow.py` | 6 | 作者模式 Flow 与伏笔操作 |
-| `test_scene_edit_regenerate.py` | 6 | 场景编辑与单场景重跑 |
-| `test_api_tasks.py` | 5 | Task 配置 API |
-| `test_api_agents.py` | 4 | Agent 配置 API |
-| `test_assets.py` | 4 | 资产模型默认值 |
-| `test_memory.py` | 8 | 双模式统一记忆 / 世界书召回 / 数据库回填 |
-| **合计** | **234** | |
+| `api/test_author.py` | 16 | P1：伏笔流转 / 导出 / 指标 / 配置迁移 |
+| `api/test_game.py` | 10 | 游戏回合、存档、模式切换、版本化路由 |
+| `api/test_engine.py` | 4 | 运行时超时 / 配额 / Key 注入 / 压缩角色 |
+| `api/test_agents.py` | 4 | Agent 配置 API |
+| `api/test_tasks.py` | 5 | Task 配置 API |
+| `api/test_scenes.py` | 6 | 场景编辑与单场景重跑 |
+| `api/test_memory.py` | 2 | 记忆查看 / 后端切换 / 压缩方角色选择 |
+| `api/test_extensions.py` | 1 | 扩展解析 API |
+| `crews/test_character_wake.py` | 15 | 角色唤醒与在场校验 |
+| `crews/test_packet.py` | 5 | Agent JSON 包解析与舞台编排 |
+| `db/test_projects.py` | 24 | 项目落库、迁移、外键、级联 |
+| `db/test_scene_assets.py` | 17 | 场景与资产持久化 |
+| `db/test_chapters.py` | 13 | 章节结构与场景归属 |
+| `db/test_config.py` | 7 | Agent/Task 配置种子与迁移 |
+| `db/test_memory_migration.py` | 1 | 旧库 `visibility` + `known_by` → `visible_to` 迁移 |
+| `engine/test_narrative_flow.py` | 6 | 作者模式 Flow 与伏笔操作 |
+| `engine/test_runtime.py` | 3 | 回合运行时、自由输入、NPC 自主、导演模式 |
+| `engine/test_world_context.py` | 2 | 世界简报信息迷雾 |
+| `engine/test_foreshadow_conflicts.py` | 1 | 伏笔回溯补录一致性校验 |
+| `memory/test_compression.py` | 23 | 记忆分层压缩 / 按 `visible_to` 分区 / 无损溢出 / 文言双轨 / 降级回温 / 按层阈值 |
+| `memory/test_layered_memory.py` | 12 | 双模式统一记忆 / 世界书召回 / 数据库回填 / 层级流转 |
+| `memory/test_visibility.py` | 7 | `Fact` / secrets / 伏笔真相的可见性隔离；旧快照字段迁移 |
+| `memory/test_models.py` | 4 | 资产模型默认值 |
+| `memory/test_checkpoint.py` | 1 | 存档、读档与回放 |
+| `memory/test_world_state.py` | 2 | 世界改写审计与模式切换 |
+| `templates/test_templates.py` | 31 | 模板注册 / 应用 / 引擎 / 路由 |
+| `templates/test_integration.py` | 14 | 模板端到端集成 |
+| `extensions/test_manifest.py` | 2 | manifest 校验与旅行覆盖 |
+| **合计** | **238** | |
 
 ---
 
@@ -31,7 +42,7 @@
 
 对应 [MVP.md](MVP.md) §1 P0 第 1–8、11 项。
 
-### 1.1 多项目管理 — `test_project_persistence.py`（24）
+### 1.1 多项目管理 — `db/test_projects.py`（24）
 
 | 用例 | 验证点 |
 |---|---|
@@ -60,7 +71,7 @@
 | `test_ensure_project_idempotent` | 重复调用不覆盖已有数据 |
 | `test_regression_ensure_project_must_not_overwrite_metadata` | 回归：ensure 不得误用 UPDATE 语义 |
 
-### 1.2 Agent / Task 可视化配置 — `test_api_agents.py`（4）+ `test_api_tasks.py`（5）+ `test_db_config.py`（7）
+### 1.2 Agent / Task 可视化配置 — `api/test_agents.py`（4）+ `api/test_tasks.py`（5）+ `db/test_config.py`（7）
 
 | 用例 | 验证点 |
 |---|---|
@@ -81,7 +92,7 @@
 | `test_project_isolation` | 配置按项目隔离，默认 demo |
 | `test_legacy_db_migrated_into_demo_project` | 旧库数据归入 demo |
 
-### 1.3 资产模型 — `test_assets.py`（4）
+### 1.3 资产模型 — `memory/test_models.py`（4）
 
 | 用例 | 验证点 |
 |---|---|
@@ -90,7 +101,7 @@
 | `test_project_lookup_and_defaults` | 项目查找与默认值 |
 | `test_surprise_type_values` | 意外类型枚举 |
 
-### 1.4 场景 / 资产持久化 — `test_scene_asset_persistence.py`（17）
+### 1.4 场景 / 资产持久化 — `db/test_scene_assets.py`（17）
 
 | 用例 | 验证点 |
 |---|---|
@@ -112,7 +123,7 @@
 | `test_foreshadowing_cascades_with_project` | 伏笔随项目级联 |
 | `test_engine_rebuilds_assets_from_db` | 重启后资产从 DB 恢复 |
 
-### 1.5 章节结构 — `test_chapter_structure.py`（13）
+### 1.5 章节结构 — `db/test_chapters.py`（13）
 
 | 用例 | 验证点 |
 |---|---|
@@ -130,7 +141,13 @@
 | `test_list_unassigned_scenes` | 未归属场景列表 |
 | `test_migrate_scenes_without_chapter_fk` | 旧库 scenes 无章节外键的迁移 |
 
-### 1.6 场景编辑 / 重跑 — `test_scene_edit_regenerate.py`（6）
+### 1.5.1 旧库可见范围迁移 — `db/test_memory_migration.py`（1）
+
+| 用例 | 验证点 |
+|---|---|
+| `test_legacy_visibility_backfills_visible_to` | `visibility` / `known_by` 回填 `visible_to`；`canon` → `key_events`；重复启动不重复迁移 |
+
+### 1.6 场景编辑 / 重跑 — `api/test_scenes.py`（6）
 
 | 用例 | 验证点 |
 |---|---|
@@ -141,7 +158,7 @@
 | `test_regenerate_flow_skips_scene_count_increment` | 重跑不递增 scene_count |
 | `test_normal_flow_increments_scene_count` | 正常生成递增 scene_count |
 
-### 1.7 Flow 与伏笔操作 — `test_flow.py`（6）
+### 1.7 Flow 与伏笔操作 — `engine/test_narrative_flow.py`（6）
 
 | 用例 | 验证点 |
 |---|---|
@@ -152,7 +169,7 @@
 | `test_apply_resolve_closes_foreshadow` | 回收关闭伏笔 |
 | `test_advance_scene_counters_increments` | 场景计数推进 |
 
-### 1.8 分层记忆 — `test_memory.py`（8）
+### 1.8 分层记忆 — `memory/test_layered_memory.py`（12）
 
 | 用例 | 验证点 |
 |---|---|
@@ -164,12 +181,16 @@
 | `test_scene_memory_scopes_by_witnesses_and_crowd` | 场景按在场角色隔离，crowd 只对路人视角可见 |
 | `test_world_book_matching_respects_viewer_across_backends` | fts / hybrid / vector 世界书召回都按 viewer 过滤受限条目 |
 | `test_sync_foreshadowings_preserves_later_visible_to` | 伏笔描述/真相双投影；后续新增知情者不被资产侧覆盖 |
+| `test_short_term_compress_and_restart_recovery` | 短期压缩进长期 + 重启恢复 |
+| `test_demote_and_reheat` | 低价值长期降级检索库 + 命中回温 |
+| `test_backfill_scenes_and_chinese_proper_noun` | 历史场景回填 + 中文专名可检索 |
+| `test_backends_switch_and_degrade` | fts / vector / hybrid 切换与降级 |
 
 ---
 
 ## 2. 作者模式 P1 — 创作体验
 
-对应 [MVP.md](MVP.md) §1 P1 第 1–4 项，全部在 `test_author_p1.py`（16）。
+对应 [MVP.md](MVP.md) §1 P1 第 1–4 项，全部在 `api/test_author.py`（16）。
 
 | 用例 | 验证点 |
 |---|---|
@@ -192,52 +213,65 @@
 
 ---
 
-## 3. M0 — 双模式动态世界纵切
+## 3. 双模式运行时与跨模块能力
 
-对应 [MVP.md](MVP.md) §2.5 验收 A1–A15 与 §2.3 运行时预留。
+对应 [MVP.md](MVP.md) §2.5 验收项与 §2.3 运行时预留；用例已按所属模块拆分。
 
-### 3.1 验收与运行时 — `test_m0.py`（27）
+### 3.1 角色包与舞台编排 — `crews/test_packet.py`（5）
 
-| 用例 | 对应验收 | 验证点 |
-|---|---|---|
-| `test_a1_llm_packet_can_express_guard_intercept` | A1 | 导演 Agent JSON 可表达护卫拦截：位置 / 情绪 / 时间更新 |
-| `test_a2_llm_packet_can_reject_teleport_with_available_locations` | A2 | JSON 裁决拒绝非法移动 + `available` 给出可去地点 |
-| `test_a3_fact_visibility_filters_by_visible_to` | A3 | `Fact` 按 `visible_to` 过滤视图 |
-| `test_a3b_world_context_fog_hides_unseeable` | A3 | 世界简报不泄露不可见信息 |
-| `test_a3b_world_context_gm_sees_everything` | A3 | 裁决视角可读取完整世界简报 |
-| `test_a3c_multi_viewer_fact_projection_and_sync` | A3 | 多知情者保持 restricted，新增知情者原地更新 |
-| `test_a4_save_load_replay_is_identical` | A4 | 存档→读档→回放完全一致 |
-| `test_a5_demo_manifests_resolve_and_travel_override` | A5 | skill / map mod 生效，旅行耗时覆盖 |
-| `test_a5_bad_manifest_rejected` | A5 | 坏 manifest 被拒绝 |
-| `test_a8_override_audit` | A8 | `FactOverride` 审计 |
-| `test_a9_idle_three_turns_triggers_npc_event` | A9 | 静止 3 回合 NPC 自发事件且不越权 |
-| `test_a10_mode_switch_writes_checkpoint` | A10 | 模式切换落 checkpoint |
-| `test_a11_short_term_compress_and_restart_recovery` | A11 | 短期压缩进长期 + 重启恢复 |
-| `test_a12_demote_and_reheat` | A12 | 低价值长期降级检索库 + 命中回温 |
-| `test_a13_backfill_scenes_and_chinese_proper_noun` | A13 | 历史场景回填 + 中文专名可检索 |
-| `test_a14_backends_switch_and_degrade` | A14 | fts / vector / hybrid 切换与降级 |
-| `test_a15_secrets_visibility` | A15 | secrets 只对本人与全知视角可见 |
-| `test_character_secret_stored_only_in_memory` | A15 | 角色秘密唯一存储在 `secret:<角色>` 记忆条目 |
-| `test_foreshadow_truth_visible_to_director_and_known_character` | A15 | 伏笔描述/真相按 `visible_to` 过滤，默认仅导演可见 |
-| `test_foreshadow_retroactive_conflict_blocks` | A15 | 回溯补录伏笔：未知角色/历史冲突阻断 |
-| `test_freeform_text_enters_narrative_pipeline_without_action_parser` | M0-3 | 自由文本无需动作分类即可进入叙事流水线 |
-| `test_agent_suggestions_render_as_free_text_choices` | M0-3 | Agent JSON 的 `choices` 渲染为快捷输入 |
-| `test_plain_prose_remains_compatible` | M0-3 | 纯文本 Agent 输出退化为 `prose` |
-| `test_scene_directives_are_json_serializable` | M0-3 | StageDirective 可 JSON 序列化 |
-| `test_timeout_returns_immediately` | M0-4 | 超时控制立即返回 |
-| `test_quota_rejects_when_no_turns_left` | §2.3-5 | 请求级配额超限拒绝 |
-| `test_director_mode_turn_runs_without_touching_game_entry` | A6 | 导演模式不回归游戏入口 |
+| 用例 | 验证点 |
+|---|---|
+| `test_packet_can_express_guard_intercept` | 导演 Agent JSON 可表达护卫拦截：位置 / 情绪 / 时间更新 |
+| `test_packet_can_reject_teleport_with_available_locations` | JSON 裁决拒绝非法移动 + `available` 给出可去地点 |
+| `test_agent_suggestions_render_as_free_text_choices` | Agent JSON 的 `choices` 渲染为快捷输入 |
+| `test_plain_prose_remains_compatible` | 纯文本 Agent 输出退化为 `prose` |
+| `test_scene_directives_are_json_serializable` | StageDirective 可 JSON 序列化 |
 
-### 3.2 API — `test_m0_api.py`（14）
+### 3.2 信息隔离 — `memory/test_visibility.py`（7）+ `engine/test_world_context.py`（2）
+
+| 用例 | 验证点 |
+|---|---|
+| `test_legacy_known_by_migrates_to_visible_to` | 旧记忆快照/旧行的 `visibility` + `known_by` 统一为 `visible_to` |
+| `test_legacy_fact_and_foreshadow_migrate_visibility` | 旧 `Fact` / 伏笔快照的字段迁移与全知 token 剥离 |
+| `test_fact_visibility_filters_by_visible_to` | `Fact` 按 `visible_to` 过滤视图 |
+| `test_multi_viewer_fact_projection_and_sync` | 多知情者保持 restricted，新增知情者原地更新 |
+| `test_secrets_visibility` | secrets 只对本人与全知视角可见 |
+| `test_character_secret_stored_only_in_memory` | 角色秘密唯一存储在 `secret:<角色>` 记忆条目 |
+| `test_foreshadow_truth_visible_to_director_and_known_character` | 伏笔描述/真相按 `visible_to` 过滤，默认仅导演可见 |
+| `test_world_context_fog_hides_unseeable` | 世界简报不泄露不可见信息 |
+| `test_world_context_gm_sees_everything` | 裁决视角可读取完整世界简报 |
+
+### 3.3 存档与模式切换 — `memory/test_checkpoint.py`（1）+ `memory/test_world_state.py`（2）
+
+| 用例 | 验证点 |
+|---|---|
+| `test_save_load_replay_is_identical` | 存档→读档→回放完全一致 |
+| `test_override_audit` | `FactOverride` 审计 |
+| `test_mode_switch_writes_checkpoint` | 模式切换落 checkpoint |
+
+### 3.4 扩展 manifest — `extensions/test_manifest.py`（2）
+
+| 用例 | 验证点 |
+|---|---|
+| `test_demo_manifests_resolve_and_travel_override` | skill / map mod 生效，旅行耗时覆盖 |
+| `test_bad_manifest_rejected` | 坏 manifest 被拒绝 |
+
+### 3.5 叙事运行时 — `engine/test_runtime.py`（3）+ `engine/test_foreshadow_conflicts.py`（1）
+
+| 用例 | 验证点 |
+|---|---|
+| `test_idle_three_turns_triggers_npc_event` | 静止 3 回合 NPC 自发事件且不越权 |
+| `test_freeform_text_enters_narrative_pipeline_without_action_parser` | 自由文本无需动作分类即可进入叙事流水线 |
+| `test_director_mode_turn_runs_without_touching_game_entry` | 导演模式不回归游戏入口 |
+| `test_foreshadow_retroactive_conflict_blocks` | 回溯补录伏笔：未知角色/历史冲突阻断 |
+
+### 3.6 游戏回合 API — `api/test_game.py`（10）
 
 | 用例 | 验证点 |
 |---|---|
 | `test_game_turn_and_state` | `POST /game/{pid}/turn` + `GET /state` |
 | `test_game_saves_roundtrip` | 存档读写往返 |
 | `test_mode_switch_endpoint` | 模式切换端点 |
-| `test_memory_get_and_patch_backend` | 记忆查看与后端切换 |
-| `test_extensions_resolve_endpoint` | `/extensions/resolve` |
-| `test_provider_api_keys_injected_in_memory` | Key 只注入运行时内存，不落盘 |
 | `test_freeform_api_text_does_not_require_intent` | 自由文本请求无需 `intent` 字段 |
 | `test_runtime_v1_routes_registered` | `/runtime/v1/*` 版本化入口 + 旧端点保留 |
 | `test_turn_advances_arc_and_returns_frame` | 回合推进节拍并返回舞台帧 |
@@ -245,9 +279,24 @@
 | `test_turn_applies_overrides_before_narrative` | 叙事前应用 `FactOverride` |
 | `test_turn_timeout_returns_timeout_status` | 回合超时返回 timeout 状态 |
 | `test_turn_quota_exceeded` | 回合配额耗尽拒绝 |
+
+### 3.7 运行时引擎 — `api/test_engine.py`（4）
+
+| 用例 | 验证点 |
+|---|---|
+| `test_timeout_returns_immediately` | 超时控制立即返回 |
+| `test_quota_rejects_when_no_turns_left` | 请求级配额超限拒绝 |
+| `test_provider_api_keys_injected_in_memory` | Key 只注入运行时内存，不落盘 |
 | `test_compression_provider_selects_role` | `compression.provider` 按 `visible_to` 选择独立压缩者 / 导演 / 角色模型 |
 
-### 3.3 记忆分层压缩与配置 — `test_memory_compression.py`（23）
+### 3.8 记忆 / 扩展 API — `api/test_memory.py`（1）+ `api/test_extensions.py`（1）
+
+| 用例 | 验证点 |
+|---|---|
+| `test_memory_get_and_patch_backend` | 记忆查看与后端切换 |
+| `test_extensions_resolve_endpoint` | `/extensions/resolve` |
+
+### 3.9 记忆分层压缩与配置 — `memory/test_compression.py`（23）
 
 | 用例 | 验证点 |
 |---|---|
@@ -278,7 +327,7 @@
 
 ## 4. Demo 模板（M0-9）
 
-### 4.1 单元 — `test_templates.py`（31）
+### 4.1 单元 — `templates/test_templates.py`（31）
 
 | 用例 | 验证点 |
 |---|---|
@@ -314,7 +363,7 @@
 | `test_apply_sandbox_life_template` | 应用都市沙盒模板建项目并写入资产 |
 | `test_apply_sandbox_life_is_idempotent` | 重复应用幂等 |
 
-### 4.2 端到端集成 — `test_templates_integration.py`（14）
+### 4.2 端到端集成 — `templates/test_integration.py`（14）
 
 | 用例 | 验证点 |
 |---|---|

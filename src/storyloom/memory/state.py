@@ -15,11 +15,12 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from storyloom.memory.base import (
     OMNISCIENT_VIEWERS,
     PUBLIC_VIEWERS,
+    normalize_visible_to,
 )
 from storyloom.memory.models import NovelProject
 
@@ -47,6 +48,27 @@ class Fact(BaseModel):
     visible_to: Set[str] = Field(default_factory=set)
     asserted_by: Optional[str] = None
     source_event: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_visibility(cls, data: Any) -> Any:
+        """旧快照的 known_by / visibility 转成 visible_to。"""
+        if not isinstance(data, dict):
+            return data
+        if not ({"visible_to", "visibility", "known_by"} & data.keys()):
+            return data
+        payload = dict(data)
+        payload["visible_to"] = set(
+            normalize_visible_to(
+                visible_to=payload.get("visible_to"),
+                visibility=payload.get("visibility"),
+                known_by=payload.get("known_by"),
+                default_public=False,
+            )
+        )
+        payload.pop("visibility", None)
+        payload.pop("known_by", None)
+        return payload
 
     def is_visible_to(self, viewer: Optional[str]) -> bool:
         if PUBLIC_VIEWERS.intersection(self.visible_to):

@@ -160,7 +160,7 @@ StoryLoom 是**作者工作台 + 世界运行时**，不是内容市场，也不
 
 ## 8. 验证
 
-1. `pytest tests/test_templates.py tests/test_templates_integration.py` 通过。
+1. `pytest tests/templates/test_templates.py tests/templates/test_integration.py` 通过。
 2. 应用模板后，项目标题 / 文风 / 章节标题与新样板一致。
 3. 游戏模式进入后，世界状态 tab 能看到节拍、在场角色、标记 / 关系（有数据时）。
 4. 渲染 prompt 含作品文风与世界书；受限记忆只对 `visible_to` 中的角色与

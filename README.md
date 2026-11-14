@@ -126,7 +126,7 @@ Mod v1（YAML，ExtensionHost 加载为 Crew Tool）、可玩的游戏前端；
 运行时入口 **StoryEngine**（`api/engine.py`）统一项目、资产与两种模式。
 内置两个可删除试用模板：仙侠《青云宗 · 签到有债》与都市沙盒《临江市 · 平行人生》。
 接口按运行时架构预留（async + 超时 + 扩展包隔离），为后续性能扩展留对结构。
-验收 A1 ~ A15 由 `tests/test_m0*.py` 覆盖，后端共 **207 个用例全部通过**
+验收 A1 ~ A15 由 `tests/crews/test_packet.py`、`tests/engine/test_runtime.py`、`tests/memory/test_visibility.py`、`tests/api/test_game.py` 等模块化用例覆盖，后端共 **234 个用例全部通过**
 （完整清单见 [TESTS.md](docs/TESTS.md)），详见 [MVP.md](docs/MVP.md)。
 
 ## 文档

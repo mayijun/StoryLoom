@@ -204,3 +204,71 @@ def test_sync_foreshadowings_preserves_later_visible_to(repo):
     memory.sync_foreshadowings([])
     assert truth_id not in memory.items
     assert f"foreshadow:{fs.foreshadow_id}" not in memory.items
+
+
+def test_short_term_compress_and_restart_recovery(repo):
+    memory = LayeredMemory("p_short_term", repo=repo)
+    for index in range(7):
+        memory.add_scene(
+            scene_index=index,
+            prose=f"第{index}个场景：雾从海面压下来，航海图被打湿了。" * 3,
+            brief=f"场景 {index}",
+        )
+    counts = memory.counts()
+    assert counts["short_term"] <= 6
+    assert counts["long_term"] >= 1
+
+    restored = LayeredMemory("p_short_term", repo=repo)
+    assert restored.counts() == counts
+    assert restored.has_scene_memory()
+
+
+def test_demote_and_reheat(repo):
+    memory = LayeredMemory("p_demote", repo=repo)
+    item = memory.add_archive_item(
+        "cold_memory", "一段无人再提的旧事", scene_index=0, importance=0.1
+    )
+    item.tier = "long_term"
+    item.last_hit_scene = 0
+    memory._put(item)
+
+    demoted = memory.evaluate_demotion(10)
+    assert [i.id for i in demoted] == ["cold_memory"]
+    assert memory.items["cold_memory"].tier == "archive"
+    assert memory.items["cold_memory"].source == "demoted"
+
+    memory.retrieve("旧事", current_scene=11)
+    memory.retrieve("旧事", current_scene=12)
+    assert memory.items["cold_memory"].tier == "long_term"
+    assert memory.items["cold_memory"].source == "reheated"
+
+
+def test_backfill_scenes_and_chinese_proper_noun(repo):
+    memory = LayeredMemory("p_backfill", repo=repo)
+    count = MemoryIndexer(memory).backfill(
+        scenes=[
+            {
+                "scene_id": "s1",
+                "brief": "旅店墙上",
+                "prose": "墙上挂着一张被海雾打湿的航海图。",
+            }
+        ]
+    )
+    assert count >= 1
+    hits = memory.retrieve("航海图")
+    assert [item.id for item in hits] == ["scene:s1"]
+
+
+def test_backends_switch_and_degrade(repo):
+    vector = LayeredMemory("p_vector", repo=repo, backend="vector")
+    vector.add_archive_item("d1", "航海图", scene_index=1)
+    assert vector.backend_name == "vector"
+    assert vector.retrieve("航海图") == []  # 无 embedding 自动降级为空
+
+    hybrid = LayeredMemory("p_hybrid", repo=repo, backend="hybrid")
+    hybrid.add_archive_item("d1", "航海图", scene_index=1)
+    assert [item.id for item in hybrid.retrieve("航海图")] == ["d1"]
+
+    fts = LayeredMemory("p_fts", repo=repo, backend="fts")
+    fts.add_archive_item("d1", "航海图", scene_index=1)
+    assert [item.id for item in fts.retrieve("航海图")] == ["d1"]

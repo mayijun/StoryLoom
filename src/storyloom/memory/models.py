@@ -5,9 +5,11 @@ This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 
 import uuid
 from enum import Enum
-from typing import List, Literal, Optional
+from typing import Any, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from storyloom.memory.base import normalize_visible_to
 
 
 class CharacterAsset(BaseModel):
@@ -67,6 +69,25 @@ class Foreshadowing(BaseModel):
     # ["all"] 表示公开，具名角色表示“一开始就知道这条伏笔”，
     # 例如某个配角天生知情。
     visible_to: List[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_visibility(cls, data: Any) -> Any:
+        """旧快照/旧行同时带 visibility 或 known_by 时转成 visible_to。"""
+        if not isinstance(data, dict):
+            return data
+        if not ({"visible_to", "visibility", "known_by"} & data.keys()):
+            return data
+        payload = dict(data)
+        payload["visible_to"] = normalize_visible_to(
+            visible_to=payload.get("visible_to"),
+            visibility=payload.get("visibility"),
+            known_by=payload.get("known_by"),
+            default_public=False,
+        )
+        payload.pop("visibility", None)
+        payload.pop("known_by", None)
+        return payload
 
 
 class SurpriseType(str, Enum):

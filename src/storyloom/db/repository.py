@@ -10,11 +10,12 @@ This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 """
 
 from contextlib import contextmanager
+import json
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import yaml
-from sqlalchemy import func, inspect, select
+from sqlalchemy import func, inspect, select, text
 from sqlalchemy.orm import Session
 
 from storyloom.db.base import database_url, get_engine
@@ -31,6 +32,7 @@ from storyloom.db.models import (
     SceneRow,
     TaskConfigRow,
 )
+from storyloom.memory.base import normalize_visible_to
 
 SCENE_CREW = "scene_crew"
 # 内置示例项目：原有配置与种子数据都归属于它，用户可直接上手试用
@@ -151,10 +153,212 @@ class CrewConfigRepository:
         # 补全 projects 表：确保所有 agent/task 引用的 project_id 都存在
         self._ensure_all_project_ids_known()
 
+        # 旧库可见范围迁移：visibility + known_by → visible_to
+        self._migrate_memory_visible_to()
+        self._migrate_foreshadow_visible_to()
+        self._migrate_memory_config_payload()
+        self._migrate_character_secrets()
+
         if legacy:
             self.seed_from_yaml()
 
         self._schema_ready = True
+
+    @staticmethod
+    def _json_list(value: Any) -> List[str]:
+        """把 SQLite JSON 列（可能是文本）解析成字符串列表。"""
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple, set)):
+            return [str(v) for v in value]
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except (TypeError, ValueError):
+                return [value] if value.strip() else []
+            if isinstance(parsed, list):
+                return [str(v) for v in parsed]
+        return []
+
+    def _migrate_memory_visible_to(self) -> None:
+        """旧 memory_items：补 visible_to 列，并从 visibility/known_by 回填。"""
+        inspector = inspect(self.engine)
+        if not inspector.has_table("memory_items"):
+            return
+        columns = {c["name"] for c in inspector.get_columns("memory_items")}
+        with self.engine.begin() as conn:
+            if "visible_to" not in columns:
+                conn.exec_driver_sql(
+                    "ALTER TABLE memory_items ADD COLUMN visible_to JSON"
+                )
+            if "tier" in columns:
+                conn.exec_driver_sql(
+                    "UPDATE memory_items SET tier = 'key_events' "
+                    "WHERE tier = 'canon'"
+                )
+            select_cols = ["id", "visible_to"]
+            for legacy in ("visibility", "known_by"):
+                if legacy in columns:
+                    select_cols.append(legacy)
+            rows = conn.exec_driver_sql(
+                f"SELECT {', '.join(select_cols)} FROM memory_items "
+                "WHERE visible_to IS NULL"
+            ).mappings().all()
+            for row in rows:
+                scope = normalize_visible_to(
+                    visibility=row.get("visibility"),
+                    known_by=self._json_list(row.get("known_by")),
+                    default_public=True,
+                )
+                conn.execute(
+                    text(
+                        "UPDATE memory_items SET visible_to = :scope "
+                        "WHERE id = :id"
+                    ),
+                    {"scope": json.dumps(scope, ensure_ascii=False),
+                     "id": row["id"]},
+                )
+
+    def _migrate_foreshadow_visible_to(self) -> None:
+        """旧 foreshadowings：补 visible_to 列，并从 visibility/known_by 回填。"""
+        inspector = inspect(self.engine)
+        if not inspector.has_table("foreshadowings"):
+            return
+        columns = {c["name"] for c in inspector.get_columns("foreshadowings")}
+        with self.engine.begin() as conn:
+            if "visible_to" not in columns:
+                conn.exec_driver_sql(
+                    "ALTER TABLE foreshadowings ADD COLUMN visible_to JSON"
+                )
+            select_cols = ["id", "visible_to"]
+            for legacy in ("visibility", "known_by"):
+                if legacy in columns:
+                    select_cols.append(legacy)
+            rows = conn.exec_driver_sql(
+                f"SELECT {', '.join(select_cols)} FROM foreshadowings "
+                "WHERE visible_to IS NULL"
+            ).mappings().all()
+            for row in rows:
+                scope = normalize_visible_to(
+                    visibility=row.get("visibility"),
+                    known_by=self._json_list(row.get("known_by")),
+                    default_public=False,
+                )
+                conn.execute(
+                    text(
+                        "UPDATE foreshadowings SET visible_to = :scope "
+                        "WHERE id = :id"
+                    ),
+                    {"scope": json.dumps(scope, ensure_ascii=False),
+                     "id": row["id"]},
+                )
+
+    def _migrate_memory_config_payload(self) -> None:
+        """旧记忆配置里的 canon 键改名为 key_events，避免校验失败。"""
+        inspector = inspect(self.engine)
+        if not inspector.has_table("memory_configs"):
+            return
+        with self.engine.begin() as conn:
+            rows = conn.exec_driver_sql(
+                "SELECT project_id, payload FROM memory_configs"
+            ).mappings().all()
+            for row in rows:
+                payload = row["payload"]
+                if isinstance(payload, str):
+                    try:
+                        payload = json.loads(payload)
+                    except (TypeError, ValueError):
+                        continue
+                updated = self._rewrite_memory_payload(payload)
+                if updated is None:
+                    continue
+                conn.execute(
+                    text(
+                        "UPDATE memory_configs SET payload = :payload "
+                        "WHERE project_id = :project_id"
+                    ),
+                    {
+                        "payload": json.dumps(updated, ensure_ascii=False),
+                        "project_id": row["project_id"],
+                    },
+                )
+
+    @staticmethod
+    def _rewrite_memory_payload(
+        payload: Any,
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(payload, dict):
+            return None
+        changed = False
+        out = dict(payload)
+        if "canon" in out:
+            out["key_events"] = out.pop("canon")
+            changed = True
+        key_events = out.get("key_events")
+        if isinstance(key_events, dict) and (
+            key_events.get("compress_into") == "canon"
+        ):
+            out["key_events"] = {**key_events, "compress_into": "key_events"}
+            changed = True
+        demotion = out.get("demotion")
+        if isinstance(demotion, dict) and "canon" in demotion:
+            demotion = dict(demotion)
+            demotion["key_events"] = demotion.pop("canon")
+            out["demotion"] = demotion
+            changed = True
+        tiers = out.get("tiers")
+        if isinstance(tiers, list):
+            out["tiers"] = [
+                {**tier, "compress_into": "key_events"}
+                if isinstance(tier, dict)
+                and tier.get("compress_into") == "canon"
+                else tier
+                for tier in tiers
+            ]
+            changed = changed or out["tiers"] != tiers
+        return out if changed else None
+
+    def _migrate_character_secrets(self) -> None:
+        """把旧 characters.secrets 迁成 archive + visible_to=[角色]。"""
+        inspector = inspect(self.engine)
+        if not inspector.has_table("characters"):
+            return
+        columns = {c["name"] for c in inspector.get_columns("characters")}
+        if "secrets" not in columns:
+            return
+
+        with self.engine.begin() as conn:
+            legacy = conn.exec_driver_sql(
+                "SELECT project_id, name, secrets FROM characters "
+                "WHERE secrets IS NOT NULL AND secrets <> ''"
+            ).all()
+
+        with self.session() as session:
+            for project_id, name, secrets in legacy:
+                storage_id = f"{project_id}::secret:{name}"
+                if session.get(MemoryRow, storage_id) is None:
+                    self._write_secret_memory(
+                        session, project_id, name, secrets
+                    )
+            # 历史条目文本形如“<角色>的秘密：...”，统一成秘密原文
+            rows = session.scalars(
+                select(MemoryRow).where(MemoryRow.id.like("%::secret:%"))
+            ).all()
+            for row in rows:
+                name = row.id.split("::secret:", 1)[1]
+                prefix = f"{name}的秘密："
+                if row.text.startswith(prefix):
+                    row.text = row.text[len(prefix):]
+                    row.summary = row.text[:200]
+
+        try:
+            with self.engine.begin() as conn:
+                conn.exec_driver_sql(
+                    "ALTER TABLE characters DROP COLUMN secrets"
+                )
+        except Exception:
+            # SQLite 老版本不支持 DROP COLUMN；模型已不再映射该列。
+            print("  ⚠️ 无法删除 characters.secrets 列，已忽略")
 
     @staticmethod
     def _write_secret_memory(
