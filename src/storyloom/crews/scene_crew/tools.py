@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, List, Optional, Tuple
 
 from crewai.tools import tool
 
+from storyloom.crews.scene_crew.context import PromptContextAssembler
 from storyloom.crews.scene_crew.offscreen import (
     SideStageEvent,
     detect_participants,
@@ -166,6 +167,8 @@ class CharacterWakeRegistry:
     max_side_participants: int = 2
     #: 游戏模式：唤醒只登记，回应在后续回合以「侧台回响」送达
     defer_side_stage: bool = False
+    #: 统一上下文装配器（可选；有则优先用它取记忆/场景）
+    assembler: Optional[PromptContextAssembler] = None
     records: List[WakeRecord] = field(default_factory=list)
     _count: int = field(default=0, init=False)
     _cache: dict = field(default_factory=dict, init=False)
@@ -312,13 +315,19 @@ class CharacterWakeRegistry:
                 involves,
                 limit=self.max_side_participants,
             )
+            # 导演意图优先取 assembler（与 _narrate 回写一致）
+            deferred_intent = (
+                self.assembler.director_intent
+                if self.assembler is not None
+                else self.intent
+            )
             pending_id = queue_side_stage(
                 memory=self.memory,
                 focus=char,
                 participants=[char, *explicit],
                 reason=reason,
                 scene_brief=self.scene_brief,
-                intent=self.intent,
+                intent=deferred_intent,
                 scene_index=self.scene_index,
                 source=source,
             )
@@ -419,6 +428,12 @@ class CharacterWakeRegistry:
         if cached is not None:
             return cached
 
+        # 导演意图优先取 assembler（与 _narrate 回写一致）
+        intent = (
+            self.assembler.director_intent
+            if self.assembler is not None
+            else self.intent
+        )
         event = resolve_side_stage(
             crew=self.crew,
             project=self.project,
@@ -426,8 +441,10 @@ class CharacterWakeRegistry:
             scene_brief=self.scene_brief,
             reason=reason,
             focus=focus.name,
-            intent=self.intent,
+            intent=intent,
             draft_experience=draft_experience,
+            memory=self.memory,
+            assembler=self.assembler,
         )
         if event is not None:
             self._event_cache[key] = event
@@ -509,20 +526,42 @@ class CharacterWakeRegistry:
         canonical_experience: str = "",
     ) -> str:
         """为被唤醒角色构造最小上下文：人设 + 记忆 + 场景 + 唤醒原因。"""
-        memory_block = ""
-        rag = ""
-        if self.memory is not None:
+        # 优先用统一上下文装配器；没有 assembler 时退回直接读 memory
+        if self.assembler is not None:
+            memory_block = self.assembler.memory_block(char.name)
+            rag = self.assembler.rag_context(
+                char.name, reason or self.scene_brief, k=3
+            )
+        elif self.memory is not None:
             try:
-                memory_block = self.memory.prompt_block(viewer=char.name)
-                rag = self.memory.retrieval_block(
+                raw_memory = self.memory.prompt_block(viewer=char.name)
+                memory_block = (
+                    f"【记忆】\n{raw_memory}" if raw_memory.strip() else ""
+                )
+                raw_rag = self.memory.retrieval_block(
                     reason or self.scene_brief, k=3, viewer=char.name
+                )
+                rag = (
+                    f"【相关回忆检索】\n{raw_rag}"
+                    if raw_rag.strip()
+                    else ""
                 )
             except Exception:  # noqa: BLE001 - 记忆不可用不阻断唤醒
                 memory_block = ""
                 rag = ""
+        else:
+            memory_block = ""
+            rag = ""
 
         present = ", ".join(self.present_chars) or "（无）"
-        intent_block = f"\n【导演意图】\n{self.intent}\n" if self.intent else ""
+        # 导演意图优先取 assembler（与 _narrate 回写一致），
+        # 没有 assembler 时退回 registry 自己的 intent 字段
+        intent_text = (
+            self.assembler.director_intent
+            if self.assembler is not None
+            else self.intent
+        )
+        intent_block = f"\n【导演意图】\n{intent_text}\n" if intent_text else ""
         canonical_block = (
             "\n【侧台已确认的经历（必须以此为准，不得矛盾）】\n"
             f"{canonical_experience}\n"
@@ -540,8 +579,8 @@ class CharacterWakeRegistry:
             f"记忆和消息渠道行动。\n"
             f"【唤醒来源】{source}\n"
             f"【唤醒原因】{reason or '导演需要你对当前局势做出反应'}\n"
-            f"【你的记忆】\n{memory_block or '（无）'}\n"
-            f"【相关记忆检索】\n{rag or '（无）'}\n"
+            f"{memory_block or '【记忆】\n（无）'}\n"
+            f"{rag or '【相关回忆检索】\n（无）'}\n"
             f"{canonical_block}"
             f"{intent_block}"
             "输出必须分为两段，顺序固定：\n"

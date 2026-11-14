@@ -16,11 +16,14 @@ import json
 import re
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from storyloom.memory.base import MEMORY_ITEM_MAX_CHARS
 from storyloom.memory.models import CharacterAsset, NovelProject
 from storyloom.memory.scoring import summarize
+
+if TYPE_CHECKING:
+    from storyloom.crews.scene_crew.context import PromptContextAssembler
 
 _NAME_SPLIT_RE = re.compile(r"[,，、;；\s]+")
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
@@ -142,16 +145,50 @@ def resolve_side_stage(
     focus: str,
     intent: str = "",
     draft_experience: str = "",
+    memory: Any = None,
+    assembler: Optional["PromptContextAssembler"] = None,
 ) -> Optional[SideStageEvent]:
-    """调用侧台导演裁决一次互动；失败返回 None，由调用方降级。"""
+    """调用侧台导演裁决一次互动；失败返回 None，由调用方降级。
+
+    侧台导演与其他 Agent 共用同一个 LayeredMemory 实例，只在可见性上
+    区分：这里用 ``viewer="director"`` 的全知视角读取记忆块与 RAG 检索，
+    确保裁决出的事实 / 视角不会与已有记忆矛盾。
+
+    优先使用 ``assembler``（统一上下文装配器）；没有 assembler 时
+    退回直接读 ``memory``，保持与旧调用方兼容。
+    """
     if len(participants) < 2:
         return None
+    memory_block = ""
+    rag_context = ""
+    if assembler is not None:
+        memory_block = assembler.memory_block("director")
+        rag_context = assembler.rag_context(
+            "director", scene_brief or reason, k=3
+        )
+    elif memory is not None:
+        try:
+            raw_memory = memory.prompt_block(viewer="director")
+            memory_block = (
+                f"【记忆】\n{raw_memory}" if raw_memory.strip() else ""
+            )
+            raw_rag = memory.retrieval_block(
+                scene_brief or reason, k=3, viewer="director"
+            )
+            rag_context = (
+                f"【相关回忆检索】\n{raw_rag}" if raw_rag.strip() else ""
+            )
+        except Exception:  # noqa: BLE001 - 记忆不可用时不阻断侧台
+            memory_block = ""
+            rag_context = ""
     prompt = build_side_stage_prompt(
         participants=participants,
         scene_brief=scene_brief,
         reason=reason,
         intent=intent,
         draft_experience=draft_experience,
+        memory_block=memory_block,
+        rag_context=rag_context,
     )
     try:
         agent = crew.build_offscreen_director()
@@ -497,6 +534,8 @@ def build_side_stage_prompt(
     reason: str,
     intent: str = "",
     draft_experience: str = "",
+    memory_block: str = "",
+    rag_context: str = "",
 ) -> str:
     profiles = "\n".join(
         f"- {char.name}（{char.importance_tier}）"
@@ -509,6 +548,11 @@ def build_side_stage_prompt(
         if draft_experience
         else ""
     )
+    memory_section = (
+        "【共享记忆（全知视角，仅供裁决时校验一致性，不得照抄进视角）】\n"
+        f"{memory_block or '（无）'}\n"
+        f"{rag_context or '【相关回忆检索】\n（无）'}\n"
+    )
     return (
         "你是不出现在正文里的侧台导演，只裁决不在场角色之间已经/正在"
         "发生的互动。\n"
@@ -516,6 +560,7 @@ def build_side_stage_prompt(
         f"【唤醒原因】{reason or '需要补全沉睡期间的经历'}\n"
         f"{intent_block}"
         f"【参与者】\n{profiles}\n"
+        f"{memory_section}"
         f"{draft_block}"
         "输出一个 JSON 对象，不要输出任何其他文字，格式：\n"
         "{\n"

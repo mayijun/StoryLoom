@@ -35,6 +35,7 @@ from storyloom.crews.scene_crew.packet import (
     parse_agent_packet,
 )
 from storyloom.memory.base import MEMORY_ITEM_MAX_CHARS
+from storyloom.crews.scene_crew.context import PromptContextAssembler
 from storyloom.crews.scene_crew.offscreen import (
     drop_pending_side_stage,
     parse_pending_request,
@@ -588,6 +589,14 @@ class NarrativeEngine:
             scene_index=project.scene_count,
             max_wakes=max_events,
             defer_side_stage=False,
+            assembler=PromptContextAssembler(
+                memory=self.memory,
+                project=project,
+                scene_brief=scene_brief,
+                present_chars=list(present_chars),
+                foreshadow_table=self._foreshadow_summary(project),
+                extensions=self.extensions,
+            ),
         )
         present = set(present_chars)
         seen_focus: set = set()
@@ -675,9 +684,18 @@ class NarrativeEngine:
         一致性: DirectorAgent JSON 的 consistency 字段 + 硬编码规则
                 严重冲突触发 retry
         """
-        # ---- Step 0: 惰性角色唤醒登记表 ----
-        # 不在场的重要角色默认不创建 Agent；导演/在场主角通过 wake_character
-        # tool 唤醒后，回应会进入 actor_log 交给 ProseAgent。
+        # ---- Step 0: 惰性角色唤醒登记表 + 统一上下文装配器 ----
+        # 所有 Agent 共用同一个 assembler（同一份场景上下文 + 同一个记忆库），
+        # 区别只在 viewer 与各维度开关。
+        assembler = PromptContextAssembler(
+            memory=self.memory,
+            project=project,
+            scene_brief=scene_brief,
+            present_chars=list(present_chars),
+            foreshadow_table=self._foreshadow_summary(project),
+            extensions=self.extensions,
+        )
+
         wake_registry: Optional[CharacterWakeRegistry] = None
         if self.crew is not None:
             wake_registry = CharacterWakeRegistry(
@@ -690,6 +708,7 @@ class NarrativeEngine:
                 max_wakes=2,
                 # 游戏模式走异步侧台：只登记，回应在回合间推进后送达
                 defer_side_stage=(mode == "game"),
+                assembler=assembler,
             )
 
         # ---- Step 1: DirectorAgent kickoff ----
@@ -701,9 +720,7 @@ class NarrativeEngine:
                 break
 
             director_prompt = self._build_director_prompt(
-                project=project,
-                scene_brief=scene_brief,
-                present_chars=present_chars,
+                assembler=assembler,
                 mode=mode,
                 pre_context=pre_context,
             )
@@ -770,16 +787,14 @@ class NarrativeEngine:
                 director_json.get("director_intent", {}),
                 ensure_ascii=False,
             )
+        # 导演意图回写给 assembler，供后续角色 Agent 使用
+        assembler.director_intent = wake_registry.intent if wake_registry else json.dumps(
+            director_json.get("director_intent", {}), ensure_ascii=False
+        )
 
         # ---- Step 2: 动态 Crew（option） ----
         actor_log = ""
-        rag_context = (
-            self.memory.retrieval_block(
-                scene_brief, k=3, viewer="director"
-            )
-            if self.memory
-            else ""
-        )
+        rag_context = assembler.rag_context("director", query=scene_brief, k=3)
 
         if enable_crew and mode == "director" and self.crew is not None:
             actor_log = await self._run_dynamic_crew(
@@ -789,6 +804,7 @@ class NarrativeEngine:
                 rag_context=rag_context,
                 memory_query=scene_brief,
                 wake_registry=wake_registry,
+                assembler=assembler,
             )
         else:
             # 游戏模式、禁用 Crew、或 crew 不可用 → actor_log 直接从 pre_context 取
@@ -1006,42 +1022,15 @@ class NarrativeEngine:
     def _build_director_prompt(
         self,
         *,
-        project: NovelProject,
-        scene_brief: str,
-        present_chars: List[str],
+        assembler: PromptContextAssembler,
         mode: Literal["director", "game"],
         pre_context: Optional[Dict[str, Any]],
     ) -> str:
-        """构造 DirectorAgent 的提示词"""
-        # memory 上下文
-        if self.memory is not None:
-            memory_block = self.memory.prompt_block(viewer="director")
-            rag_context = self.memory.retrieval_block(
-                scene_brief, k=3, viewer="director"
-            )
-        else:
-            memory_block = ""
-            rag_context = ""
+        """构造 DirectorAgent 的提示词
 
-        # 资产层简要
-        char_names = [c.name for c in project.characters]
-        char_brief = (
-            "\n".join(
-                f"- {c.name}（{c.importance_tier}）：{c.persona[:60]}"
-                for c in project.characters[:6]
-            )
-            if project.characters
-            else "（无角色配置）"
-        )
-        loc_brief = (
-            ", ".join(l.name for l in project.locations[:6])
-            if project.locations
-            else "（无地点配置）"
-        )
-
-        # 伏笔简要状态表（DirectorAgent 可以看简要表，详情用 tool 查）
-        foreshadow_table = self._foreshadow_summary(project)
-
+        所有共享维度（场景/角色一览/伏笔/记忆/RAG/扩展）由 assembler 统一注入，
+        这里只负责导演独有的部分：模式提示、pre_context、输出 schema。
+        """
         # 模式差异
         mode_hint = (
             "导演模式：你为本【场景】做完整意图规划，"
@@ -1069,18 +1058,15 @@ class NarrativeEngine:
                     "不要重复已发生的事实，也不要替角色补充新的秘密。\n"
                 )
 
-        extension_block = ""
-        if self.extensions is not None:
-            skill_text = self.extensions.skill_prompt()
-            rules = self.extensions.rules()
-            if skill_text:
-                extension_block += f"\n【扩展设定】\n{skill_text}\n"
-            if rules:
-                extension_block += (
-                    "\n【扩展规则】\n"
-                    + json.dumps(rules, ensure_ascii=False, indent=2)
-                    + "\n"
-                )
+        # 导演用全知视角读取全部共享维度
+        shared_context = assembler.build(
+            "director",
+            query=assembler.scene_brief,
+            include_scene=True,
+            include_cast=True,
+            include_foreshadow=True,
+            include_extension=True,
+        )
 
         classical_memory = bool(
             self.memory is not None
@@ -1101,16 +1087,8 @@ class NarrativeEngine:
             "你是本作导演兼创作总指挥。\n"
             f"{mode_hint}\n"
             "\n"
-            f"【已出场角色】: {', '.join(present_chars)}\n"
-            f"【全部角色一览】:\n{char_brief}\n"
-            f"【地点一览】: {loc_brief}\n"
-            f"【scene_brief/玩家行动】: {scene_brief}\n"
-            "\n"
-            f"【记忆工作区】:\n{memory_block}\n"
-            f"【RAG 检索】:\n{rag_context}\n"
-            f"【伏笔简要状态表】:\n{foreshadow_table}\n"
+            f"{shared_context}\n"
             f"{pre_context_str}\n"
-            f"{extension_block}\n"
             "\n"
             "请输出一个 JSON 对象（不要 Markdown 代码围栏），"
             "包含以下部分：\n"
@@ -1172,6 +1150,7 @@ class NarrativeEngine:
         rag_context: str,
         memory_query: str = "",
         wake_registry: Optional[CharacterWakeRegistry] = None,
+        assembler: Optional[PromptContextAssembler] = None,
     ) -> str:
         """
         动态 Crew 组装 + kickoff。
@@ -1194,10 +1173,10 @@ class NarrativeEngine:
         agents: List[Agent] = []
         tasks: List[Task] = []
 
-        intent_str = json.dumps(
-            director_json.get("director_intent", {}),
-            ensure_ascii=False,
-            indent=2,
+        intent_block = (
+            assembler.intent_block()
+            if assembler is not None
+            else f"导演意图:\n{json.dumps(director_json.get('director_intent', {}), ensure_ascii=False, indent=2)}"
         )
 
         wakeable_names = (
@@ -1216,13 +1195,11 @@ class NarrativeEngine:
         )
 
         def char_memory(char) -> tuple[str, str]:
-            if not self.memory:
+            if assembler is None:
                 return "", rag_context
             return (
-                self.memory.prompt_block(viewer=char.name),
-                self.memory.retrieval_block(
-                    memory_query, k=3, viewer=char.name
-                ),
+                assembler.memory_block(char.name),
+                assembler.rag_context(char.name, memory_query, k=3),
             )
 
         for char in primary_chars:
@@ -1241,9 +1218,9 @@ class NarrativeEngine:
                         f"内心想法、台词和行动。\n"
                         f"简洁、符合人设，只写行动日志式的描述。"
                         f"\n{wake_hint}"
-                        f"\n导演意图:\n{intent_str}\n\n"
-                        f"RAG 上下文:\n{char_rag}\n\n"
-                        f"记忆:\n{memory_block}\n"
+                        f"\n{intent_block}\n\n"
+                        f"{char_rag}\n\n"
+                        f"{memory_block}\n"
                     ),
                     expected_output=(
                         f"{char.name} 的行动日志片段（3~5 句），"
@@ -1265,9 +1242,9 @@ class NarrativeEngine:
                             f"只写这一个角色的台词与动作，"
                             f"不要替其他角色发言。\n"
                             f"给出{char.name}在这一刻的简短反应/台词。"
-                            f"\n\n导演意图:\n{intent_str}\n\n"
-                            f"RAG:\n{char_rag}\n\n"
-                            f"记忆:\n{memory_block}\n"
+                            f"\n\n{intent_block}\n\n"
+                            f"{char_rag}\n\n"
+                            f"{memory_block}\n"
                         ),
                         expected_output=(
                             f"{char.name} 的简短行动描述（1~2 句）"
@@ -1462,15 +1439,21 @@ class NarrativeEngine:
         return issues
 
     def _build_foreshadow_conflict_prompt(
-        self, project: NovelProject, fs: Foreshadowing
+        self,
+        project: NovelProject,
+        fs: Foreshadowing,
+        assembler: Optional[PromptContextAssembler] = None,
     ) -> str:
-        rag = ""
-        if self.memory is not None:
-            rag = self.memory.retrieval_block(
-                f"{fs.description} {fs.target_revelation}",
-                k=6,
-                viewer="director",
+        query = f"{fs.description} {fs.target_revelation}"
+        rag = (
+            assembler.rag_context("director", query=query, k=6)
+            if assembler is not None
+            else (
+                self.memory.retrieval_block(query, k=6, viewer="director")
+                if self.memory is not None
+                else ""
             )
+        )
         payload = {
             "foreshadow": {
                 "foreshadow_id": fs.foreshadow_id,
@@ -1535,7 +1518,14 @@ class NarrativeEngine:
         if not retroactive or self.crew is None:
             return issues
 
-        prompt = self._build_foreshadow_conflict_prompt(project, fs)
+        # 伏笔冲突检查只需要 RAG，场景上下文留空即可
+        assembler = PromptContextAssembler(
+            memory=self.memory,
+            project=project,
+            scene_brief="",
+            present_chars=[],
+        )
+        prompt = self._build_foreshadow_conflict_prompt(project, fs, assembler=assembler)
         raw = await self._kickoff(
             agent=self.crew.director(), prompt=prompt, timeout_s=60.0
         )
