@@ -60,6 +60,39 @@ from storyloom.memory.state import (
 
 
 # ============================================================================
+# 回合预算：内层各阶段共享外层总预算，避免外层先超时
+# ============================================================================
+
+_TURN_BUDGET_RESERVE_S = 2.0
+_STAGE_SIDE_STAGE_S = 2.0
+_STAGE_GM_S = 8.0
+_STAGE_DIRECTOR_S = 9.0
+_STAGE_CREW_S = 10.0
+_STAGE_PROSE_S = 8.0
+
+
+class _StageBudget:
+    """单回合预算：每个阶段只拿剩余时间，保证整回合在规定预算内收口。"""
+
+    def __init__(
+        self,
+        total_s: float,
+        reserve_s: float = _TURN_BUDGET_RESERVE_S,
+    ) -> None:
+        self._deadline = time.monotonic() + max(0.2, total_s - reserve_s)
+
+    def take(self, cap_s: float) -> float:
+        """返回该阶段可用秒数；预算耗尽时返回 0，由调用方走降级。"""
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0.05:
+            return 0.0
+        return min(cap_s, remaining)
+
+    def exhausted(self) -> bool:
+        return self._deadline - time.monotonic() <= 0.05
+
+
+# ============================================================================
 # 数据类（从 turn_flow.py 搬 + 新增）
 # ============================================================================
 
@@ -122,6 +155,7 @@ class NarrateResult(BaseModel):
     prose: str = ""
     choices: List[Dict[str, Any]] = Field(default_factory=list)
     consistency_issues: List[Dict[str, Any]] = Field(default_factory=list)
+    quality_flags: List[str] = Field(default_factory=list)
 
 
 class AdvanceResult(BaseModel):
@@ -291,6 +325,7 @@ class NarrativeEngine:
         world_state: Optional[WorldState] = None,
         is_regenerate: bool = False,
         max_retries: int = 1,
+        max_duration_s: Optional[float] = None,
     ) -> SceneResult:
         """
         导演模式入口：生成一个完整场景。
@@ -301,10 +336,12 @@ class NarrativeEngine:
           → 返回 SceneResult(prose, director_json, project, world_state)
         """
         # 回合间推进：先落地上一轮登记的异步侧台请求
+        budget = _StageBudget(max_duration_s) if max_duration_s else None
         side_stage_echo = await self.drain_side_stage(
             project=project,
             present_chars=present_chars,
             scene_brief=scene_brief,
+            budget=budget,
         )
         pre_context = (
             {"side_stage_echo": side_stage_echo} if side_stage_echo else None
@@ -319,6 +356,7 @@ class NarrativeEngine:
             enable_crew=True,
             enable_consistency=True,
             max_retries=max_retries,
+            budget=budget,
         )
 
         # 一致性 major 冲突时已在 _narrate 内 retry，这里不再阻塞
@@ -361,6 +399,7 @@ class NarrativeEngine:
         mode: Literal["game", "director"] = "game",
         goal: str = "",
         instance_id: str = "default",
+        max_duration_s: float = 30.0,
     ) -> TurnResult:
         """
         游戏模式入口：跑一个玩家回合。
@@ -379,6 +418,8 @@ class NarrativeEngine:
         start = time.time()
         turn_id = uuid.uuid4().hex[:12]
         trace_id = uuid.uuid4().hex
+        budget = _StageBudget(max_duration_s)
+        degraded_flags: List[str] = []
 
         # ① perceive（先合入扩展地图 / 旅行耗时，只增不删）
         if world_state is None:
@@ -417,6 +458,7 @@ class NarrativeEngine:
             project=project,
             present_chars=present,
             scene_brief=action_text.strip() or "(等待)",
+            budget=budget,
         )
 
         # ② 导演帧（先定节拍，再裁决） + GM adjudicate + idle_turns NPC round
@@ -436,7 +478,12 @@ class NarrativeEngine:
                 source="player",
             )
             adjudication, state_delta = await self._gm_adjudicate(
-                proposal=proposal, state=world_state, mode=mode, frame=arc_frame,
+                proposal=proposal,
+                state=world_state,
+                mode=mode,
+                frame=arc_frame,
+                budget=budget,
+                degraded_flags=degraded_flags,
             )
             pre_context_gm = {
                 "gm_verdict": adjudication.narrative,
@@ -463,6 +510,7 @@ class NarrativeEngine:
             enable_crew=False,  # 游戏模式跳过动态 Crew
             enable_consistency=True,
             max_retries=max_retries,
+            budget=budget,
         )
 
         # ④ 统一世界推进（只 apply 一次 delta，使用返回的对齐后状态）
@@ -534,6 +582,10 @@ class NarrativeEngine:
         )
 
         elapsed_ms = int((time.time() - start) * 1000)
+        degrade_flags = [*degraded_flags, *narrate_result.quality_flags]
+        quality_flags = list(degrade_flags)
+        if adjudication is not None and not adjudication.success:
+            quality_flags.append("rejected")
         return TurnResult(
             turn_id=turn_id,
             trace_id=trace_id,
@@ -546,12 +598,13 @@ class NarrativeEngine:
             scene=scene,
             text=narrate_result.prose,
             choices=narrate_result.choices,
-            quality=1.0,
-            quality_flags=[] if (adjudication is None or adjudication.success) else ["rejected"],
+            quality=max(0.3, 1.0 - 0.2 * len(degrade_flags)),
+            quality_flags=quality_flags,
             frame=arc_result,
             log={
                 "elapsed_ms": elapsed_ms,
                 "scene_count": project.scene_count,
+                "degraded": degrade_flags,
             },
         )
 
@@ -566,6 +619,7 @@ class NarrativeEngine:
         present_chars: List[str],
         scene_brief: str,
         max_events: int = 2,
+        budget: Optional[_StageBudget] = None,
     ) -> str:
         """把上一回合登记的异步侧台请求落地。
 
@@ -630,15 +684,24 @@ class NarrativeEngine:
                 if name and str(name) != focus
             ]
             before = len(registry.records)
+            wake_timeout = (
+                budget.take(_STAGE_SIDE_STAGE_S) if budget is not None else 30.0
+            )
+            if budget is not None and wake_timeout <= 0:
+                # 预算耗尽：保留 pending，留到下个回合处理
+                break
             try:
-                await asyncio.to_thread(
-                    registry.wake,
-                    focus,
-                    str(payload.get("reason") or ""),
-                    ", ".join(others),
-                    f"async:{payload.get('source') or 'director'}",
+                await asyncio.wait_for(
+                    asyncio.to_thread(
+                        registry.wake,
+                        focus,
+                        str(payload.get("reason") or ""),
+                        ", ".join(others),
+                        f"async:{payload.get('source') or 'director'}",
+                    ),
+                    timeout=wake_timeout,
                 )
-            except Exception:  # noqa: BLE001 - 单个请求失败不影响其他
+            except Exception:  # noqa: BLE001 - 单个请求失败/超时不影响其他
                 pass
             # 无论成功与否都清理请求，避免每回合反复重试
             drop_pending_side_stage(self.memory, item_id)
@@ -669,6 +732,7 @@ class NarrativeEngine:
         enable_crew: bool = True,
         enable_consistency: bool = True,
         max_retries: int = 1,
+        budget: Optional[_StageBudget] = None,
     ) -> NarrateResult:
         """
         2~3 次 LLM kickoff 的统一叙事链：
@@ -713,10 +777,19 @@ class NarrativeEngine:
 
         # ---- Step 1: DirectorAgent kickoff ----
         director_json = {}
+        quality_flags: List[str] = []
         for attempt in range(max_retries + 1):
             # crew 不可用 → 硬编码降级
             if self.crew is None:
                 director_json = self._fallback_director_json(scene_brief, mode)
+                break
+
+            director_timeout = (
+                budget.take(_STAGE_DIRECTOR_S) if budget is not None else 90.0
+            )
+            if director_timeout <= 0:
+                director_json = self._fallback_director_json(scene_brief, mode)
+                quality_flags.append("director_degraded")
                 break
 
             director_prompt = self._build_director_prompt(
@@ -740,11 +813,12 @@ class NarrativeEngine:
             raw = await self._kickoff(
                 agent=director_agent,
                 prompt=director_prompt,
-                timeout_s=90.0,
+                timeout_s=director_timeout,
             )
             if raw is None:
-                # LLM 不可用 → 用降级 JSON
+                # LLM 不可用 / 超时 → 用降级 JSON
                 director_json = self._fallback_director_json(scene_brief, mode)
+                quality_flags.append("director_degraded")
                 break
 
             try:
@@ -771,7 +845,9 @@ class NarrativeEngine:
             )
 
             if not director_passed or has_major:
-                if attempt < max_retries:
+                if attempt < max_retries and (
+                    budget is None or not budget.exhausted()
+                ):
                     print(
                         f"  ⚠️ DirectorAgent 一致性 major 冲突，"
                         f"retry {attempt + 1}/{max_retries}..."
@@ -805,6 +881,8 @@ class NarrativeEngine:
                 memory_query=scene_brief,
                 wake_registry=wake_registry,
                 assembler=assembler,
+                budget=budget,
+                quality_flags=quality_flags,
             )
         else:
             # 游戏模式、禁用 Crew、或 crew 不可用 → actor_log 直接从 pre_context 取
@@ -830,23 +908,38 @@ class NarrativeEngine:
         if self.crew is None:
             prose = scene_brief or (pre_context or {}).get("gm_verdict", "")
         else:
-            prose_prompt = self._build_prose_prompt(
-                actor_log=actor_log,
-                director_json=director_json,
-                mode=mode,
-                project=project,
+            prose_timeout = (
+                budget.take(_STAGE_PROSE_S) if budget is not None else 90.0
             )
-            raw_prose = await self._kickoff(
-                agent=self.crew.prose(),
-                prompt=prose_prompt,
-                timeout_s=90.0,
+            if prose_timeout <= 0:
+                quality_flags.append("prose_degraded")
+            else:
+                prose_prompt = self._build_prose_prompt(
+                    actor_log=actor_log,
+                    director_json=director_json,
+                    mode=mode,
+                    project=project,
+                )
+                raw_prose = await self._kickoff(
+                    agent=self.crew.prose(),
+                    prompt=prose_prompt,
+                    timeout_s=prose_timeout,
+                )
+                if raw_prose is not None:
+                    packet = parse_agent_packet(raw_prose)
+                    prose = packet.prose or raw_prose.strip()
+                    choices = [
+                        {"text": c.text, "hint": c.hint} for c in packet.choices
+                    ]
+                else:
+                    quality_flags.append("prose_degraded")
+
+        # 正文阶段降级时仍返回可读文本，避免整回合只有空串
+        if not prose:
+            prose = (
+                (pre_context or {}).get("gm_verdict", "")
+                or scene_brief
             )
-            if raw_prose is not None:
-                packet = parse_agent_packet(raw_prose)
-                prose = packet.prose or raw_prose.strip()
-                choices = [
-                    {"text": c.text, "hint": c.hint} for c in packet.choices
-                ]
 
         return NarrateResult(
             director_json=director_json,
@@ -854,6 +947,7 @@ class NarrativeEngine:
             prose=prose,
             choices=choices,
             consistency_issues=self._hardcode_checks(director_json, project, mode),
+            quality_flags=quality_flags,
         )
 
     # ------------------------------------------------------------------
@@ -935,6 +1029,8 @@ class NarrativeEngine:
         state: WorldState,
         mode: Literal["game", "director"] = "game",
         frame: Optional[DirectorFrame] = None,
+        budget: Optional[_StageBudget] = None,
+        degraded_flags: Optional[List[str]] = None,
     ) -> Tuple[AdjudicationResult, StateDelta]:
         """
         GM 裁决：DirectorAgent 产出 StateDelta + narrative。
@@ -970,11 +1066,20 @@ class NarrativeEngine:
             fallback = self._fallback_adjudicate(proposal, state)
             return fallback, fallback.state_delta
 
+        gm_timeout = budget.take(_STAGE_GM_S) if budget is not None else 60.0
+        if gm_timeout <= 0:
+            if degraded_flags is not None:
+                degraded_flags.append("gm_degraded")
+            fallback = self._fallback_adjudicate(proposal, state)
+            return fallback, fallback.state_delta
+
         prompt = self._crew_adjudication_prompt(proposal, state, mode, frame)
         raw = await self._kickoff(
-            agent=self.crew.director(), prompt=prompt, timeout_s=60.0
+            agent=self.crew.director(), prompt=prompt, timeout_s=gm_timeout
         )
         if raw is None:
+            if degraded_flags is not None:
+                degraded_flags.append("gm_degraded")
             fallback = self._fallback_adjudicate(proposal, state)
             return fallback, fallback.state_delta
 
@@ -1151,6 +1256,8 @@ class NarrativeEngine:
         memory_query: str = "",
         wake_registry: Optional[CharacterWakeRegistry] = None,
         assembler: Optional[PromptContextAssembler] = None,
+        budget: Optional[_StageBudget] = None,
+        quality_flags: Optional[List[str]] = None,
     ) -> str:
         """
         动态 Crew 组装 + kickoff。
@@ -1170,8 +1277,9 @@ class NarrativeEngine:
             if c.name in present_chars and c.importance_tier != "primary"
         ]
 
-        agents: List[Agent] = []
-        tasks: List[Task] = []
+        # 每个可并行单元 = 一组互不共享 Agent 的 Task；
+        # primary 角色一人一 Agent，可彼此并行；secondary 共用 ensemble，组内串行。
+        units: List[Tuple[List[Agent], List[Task]]] = []
 
         intent_block = (
             assembler.intent_block()
@@ -1210,32 +1318,30 @@ class NarrativeEngine:
             )
             agent = self.crew.build_protagonist(char, extra_tools=extra_tools)
             memory_block, char_rag = char_memory(char)
-            agents.append(agent)
-            tasks.append(
-                Task(
-                    description=(
-                        f"请以【{char.name}】的身份，给出这一刻的"
-                        f"内心想法、台词和行动。\n"
-                        f"简洁、符合人设，只写行动日志式的描述。"
-                        f"\n{wake_hint}"
-                        f"\n{intent_block}\n\n"
-                        f"{char_rag}\n\n"
-                        f"{memory_block}\n"
-                    ),
-                    expected_output=(
-                        f"{char.name} 的行动日志片段（3~5 句），"
-                        f"描述想法、台词、行动"
-                    ),
-                    agent=agent,
-                )
+            task = Task(
+                description=(
+                    f"请以【{char.name}】的身份，给出这一刻的"
+                    f"内心想法、台词和行动。\n"
+                    f"简洁、符合人设，只写行动日志式的描述。"
+                    f"\n{wake_hint}"
+                    f"\n{intent_block}\n\n"
+                    f"{char_rag}\n\n"
+                    f"{memory_block}\n"
+                ),
+                expected_output=(
+                    f"{char.name} 的行动日志片段（3~5 句），"
+                    f"描述想法、台词、行动"
+                ),
+                agent=agent,
             )
+            units.append(([agent], [task]))
 
         if secondary_chars:
             ensemble = self.crew.ensemble(secondary_chars)
-            agents.append(ensemble)
+            secondary_tasks: List[Task] = []
             for char in secondary_chars:
                 memory_block, char_rag = char_memory(char)
-                tasks.append(
+                secondary_tasks.append(
                     Task(
                         description=(
                             f"现在请代入次要角色【{char.name}】。\n"
@@ -1252,34 +1358,57 @@ class NarrativeEngine:
                         agent=ensemble,
                     )
                 )
+            units.append(([ensemble], secondary_tasks))
 
-        if not agents:
+        if not units:
             # 没有出场角色 → 跳过 Crew
             intent = director_json.get("director_intent", {})
             return f"（无角色互动）导演意图: {intent.get('goal', '')}"
 
-        crew = Crew(
-            agents=agents,
-            tasks=tasks,
-            process=Process.sequential,
-        )
-
-        loop = asyncio.get_event_loop()
-
-        def _sync_kickoff() -> Any:
-            return crew.kickoff()
-
-        try:
-            result = await asyncio.wait_for(
-                loop.run_in_executor(None, _sync_kickoff), timeout=120.0
+        # 每个单元独立成 Crew：primary 角色之间并行，secondary 组内仍串行
+        crews = [
+            Crew(
+                agents=unit_agents,
+                tasks=unit_tasks,
+                process=Process.sequential,
             )
-            return str(result).strip() if result else ""
-        except asyncio.TimeoutError:
+            for unit_agents, unit_tasks in units
+        ]
+
+        crew_timeout = budget.take(_STAGE_CREW_S) if budget is not None else 120.0
+        if crew_timeout <= 0:
+            if quality_flags is not None:
+                quality_flags.append("crew_degraded")
+            return ""
+
+        loop = asyncio.get_running_loop()
+
+        def _sync_kickoff(target: Crew) -> Any:
+            return target.kickoff()
+
+        async def _run_unit(target: Crew) -> Any:
+            return await asyncio.wait_for(
+                loop.run_in_executor(None, _sync_kickoff, target),
+                timeout=crew_timeout,
+            )
+
+        results = await asyncio.gather(
+            *(_run_unit(target) for target in crews), return_exceptions=True
+        )
+        if any(isinstance(r, asyncio.TimeoutError) for r in results):
             print("  ⏱️ 动态 Crew kickoff 超时，跳过角色互动")
+            if quality_flags is not None:
+                quality_flags.append("crew_degraded")
             return ""
-        except Exception as exc:
-            print(f"  ⚠️ 动态 Crew kickoff 失败: {exc}")
-            return ""
+        outputs: List[str] = []
+        for result in results:
+            if isinstance(result, Exception):
+                print(f"  ⚠️ 动态 Crew kickoff 失败: {result}")
+                continue
+            text = str(result).strip() if result else ""
+            if text:
+                outputs.append(text)
+        return "\n\n".join(outputs)
 
     def _hardcode_checks(
         self,
@@ -1886,7 +2015,10 @@ def _apply_memory_facts(
                     if str(v).strip()
                 ] or None,
                 source="agent_memory_fact",
+                consolidate=False,
             )
+        # 同一回合的多条 fact 只整理一次，避免逐条触发压缩
+        memory.consolidate()
         return
 
     # 没有 memory_facts（老 Agent 输出 / LLM 不可用）：回退到 add_scene。

@@ -674,11 +674,27 @@ class StoryEngine:
             backend=backend,
             compress_fn=self._memory_compress_fn,
         )
-        MemoryIndexer(memory).backfill(
-            repo.list_scenes(project_id),
-            project.characters,
-            project.locations,
-        )
+        indexer = MemoryIndexer(memory)
+        scenes = repo.list_scenes(project_id)
+
+        def _backfill() -> None:
+            try:
+                indexer.backfill(scenes, project.characters, project.locations)
+            except Exception:  # noqa: BLE001 - 回填失败不阻断叙事
+                pass
+
+        if not scenes:
+            # 新项目只有资产，回填量小，同步完成保证接口立即可见
+            _backfill()
+        else:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # CLI / 同步测试：没有事件循环时直接回填
+                _backfill()
+            else:
+                # 首回合不被历史场景回填阻塞：后台补齐，缓存实例立即可用
+                loop.run_in_executor(None, _backfill)
         memory.sync_foreshadowings(project.foreshadowings)
         if cached is not None:
             memory.configure_working(
@@ -941,6 +957,7 @@ class StoryEngine:
                     mode=boot.mode,
                     goal=boot.goal,
                     instance_id=boot.instance_id,
+                    max_duration_s=timeout,
                 ),
                 timeout=timeout,
             )

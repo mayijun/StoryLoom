@@ -12,6 +12,7 @@ This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 """
 
 import re
+import threading
 import uuid
 import warnings
 from typing import Any, Dict, List, Optional, Tuple
@@ -63,6 +64,16 @@ class LayeredMemory:
         self.compress_fn = compress_fn
         self.working = WorkingMemory()
         self.items: Dict[str, MemoryItem] = {}
+        # 后台回填线程与请求线程可能同时增删条目，读快照/写入统一加锁
+        self._lock = threading.RLock()
+        # 检索命中计数先记在内存，回合末合并落库，避免每次召回都写一次
+        self._pending_hits: Dict[str, MemoryItem] = {}
+        # 检索缓存：版本号随条目变化递增；archive 池与打分结果按版本复用
+        self._version = 0
+        self._archive_pool_cache: Optional[List[MemoryItem]] = None
+        self._hits_cache: Dict[
+            Tuple[str, Optional[str], int], List[Tuple[MemoryItem, float]]
+        ] = {}
 
         self.lexical = LexicalBackend(repo)
         self.vector = vector or VectorBackend()
@@ -72,6 +83,22 @@ class LayeredMemory:
             self._backend = self.vector
         else:
             self._backend = self.lexical
+
+        self.backend_degraded = (
+            self.backend_name in ("vector", "hybrid")
+            and not self.vector.available
+        )
+        if self.backend_degraded:
+            fallback = (
+                "hybrid 退化为词法检索"
+                if self.backend_name == "hybrid"
+                else "vector 召回为空"
+            )
+            warnings.warn(
+                f"记忆后端 {self.backend_name} 未注入 embedding，{fallback}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
         self._load()
 
@@ -110,34 +137,78 @@ class LayeredMemory:
         """存储层 id 带项目前缀，避免跨项目主键冲突"""
         return f"{self.project_id}::{item_id}"
 
+    def _all_items(self) -> List[MemoryItem]:
+        """条目快照：后台回填与请求线程并发时避免迭代中字典被修改。"""
+        with self._lock:
+            return list(self.items.values())
+
+    def _bump_version_locked(self) -> None:
+        """条目发生变化：递增版本并失效检索缓存。"""
+        self._version += 1
+        self._archive_pool_cache = None
+        self._hits_cache.clear()
+
+    def _archive_pool(self) -> List[MemoryItem]:
+        """检索库条目池；同版本内复用，避免每次召回都全量重扫。"""
+        with self._lock:
+            if self._archive_pool_cache is None:
+                self._archive_pool_cache = [
+                    item for item in self.items.values()
+                    if item.tier == "archive"
+                    # 异步侧台的待推进请求是流程状态，不进入世界书检索
+                    and item.source != "side_stage_pending"
+                ]
+            return list(self._archive_pool_cache)
+
+    def _persist(self, item: MemoryItem) -> None:
+        """把单条记忆写入仓储；不触碰向量索引。"""
+        if self.repo is None:
+            return
+        self.repo.upsert_memory_item(
+            self.project_id,
+            id=self._storage_id(item.id),
+            tier=item.tier,
+            text=item.text,
+            summary=item.summary,
+            importance=item.importance,
+            pinned=item.pinned,
+            scene_index=item.scene_index,
+            hits=item.hits,
+            adoptions=item.adoptions,
+            last_hit_scene=item.last_hit_scene,
+            visibility=item.visibility,
+            known_by=item.known_by,
+            tags=item.tags,
+            source=item.source,
+            active_foreshadow=item.active_foreshadow,
+        )
+
     def _put(self, item: MemoryItem) -> MemoryItem:
         item.project_id = self.project_id
-        self.items[item.id] = item
-        if self.repo is not None:
-            self.repo.upsert_memory_item(
-                self.project_id,
-                id=self._storage_id(item.id),
-                tier=item.tier,
-                text=item.text,
-                summary=item.summary,
-                importance=item.importance,
-                pinned=item.pinned,
-                scene_index=item.scene_index,
-                hits=item.hits,
-                adoptions=item.adoptions,
-                last_hit_scene=item.last_hit_scene,
-                visibility=item.visibility,
-                known_by=item.known_by,
-                tags=item.tags,
-                source=item.source,
-                active_foreshadow=item.active_foreshadow,
-            )
+        with self._lock:
+            self.items[item.id] = item
+            self._pending_hits.pop(item.id, None)
+            self._bump_version_locked()
+        self._persist(item)
         if item.tier == "archive":
             self.vector.add(item)
         return item
 
+    def _flush_pending_hits(self) -> None:
+        """回合末合并写入检索命中计数（不重复计算 archive 的 embedding）。"""
+        with self._lock:
+            if not self._pending_hits:
+                return
+            pending = list(self._pending_hits.values())
+            self._pending_hits.clear()
+        for item in pending:
+            self._persist(item)
+
     def _drop(self, item_id: str) -> None:
-        self.items.pop(item_id, None)
+        with self._lock:
+            self.items.pop(item_id, None)
+            self._pending_hits.pop(item_id, None)
+            self._bump_version_locked()
         if self.repo is not None:
             self.repo.delete_memory_item(self._storage_id(item_id))
         self.vector.remove(item_id)
@@ -184,6 +255,7 @@ class LayeredMemory:
         如果 Agent 在 ``memory_facts`` 里附带了预压缩事实，narrative 会
         优先用 ``add_condensed`` 写入目标层，本函数作为短期事实的兜底入口。
         """
+        self._flush_pending_hits()
         item_id = f"scene:{key or scene_index}"
         scope = known_by if known_by is not None else present_characters
         explicit_scope = scope is not None
@@ -278,6 +350,7 @@ class LayeredMemory:
         importance: Optional[float] = None,
         source: str = "agent_memory_fact",
         display_text: Optional[str] = None,
+        consolidate: bool = True,
     ) -> MemoryItem:
         """写入已经由 Agent 压缩好的记忆事实。
 
@@ -291,7 +364,11 @@ class LayeredMemory:
         文言存储时调用方必须提供 ``display_text``，否则摘要也会是文言。
         调用方应保证 text 不超过 ``MEMORY_ITEM_MAX_CHARS``；超过时
         只打 warning，不拆分也不截断。
+
+        批量写入同一回合的多条 fact 时传 ``consolidate=False``，
+        由调用方在循环结束后统一整理一次，避免每条 fact 重复压缩。
         """
+        self._flush_pending_hits()
         if tier not in ("short_term", "long_term", "key_events", "archive"):
             raise ValueError(f"不支持的目标层: {tier}")
         _warn_if_oversize(text, f"add_condensed → {tier}")
@@ -339,7 +416,7 @@ class LayeredMemory:
             source=source,
         )
         self._put(item)
-        if tier in ("short_term", "long_term", "key_events"):
+        if consolidate and tier in ("short_term", "long_term", "key_events"):
             self.consolidate()
         return item
 
@@ -415,7 +492,7 @@ class LayeredMemory:
                 self._put(existing)
                 touched.append(existing)
 
-        for item in list(self.items.values()):
+        for item in self._all_items():
             if item.source == "foreshadow" and item.id not in keep:
                 self._drop(item.id)
         return touched
@@ -472,7 +549,7 @@ class LayeredMemory:
                 item.adoptions = existing.adoptions
             touched.append(self._put(item))
 
-        for item in list(self.items.values()):
+        for item in self._all_items():
             if item.source == "world_state" and item.id not in keep:
                 self._drop(item.id)
         # 生命周期（压缩 / 降级）交给下一次 add_scene 统一处理，
@@ -743,40 +820,71 @@ class LayeredMemory:
     ) -> List[MemoryItem]:
         """按需检索检索库（只含 archive），并记录命中 / 回温"""
         limit = k or self.settings.top_k
-        pool = [
-            item for item in self._items_in("archive")
-            # 异步侧台的待推进请求是流程状态，不进入世界书检索
-            if item.source != "side_stage_pending" and item.visible_to(viewer)
-        ]
-        if self.backend_name == "hybrid":
-            hits = self._backend.search(
-                self.project_id, query, limit=limit, viewer=viewer, pool=pool
-            )
-        elif self.backend_name == "vector":
-            hits = self._backend.search(
-                self.project_id, query, limit=limit,
-                viewer=viewer, candidates=pool,
-            )
-        else:
-            hits = self._backend.search(
-                self.project_id, query, limit=limit,
-                viewer=viewer, candidates=pool,
-            )
+        if not (query or "").strip():
+            return []
+        pool = self._archive_pool()
+        if not pool:
+            return []
+
+        # 无 embedding 时打分与 viewer 无关，按查询缓存"全量排序结果"，
+        # 不同 viewer 复用同一份打分，只做可见性过滤。
+        shared = not self.vector.available
+        cache_key = (
+            self._version,
+            query,
+            None if shared else viewer,
+            limit if not shared else 0,
+        )
+        hits = self._hits_cache.get(cache_key)
+        if hits is None:
+            if shared:
+                # 用全知视角打分，避免受限条目在打分层就被过滤掉
+                hits = self._backend_search(
+                    query, len(pool), "director", pool
+                )
+            else:
+                hits = self._backend_search(query, limit, viewer, pool)
+            if len(self._hits_cache) >= 64:
+                self._hits_cache.clear()
+            self._hits_cache[cache_key] = hits
+        elif not shared:
+            hits = list(hits)
+        if shared:
+            hits = [
+                pair for pair in hits if pair[0].visible_to(viewer)
+            ][:limit]
 
         scene = current_scene
         if scene is None:
             scene = max(
-                [item.scene_index for item in self.items.values()] or [0]
+                [item.scene_index for item in self._all_items()] or [0]
             )
         result: List[MemoryItem] = []
         for item, _score in hits:
             item.hits += 1
             item.last_hit_scene = scene
-            self._put(item)
+            # 命中计数先记内存，回合末由 _flush_pending_hits 合并落库
+            with self._lock:
+                self._pending_hits[item.id] = item
             if self._reheat_if_needed(item):
                 item = self.items[item.id]
             result.append(item)
         return result
+
+    def _backend_search(
+        self,
+        query: str,
+        limit: int,
+        viewer: Optional[str],
+        pool: List[MemoryItem],
+    ) -> List[Tuple[MemoryItem, float]]:
+        if self.backend_name == "hybrid":
+            return self._backend.search(
+                self.project_id, query, limit=limit, viewer=viewer, pool=pool
+            )
+        return self._backend.search(
+            self.project_id, query, limit=limit, viewer=viewer, candidates=pool
+        )
 
     # ---------------- prompt ----------------
 
@@ -828,7 +936,7 @@ class LayeredMemory:
     # ---------------- 工具 ----------------
 
     def _items_in(self, tier: str) -> List[MemoryItem]:
-        items = [item for item in self.items.values() if item.tier == tier]
+        items = [item for item in self._all_items() if item.tier == tier]
         items.sort(key=lambda item: (item.scene_index, item.created_at))
         return items
 
@@ -841,15 +949,16 @@ class LayeredMemory:
 
     def has_scene_memory(self) -> bool:
         return any(
-            item.id.startswith("scene:") for item in self.items.values()
+            item.id.startswith("scene:") for item in self._all_items()
         )
 
     def snapshot(self) -> Dict[str, Any]:
+        self._flush_pending_hits()
         return {
             "working": self.working.model_dump(mode="json"),
             "items": [
                 item.model_dump(mode="json")
-                for item in self.items.values()
+                for item in self._all_items()
             ],
             "backend": self.backend_name,
         }

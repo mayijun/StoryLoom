@@ -92,6 +92,8 @@ class CrewConfigRepository:
     def __init__(self, url: Optional[str] = None):
         self.url = url or database_url()
         self.engine = get_engine(self.url)
+        # 同一实例只做一次建表/迁移探测；失败时不置位，下次仍会重试
+        self._schema_ready = False
 
     # ---------------- 基础设施 ----------------
 
@@ -106,6 +108,11 @@ class CrewConfigRepository:
             raise
         finally:
             session.close()
+
+    def _ensure_schema(self) -> None:
+        """方法入口的轻量建表检查：本实例建过一次后直接返回。"""
+        if not self._schema_ready:
+            self.create_all()
 
     def create_all(self) -> None:
         """
@@ -152,6 +159,8 @@ class CrewConfigRepository:
 
         if legacy:
             self.seed_from_yaml()
+
+        self._schema_ready = True
 
     def _migrate_memory_data(self) -> None:
         """一次性改写旧记忆数据：canon → key_events、private:<角色> → known_by。
@@ -454,7 +463,7 @@ class CrewConfigRepository:
 
     def ensure_seeded(self, project_id: str = DEFAULT_PROJECT_ID) -> None:
         """建表；确保项目存在；若该项目还没有任何 Agent，则从 YAML 种子导入"""
-        self.create_all()
+        self._ensure_schema()
         self.ensure_project(project_id)
         with self.session() as session:
             has_agents = session.scalar(
@@ -471,7 +480,7 @@ class CrewConfigRepository:
     # ---------------- 项目元数据读写 ----------------
 
     def list_projects(self) -> List[Dict[str, Any]]:
-        self.create_all()
+        self._ensure_schema()
         with self.session() as session:
             rows = session.scalars(
                 select(ProjectRow).order_by(ProjectRow.updated_at.desc())
@@ -494,7 +503,7 @@ class CrewConfigRepository:
         style: str,
         description: str = "",
     ) -> Dict[str, Any]:
-        self.create_all()
+        self._ensure_schema()
         with self.session() as session:
             existing = session.scalar(
                 select(ProjectRow).where(ProjectRow.project_id == project_id)
@@ -587,7 +596,7 @@ class CrewConfigRepository:
     # ---------------- 场景（SceneRow） ----------------
 
     def list_scenes(self, project_id: str) -> List[Dict[str, Any]]:
-        self.create_all()
+        self._ensure_schema()
         with self.session() as session:
             rows = session.scalars(
                 select(SceneRow)
@@ -615,7 +624,7 @@ class CrewConfigRepository:
         model_usage: Optional[Dict[str, Any]] = None,
         chapter_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        self.create_all()
+        self._ensure_schema()
         self.ensure_project(project_id)
         with self.session() as session:
             if session.get(SceneRow, scene_id) is not None:
@@ -664,7 +673,7 @@ class CrewConfigRepository:
     # ---------------- 章节（ChapterRow） ----------------
 
     def list_chapters(self, project_id: str) -> List[Dict[str, Any]]:
-        self.create_all()
+        self._ensure_schema()
         with self.session() as session:
             rows = session.scalars(
                 select(ChapterRow)
@@ -687,7 +696,7 @@ class CrewConfigRepository:
         position: Optional[int] = None,
         status: str = "draft",
     ) -> Dict[str, Any]:
-        self.create_all()
+        self._ensure_schema()
         self.ensure_project(project_id)
         with self.session() as session:
             if session.get(ChapterRow, chapter_id) is not None:
@@ -753,7 +762,7 @@ class CrewConfigRepository:
         self, project_id: str, chapter_id: Optional[str]
     ) -> List[Dict[str, Any]]:
         """列出某项目下指定章节的场景；chapter_id=None 列出未归属章节的场景。"""
-        self.create_all()
+        self._ensure_schema()
         with self.session() as session:
             stmt = select(SceneRow).where(SceneRow.project_id == project_id)
             if chapter_id is None:
@@ -1034,7 +1043,7 @@ class CrewConfigRepository:
         unknown = set(fields) - set(_AGENT_FIELDS)
         if unknown:
             raise ValueError(f"未知的 Agent 字段: {sorted(unknown)}")
-        self.create_all()
+        self._ensure_schema()
         with self.session() as session:
             row = session.scalar(
                 select(AgentConfigRow).where(
@@ -1077,7 +1086,7 @@ class CrewConfigRepository:
         unknown = set(fields) - set(_TASK_FIELDS)
         if unknown:
             raise ValueError(f"未知的 Task 字段: {sorted(unknown)}")
-        self.create_all()
+        self._ensure_schema()
         with self.session() as session:
             row = session.scalar(
                 select(TaskConfigRow).where(
@@ -1153,7 +1162,7 @@ class CrewConfigRepository:
     # ---------------- 角色（CharacterRow） ----------------
 
     def list_characters(self, project_id: str) -> List[Dict[str, Any]]:
-        self.create_all()
+        self._ensure_schema()
         with self.session() as session:
             rows = session.scalars(
                 select(CharacterRow)
@@ -1183,7 +1192,7 @@ class CrewConfigRepository:
         motivation: str,
         secrets: Optional[str] = None,
     ) -> Dict[str, Any]:
-        self.create_all()
+        self._ensure_schema()
         self.ensure_project(project_id)
         with self.session() as session:
             row = session.scalar(
@@ -1231,7 +1240,7 @@ class CrewConfigRepository:
     # ---------------- 场景/地点（LocationRow） ----------------
 
     def list_locations(self, project_id: str) -> List[Dict[str, Any]]:
-        self.create_all()
+        self._ensure_schema()
         with self.session() as session:
             rows = session.scalars(
                 select(LocationRow)
@@ -1255,7 +1264,7 @@ class CrewConfigRepository:
     def upsert_location(
         self, project_id: str, name: str, description: str = ""
     ) -> Dict[str, Any]:
-        self.create_all()
+        self._ensure_schema()
         self.ensure_project(project_id)
         with self.session() as session:
             row = session.scalar(
@@ -1290,7 +1299,7 @@ class CrewConfigRepository:
     # ---------------- 伏笔（ForeshadowRow） ----------------
 
     def list_foreshadowings(self, project_id: str) -> List[Dict[str, Any]]:
-        self.create_all()
+        self._ensure_schema()
         with self.session() as session:
             rows = session.scalars(
                 select(ForeshadowRow)
@@ -1327,7 +1336,7 @@ class CrewConfigRepository:
         visibility: str = "restricted",
         known_by: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        self.create_all()
+        self._ensure_schema()
         self.ensure_project(project_id)
         with self.session() as session:
             row = session.scalar(
@@ -1389,7 +1398,7 @@ class CrewConfigRepository:
         self, project_id: str = DEFAULT_PROJECT_ID
     ) -> Dict[str, Any]:
         """读取项目记忆配置；首次访问时从 memory_config.default.yaml 播种"""
-        self.create_all()
+        self._ensure_schema()
         self.ensure_project(project_id)
         with self.session() as session:
             row = session.get(MemoryConfigRow, project_id)
@@ -1412,7 +1421,7 @@ class CrewConfigRepository:
         self, project_id: str, payload: Dict[str, Any]
     ) -> Dict[str, Any]:
         """整体覆盖项目记忆配置（调用方负责补全默认值）"""
-        self.create_all()
+        self._ensure_schema()
         self.ensure_project(project_id)
         with self.session() as session:
             row = session.get(MemoryConfigRow, project_id)
@@ -1438,7 +1447,7 @@ class CrewConfigRepository:
         self, project_id: str, **fields: Any
     ) -> Dict[str, Any]:
         """写入 / 更新一条记忆（索引可重建，不强制外键）"""
-        self.create_all()
+        self._ensure_schema()
         item_id = fields.get("id")
         if not item_id:
             raise ValueError("记忆条目缺少 id")
@@ -1462,7 +1471,7 @@ class CrewConfigRepository:
     def list_memory_items(
         self, project_id: str, tier: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        self.create_all()
+        self._ensure_schema()
         with self.session() as session:
             stmt = select(MemoryRow).where(
                 MemoryRow.project_id == project_id
@@ -1520,7 +1529,7 @@ class CrewConfigRepository:
         overwrite=False 时只补充缺失条目，不覆盖手工修改。
         kinds 可限定只同步 agents 或 tasks（配置迁移脚本使用）。
         """
-        self.create_all()
+        self._ensure_schema()
         # 必须先确保 projects 表里有目标 project_id 行，
         # 否则插入 agent_configs / task_configs 时撞外键（迁移场景下 demo 可能缺失）
         self.ensure_project(project_id)

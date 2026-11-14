@@ -33,7 +33,8 @@ def query_terms(query: str) -> List[str]:
     return terms
 
 
-def score_text(query: str, text: str) -> float:
+def score_terms(query: str, terms: List[str], text: str) -> float:
+    """用预先拆好的查询词打分，避免对每个条目重复拆词。"""
     q = (query or "").strip().lower()
     body = (text or "").lower()
     if not q or not body:
@@ -41,10 +42,15 @@ def score_text(query: str, text: str) -> float:
     score = 0.0
     if q in body:
         score += 10.0
-    for term in query_terms(q):
+    for term in terms:
         if term and term in body:
             score += 1.0 if len(term) > 1 else 0.3
     return score
+
+
+def score_text(query: str, text: str) -> float:
+    q = (query or "").strip().lower()
+    return score_terms(q, query_terms(q), text)
 
 
 class LexicalBackend:
@@ -89,13 +95,18 @@ class LexicalBackend:
                     )
                 )
         scored: List[Tuple[MemoryItem, float]] = []
+        # 查询词只拆一次，供整个候选池复用
+        q = (query or "").strip().lower()
+        if not q:
+            return []
+        terms = query_terms(q)
         for item in items:
             if not item.visible_to(viewer):
                 continue
             body = " ".join(
                 [item.text, item.summary, " ".join(item.tags)]
             )
-            score = score_text(query, body)
+            score = score_terms(q, terms, body)
             if score > 0:
                 scored.append((item, score))
         scored.sort(key=lambda pair: (-pair[1], -pair[0].scene_index))
