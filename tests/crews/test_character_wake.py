@@ -9,7 +9,10 @@
 """
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
+
+import yaml
 
 from storyloom.crews.scene_crew.offscreen import parse_pending_request
 from storyloom.crews.scene_crew.tools import (
@@ -18,6 +21,18 @@ from storyloom.crews.scene_crew.tools import (
 )
 from storyloom.engine.narrative import NarrativeEngine
 from storyloom.memory.models import CharacterAsset, NovelProject
+
+_TASK_TEMPLATES = yaml.safe_load(
+    (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "storyloom"
+        / "crews"
+        / "scene_crew"
+        / "config"
+        / "tasks.default.yaml"
+    ).read_text(encoding="utf-8")
+)
 
 
 class StubMemory:
@@ -96,6 +111,10 @@ class StubCrew:
 
     def build_offscreen_director(self):
         return self.offscreen_agent
+
+    def task_prompt(self, key, **values):
+        """复用真实 YAML 模板，验证占位符与生产代码一致。"""
+        return _TASK_TEMPLATES[key]["description"].format(**values)
 
 
 def make_project() -> NovelProject:

@@ -1075,7 +1075,7 @@ class NarrativeEngine:
             fallback = self._fallback_adjudicate(proposal, state)
             return fallback, fallback.state_delta
 
-        prompt = self._crew_adjudication_prompt(proposal, state, mode, frame)
+        prompt = self.crew._adjudication_prompt(proposal, state, mode, frame)
         raw = await self._kickoff(
             agent=self.crew.director(), prompt=prompt, timeout_s=gm_timeout
         )
@@ -1190,33 +1190,13 @@ class NarrativeEngine:
             else "memory_facts 的 text 用白话文；display_text 可省略。"
         )
 
-        return (
-            "你是本作导演兼创作总指挥。\n"
-            f"{mode_hint}\n"
-            "\n"
-            f"{shared_context}\n"
-            f"{pre_context_str}\n"
-            "\n"
-            "请输出一个 JSON 对象（不要 Markdown 代码围栏），"
-            "包含以下部分：\n"
-            "{\n"
-            '  "surprise_idea": { "type": "...", "description": "...", '
-            '"should_happen": true, "severity": "minor|moderate|major", '
-            '"justification": "..." },\n'
-            '  "director_intent": { "goal": "...", "tone": "...", '
-            '"key_events": ["..."], "do_not_happen": ["..."] },\n'
-            '  "foreshadow_ops": [ { "action": "plant|reinforce|resolve|subvert", ... } ],\n'
-            '  "consistency": { "passed": true, "conflicts": [], "retry_suggestion": "" },\n'
-            f"{memory_fact_schema}"
-            "}\n"
-            "\n"
-            f"{memory_fact_rule}\n"
-            "foreshadow_ops 里每个操作的格式：\n"
-            "- plant: {\"action\":\"plant\",\"new_foreshadow\":{\"description\":\"...\",\"linked_characters\":[...],\"target_revelation\":\"...\",\"visible_to\":[...]}}\n"
-            "- reinforce/resolve/subvert: {\"action\":\"...\",\"foreshadow_id\":\"fs_xxx\"}\n"
-            "没有伏笔要操作时 foreshadow_ops 填空数组。\n"
-            "consistency 里自检人设/时间线/设定冲突；major 冲突把 severity 标记在 conflicts 里。"
-            "需要查看伏笔详细状态时，调用 query_active_foreshadows tool。"
+        return self.crew.task_prompt(
+            "director_plan",
+            mode_hint=mode_hint,
+            shared_context=shared_context,
+            pre_context=pre_context_str,
+            memory_fact_schema=memory_fact_schema,
+            memory_fact_rule=memory_fact_rule,
         )
 
     def _build_prose_prompt(
@@ -1238,14 +1218,13 @@ class NarrativeEngine:
             else "输出 JSON 对象：{\"prose\":\"正文\", \"choices\":[{\"text\":\"...\",\"hint\":\"...\"},...]}。choices 给 3~4 个自然语言行动建议。"
         )
 
-        return (
-            f"{PACKET_CONTRACT}\n\n"
-            f"你是本作的润色 Agent，把下面的行动日志写成流畅的中文叙事。\n"
-            f"{output_hint}\n\n"
-            f"【导演意图】:\n{intent_str}\n\n"
-            f"【角色互动日志】:\n{actor_log or '（无角色互动，直接进入叙事）'}\n\n"
-            f"【文风偏好】: {style or '（默认细腻文风）'}\n\n"
-            "请只填写 prose（导演模式）或 prose + choices（游戏模式）字段。"
+        return self.crew.task_prompt(
+            "prose_polish",
+            packet_contract=PACKET_CONTRACT,
+            output_hint=output_hint,
+            director_intent=intent_str,
+            actor_log=actor_log or "（无角色互动，直接进入叙事）",
+            style=style or "（默认细腻文风）",
         )
 
     async def _run_dynamic_crew(
@@ -1321,18 +1300,16 @@ class NarrativeEngine:
             agent = self.crew.build_protagonist(char, extra_tools=extra_tools)
             memory_block, char_rag = char_memory(char)
             task = Task(
-                description=(
-                    f"请以【{char.name}】的身份，给出这一刻的"
-                    f"内心想法、台词和行动。\n"
-                    f"简洁、符合人设，只写行动日志式的描述。"
-                    f"\n{wake_hint}"
-                    f"\n{intent_block}\n\n"
-                    f"{char_rag}\n\n"
-                    f"{memory_block}\n"
+                description=self.crew.task_prompt(
+                    "actor_interaction",
+                    character_name=char.name,
+                    wake_hint=wake_hint,
+                    intent_block=intent_block,
+                    rag_context=char_rag,
+                    memory_block=memory_block,
                 ),
-                expected_output=(
-                    f"{char.name} 的行动日志片段（3~5 句），"
-                    f"描述想法、台词、行动"
+                expected_output=self.crew.task_expected_output(
+                    "actor_interaction", character_name=char.name
                 ),
                 agent=agent,
             )
@@ -1345,17 +1322,16 @@ class NarrativeEngine:
                 memory_block, char_rag = char_memory(char)
                 secondary_tasks.append(
                     Task(
-                        description=(
-                            f"现在请代入次要角色【{char.name}】。\n"
-                            f"只写这一个角色的台词与动作，"
-                            f"不要替其他角色发言。\n"
-                            f"给出{char.name}在这一刻的简短反应/台词。"
-                            f"\n\n{intent_block}\n\n"
-                            f"{char_rag}\n\n"
-                            f"{memory_block}\n"
+                        description=self.crew.task_prompt(
+                            "actor_interaction_secondary",
+                            character_name=char.name,
+                            intent_block=intent_block,
+                            rag_context=char_rag,
+                            memory_block=memory_block,
                         ),
-                        expected_output=(
-                            f"{char.name} 的简短行动描述（1~2 句）"
+                        expected_output=self.crew.task_expected_output(
+                            "actor_interaction_secondary",
+                            character_name=char.name,
                         ),
                         agent=ensemble,
                     )
@@ -1624,17 +1600,9 @@ class NarrativeEngine:
             ],
             "relevant_memories": rag,
         }
-        return (
-            "你是小说的世界观一致性审校员。作者准备回溯插入一条伏笔："
-            "它埋设在过去，但在已有正文中可能没有提到。\n"
-            "请检查这条伏笔的描述、真相、知情角色是否与已有角色设定、"
-            "历史场景记忆、世界书条目或其它伏笔冲突。\n"
-            "只输出 JSON，不要 Markdown 代码围栏：\n"
-            '{"passed": true, "conflicts": '
-            '[{"severity": "major|minor", "conflict": "...", '
-            '"evidence": "..."}]}\n'
-            "没有冲突时 conflicts 为空数组。\n\n"
-            + json.dumps(payload, ensure_ascii=False, indent=2)
+        return self.crew.task_prompt(
+            "foreshadow_conflict",
+            foreshadow_context=json.dumps(payload, ensure_ascii=False, indent=2),
         )
 
     async def check_foreshadow_conflicts(
@@ -1779,36 +1747,6 @@ class NarrativeEngine:
                 "retry_suggestion": "",
             },
         }
-
-    def _crew_adjudication_prompt(
-        self,
-        proposal: ActionProposal,
-        state: WorldState,
-        mode: Literal["game", "director"],
-        frame: Optional[DirectorFrame] = None,
-    ) -> str:
-        """GM 裁决的提示词（搬自 crew.py _adjudication_prompt）"""
-        goal = getattr(frame, "goal", "") if frame is not None else ""
-        phase = getattr(frame, "phase", "") if frame is not None else ""
-        mode_rule = (
-            "导演模式：这是作者指令，decision 用 direct，不要否决。"
-            if mode == "director"
-            else "游戏模式：世界先于玩家，不可行的行动用 reject。"
-        )
-        world_brief = SceneCrew._world_brief(state, proposal.actor)
-        return (
-            "你是本作导演兼世界裁决者。"
-            f"{mode_rule}\n"
-            f"{PACKET_CONTRACT}\n"
-            f"当前节拍：{phase}；叙事目标：{goal or '（未指定）'}\n"
-            f"世界状态：\n{world_brief}\n"
-            f"行动者：{proposal.actor}\n"
-            f"行动：{proposal.detail or proposal.kind}\n"
-            f"目标：{proposal.target or '（无）'}\n"
-            "请裁决该行动是否发生，并只填写 decision / narrative / reason / "
-            "state / available 字段。state 只写必要变化，"
-            "没有变化时至少给出 time_delta。"
-        )
 
     @staticmethod
     def _fallback_adjudicate(

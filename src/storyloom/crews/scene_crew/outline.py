@@ -4,9 +4,8 @@ This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 
 叙事节拍（ARC）：起承转合 + 张力目标 + 信息预算。
 
-ARC 是 OutlineAgent 的职能之一：大纲负责卷章结构，节拍是结构在运行时的
-投影。由 Flow 在 `director_frame` 阶段生成，作为
-`SceneCrew.adjudicate(frame=...)` 的输入参数；M0 使用确定性策略，
+ARC 是卷章结构在运行时的投影：由 Flow 在 `director_frame` 阶段生成，
+作为 `SceneCrew.adjudicate(frame=...)` 的输入参数；M0 使用确定性策略，
 接口预留给 M1 的 TFC 动态计算。
 """
 
@@ -48,7 +47,7 @@ class DirectorFrame(BaseModel):
 
 
 class OutlinePlanner:
-    """OutlineAgent 的运行时节拍推进器（确定性）"""
+    """运行时节拍推进器（确定性）"""
 
     def frame(self, state: WorldState, goal: str = "") -> DirectorFrame:
         arc = state.arc

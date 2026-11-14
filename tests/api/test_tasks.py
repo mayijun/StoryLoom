@@ -34,8 +34,9 @@ def test_list_tasks_comes_from_database(tasks_api):
     response = asyncio.run(tasks_api.list_tasks(project_id=DEMO))
     keys = [task.key for task in response.tasks]
 
-    assert len(keys) == 6
+    assert len(keys) == 10
     assert "prose_polish" in keys
+    assert "adjudicate_action" in keys
 
 
 def test_create_conflict_and_get(tasks_api):
@@ -151,7 +152,7 @@ def test_projects_have_isolated_tasks(tasks_api):
 
     # novel2 有自己独立的一套默认任务，未受 demo 新增影响
     other = asyncio.run(tasks_api.list_tasks(project_id="novel2"))
-    assert len(other.tasks) == 6
+    assert len(other.tasks) == 10
     assert "style_review" not in [t.key for t in other.tasks]
 
     # novel2 可以创建同名任务，内容独立

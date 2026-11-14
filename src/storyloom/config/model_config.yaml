@@ -77,12 +77,6 @@ agent_model_mapping:
     temperature: 0.7
     reason: "群演成本敏感，用便宜模型"
 
-  consistency:
-    primary: "openai.gpt4o"
-    fallback: "anthropic.claude_haiku"
-    temperature: 0.2
-    reason: "一致性检测需要最稳定的结构化输出"
-
   prose:
     primary: "anthropic.claude_sonnet"
     fallback: "deepseek.v4pro"
@@ -100,24 +94,6 @@ agent_model_mapping:
     fallback: "deepseek.v4pro"
     temperature: 0.2
     reason: "记忆压缩要求忠实、去重、不脑补，低温 + 快速模型兼顾质量与延迟"
-
-  outline:
-    primary: "deepseek.v4pro"
-    fallback: "openai.gpt4o"
-    temperature: 0.6
-    reason: "大纲规划需要长上下文和结构化思维"
-
-  surprise:
-    primary: "anthropic.claude_sonnet"
-    fallback: "deepseek.v4pro"
-    temperature: 0.95
-    reason: "意外 Agent 需要高创造力和跳跃性思维，Claude 最擅长此类任务"
-
-  foreshadowing:
-    primary: "deepseek.v4pro"
-    fallback: "openai.gpt4o"
-    temperature: 0.5
-    reason: "伏笔 Agent 需要严密逻辑追踪和结构化推理，温度低保证稳定性"
 
 # ============================================================
 # 全局策略

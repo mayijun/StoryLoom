@@ -8,6 +8,8 @@ This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
   由 DbConfig 描述符接入 @CrewBase 的 self.agents_config
 - 标准任务序列持久化在数据库（task_configs 表），
   由 self.tasks_config 读取、self.crew() 按 agent_key/context_keys 装配
+- Flow 单 Agent 步骤的提示词同样存放在 task_configs（enabled=false），
+  由 self.task_prompt() 渲染，避免在代码里重复硬编码
 - 同级 config/*.default.yaml 仅作为首次运行的种子数据，数据库是唯一事实来源
 - 通过 AgentModelRouter 为每个 Agent 注入最适合的 LLM
   （router 为 None 时使用 CrewAI 默认 LLM）
@@ -19,7 +21,7 @@ This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 - ProtagonistAgent   重要角色，1 角色 = 1 实例
 - EnsembleAgent      "群演"，1 实例承载 N 个次要角色，压缩成本
 - DirectorAgent      导演，统一负责意外、伏笔、场景意图与一致性自检
-- OutlineAgent       大纲规划 + ARC 节拍
+- OffscreenDirector   侧台导演，只裁决不在场角色之间的互动
 - ProseAgent         润色 / 叙事者
 """
 
@@ -46,17 +48,6 @@ from storyloom.memory.state import (
     StateDelta,
     WorldState,
 )
-
-
-#: 无工具的单次创作类 Agent 不需要默认的 25 轮迭代，收紧上限让异常快速收敛。
-#: 数据库配置里的同名字段优先（setdefault），这里是兜底默认值。
-AGENT_DEFAULTS: dict = {
-    "protagonist": {"max_iter": 6},
-    "ensemble": {"max_iter": 4},
-    "director": {"max_iter": 6},
-    "outline": {"max_iter": 8},
-    "prose": {"max_iter": 4},
-}
 
 
 @CrewBase
@@ -90,14 +81,28 @@ class SceneCrew:
         return llm
 
     def _config(self, key: str, **values) -> dict:
-        """复制数据库配置：补默认参数，再用实际资产数据填充占位符"""
-        config = dict(self.agents_config[key])
-        for field, value in AGENT_DEFAULTS.get(key, {}).items():
-            config.setdefault(field, value)
+        """复制数据库配置，再用实际资产数据填充占位符"""
+        config = self.agents_config.get(key)
+        if config is None:
+            row = get_repository().get_agent(
+                key, project_id=self.project_id
+            )
+            if row is not None and not row.get("enabled", True):
+                raise KeyError(
+                    f"Agent 已停用: {key}（项目 {self.project_id}）"
+                )
+            raise KeyError(
+                f"Agent 未定义: {key}（项目 {self.project_id}）"
+            )
+        config = dict(config)
         if values:
             for field in ("role", "goal", "backstory"):
                 if isinstance(config.get(field), str):
-                    config[field] = config[field].format(**values)
+                    try:
+                        config[field] = config[field].format(**values)
+                    except (KeyError, IndexError, ValueError):
+                        # 用户自定义 prompt 可能含未转义的花括号：保留原文
+                        pass
         return config
 
     def _render_task_field(
@@ -106,9 +111,12 @@ class SceneCrew:
         """把数据库里的任务模板渲染成最终提示词。
 
         数据库是任务提示词的唯一来源：Flow 的单 Agent 步骤与标准 Crew
-        共用同一份 description，避免两处各写一遍导致漂移。
+        共用同一份 description，避免两处各写一遍导致漂移。提示词模板
+        即使 enabled=false（不进入标准 Crew）也仍然可以被读取。
         """
-        config = self.tasks_config.get(key)
+        config = get_repository().load_task_template(
+            key, project_id=self.project_id
+        )
         if config is None:
             raise KeyError(f"数据库中没有 Task 定义: {key}")
         template = str(config.get(field, ""))
@@ -137,10 +145,11 @@ class SceneCrew:
         if callable(factory) and getattr(factory, "is_agent", False):
             return factory(**values)
 
-        config = self.agents_config.get(key)
-        if config is None:
-            raise KeyError(f"数据库中没有 Agent 定义: {key}")
-        return Agent(config=self._config(key, **values), llm=self._llm(key), verbose=False)
+        return Agent(
+            config=self._config(key, **values),
+            llm=self._llm(key),
+            verbose=False,
+        )
 
     # ---------------- 角色类 Agent ----------------
 
@@ -228,30 +237,9 @@ class SceneCrew:
         """
         from storyloom.crews.scene_crew.tools import query_active_foreshadows
 
-        config = dict(self._config("director"))
-        # 在数据库配置的 role/goal/backstory 基础上追加三合一职责说明，
-        # 而不直接修改数据库里用户可编辑的默认值。
-        config["role"] = (
-            config.get("role", "导演")
-            + "\n\n你同时负责【意外判断】、【伏笔决策】、【场景/回合意图】、【一致性自检】四项职责。"
-        )
-        config["goal"] = (
-            config.get("goal", "")
-            + "\n\n一次性输出完整 JSON：surprise_idea（意外）+ director_intent（意图）"
-            + "+ foreshadow_ops（伏笔操作）+ consistency（自检冲突）。"
-            + "意外要合理关联伏笔；伏笔操作显式决定（plant/reinforce/resolve/subvert）；"
-            + "自检人设/时间线/设定冲突，major 冲突标记在 consistency.conflicts 里。"
-        )
-        config["backstory"] = (
-            config.get("backstory", "")
-            + "\n\n你是这部作品的创作总指挥。"
-            + "旧版架构曾把你的职责拆给 SurpriseAgent、ForeshadowingAgent、DirectorAgent、ConsistencyAgent 四个独立 Agent，"
-            + "现在全部合并到你一个人身上——一次 kickoff 完成所有决策。"
-            + "当需要查看伏笔详细状态（关联角色、预期揭示、即将超时）时，调用 query_active_foreshadows tool。"
-        )
         tools = [query_active_foreshadows, *(extra_tools or [])]
         return Agent(
-            config=config,
+            config=self._config("director"),
             llm=self._llm("director"),
             verbose=True,
             tools=tools,
@@ -263,29 +251,9 @@ class SceneCrew:
         单独收窄 max_iter 且不挂工具，保证它只做一次结构化 JSON 输出。
         """
         return Agent(
-            role="侧台导演",
-            goal=(
-                "裁决不在场角色之间已经发生的互动，输出共同事实、"
-                "各角色视角与需要传递的消息，确保所有参与者的记忆一致。"
-            ),
-            backstory=(
-                "你不出现在正文里，也不替在场角色行动。"
-                "你只负责让沉睡角色在幕后发生的互动有唯一版本，"
-                "并让每个参与者只知道自己有渠道知道的部分。"
-            ),
+            config=self._config("offscreen_director"),
             llm=self._llm("director", label="offscreen_director"),
             verbose=False,
-            allow_delegation=False,
-            max_iter=2,
-        )
-
-    @agent
-    def outline(self) -> Agent:
-        """大纲 Agent：章节级 / 卷级结构规划，同时负责 ARC 节拍（起承转合 / 张力 / 信息预算）"""
-        return Agent(
-            config=self._config("outline"),
-            llm=self._llm("outline"),
-            verbose=True,
         )
 
     @agent
@@ -388,18 +356,16 @@ class SceneCrew:
             if mode == "director"
             else "游戏模式：世界先于玩家，不可行的行动用 reject。"
         )
-        return (
-            "你是本作导演兼世界裁决者。"
-            f"{mode_rule}\n"
-            f"{PACKET_CONTRACT}\n"
-            f"当前节拍：{phase}；叙事目标：{goal or '（未指定）'}\n"
-            f"世界状态：\n{self._world_brief(state, proposal.actor)}\n"
-            f"行动者：{proposal.actor}\n"
-            f"行动：{proposal.detail or proposal.kind}\n"
-            f"目标：{proposal.target or '（无）'}\n"
-            "请裁决该行动是否发生，并只填写 decision / narrative / reason / "
-            "state / available 字段。state 只写必要变化，"
-            "没有变化时至少给出 time_delta。"
+        return self.task_prompt(
+            "adjudicate_action",
+            mode_rule=mode_rule,
+            packet_contract=PACKET_CONTRACT,
+            phase=phase,
+            goal=goal or "（未指定）",
+            world_brief=self._world_brief(state, proposal.actor),
+            actor=proposal.actor,
+            action=proposal.detail or proposal.kind,
+            target=proposal.target or "（无）",
         )
 
     @staticmethod
@@ -455,13 +421,11 @@ class SceneCrew:
         if not candidates:
             return [], []
 
-        prompt = (
-            "你扮演本作的所有次要角色。根据世界状态，为其中 1-2 个角色"
-            "各给出一条主动行动；没有合适行动就返回空列表。\n"
-            f"{PACKET_CONTRACT}\n"
-            f"世界状态：\n{self._world_brief(state, '导演')}\n"
-            f"可行动角色：{', '.join(candidates)}\n"
-            "只填写 npc_actions 字段。"
+        prompt = self.task_prompt(
+            "npc_actions",
+            packet_contract=PACKET_CONTRACT,
+            world_brief=self._world_brief(state, "导演"),
+            candidates=", ".join(candidates),
         )
         raw = await self.run_agent(self.ensemble(), prompt)
         packet = parse_agent_packet(raw) if raw else AgentPacket()

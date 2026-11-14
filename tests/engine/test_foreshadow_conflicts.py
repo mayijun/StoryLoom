@@ -26,6 +26,9 @@ def test_foreshadow_retroactive_conflict_blocks(project):
         def director(self):
             return object()
 
+        def task_prompt(self, key, **values):
+            return f"{key}:{values.get('foreshadow_context', '')}"
+
     async def _fake_kickoff(agent, prompt, timeout_s=60.0):
         return (
             '{"passed": false, "conflicts": ['

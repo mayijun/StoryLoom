@@ -201,22 +201,14 @@ class CharacterWakeRegistry:
             if self.defer_side_stage
             else "导演模式：唤醒是同步的，响应会立刻回到本场角色日志。\n"
         )
-        if not candidates:
-            return f"【可唤醒角色】: （无，所有重要角色均已在场）\n{mode_hint}"
         names = ", ".join(
             f"{c.name}（{c.importance_tier}）" for c in candidates
         )
-        return (
-            f"【可唤醒角色（不在场，按需 function call）】: {names}\n"
-            '调用方式：wake_character(character="角色名", '
-            'reason="为什么需要他/她，以及希望他/她回应什么", '
-            'involves="可选：他/她沉睡期间可能互动的其他不在场角色名，逗号分隔")。\n'
-            "若你知道被唤醒角色最近和其他沉睡角色有互动，务必填写 involves："
-            "侧台导演会一次性裁决互动并补全所有参与者的记忆，避免各说各话。\n"
-            "只有剧情确实需要该角色通过消息、回忆、远程联络或突然到场参与时才调用；"
-            "已在场角色不要唤醒；"
-            f"本场最多唤醒 {self.max_wakes} 人。\n"
-            f"{mode_hint}"
+        return self.crew.task_prompt(
+            "wake_character_hint",
+            candidates=names or "（无，所有重要角色均已在场）",
+            max_wakes=self.max_wakes,
+            mode_hint=mode_hint,
         )
 
     def make_tool(self, source: str) -> Any:
@@ -568,30 +560,19 @@ class CharacterWakeRegistry:
             if canonical_experience
             else ""
         )
-        return (
-            f"你被导演临时唤到这一场戏的取景框外，"
-            f"仅以【{char.name}】的身份回应。\n"
-            f"【你是谁】性格/说话习惯: {char.persona}\n"
-            f"当前动机: {char.motivation}\n"
-            f"【此刻场景】{self.scene_brief or '（未提供）'}\n"
-            f"【在场角色】{present}\n"
-            f"【你的位置】你此刻不在上述场景中，只能依据自己的处境、"
-            f"记忆和消息渠道行动。\n"
-            f"【唤醒来源】{source}\n"
-            f"【唤醒原因】{reason or '导演需要你对当前局势做出反应'}\n"
-            f"{memory_block or '【记忆】\n（无）'}\n"
-            f"{rag or '【相关回忆检索】\n（无）'}\n"
-            f"{canonical_block}"
-            f"{intent_block}"
-            "输出必须分为两段，顺序固定：\n"
-            "【沉睡期间经历】你上一次出场之后到此刻（不在当前场景的这段时间）"
-            "去了哪、做了什么、见了谁、得知或隐瞒了什么。写 1~3 句具体、可追溯的经历；"
-            "即使只是待着，也要写清当时的状态。若上面已给出侧台确认经历，"
-            "直接据此复述，不要另编。这段经历会被写入你的私有记忆，"
-            "后续唤醒会继续沿用，不能与已有记忆矛盾。\n"
-            "【此刻回应】你此刻的想法、一句台词或一个可执行的行动意图（1~4 句）。\n"
-            "要求：只写这个角色知道的事；不替其他角色说话，"
-            "不描写自己看不到的事，不预知剧情。"
+        return self.crew.task_prompt(
+            "wake_character",
+            name=char.name,
+            persona=char.persona,
+            motivation=char.motivation,
+            scene_brief=self.scene_brief or "（未提供）",
+            present=present,
+            source=source,
+            reason=reason or "导演需要你对当前局势做出反应",
+            memory_block=memory_block or "【记忆】\n（无）",
+            rag=rag or "【相关回忆检索】\n（无）",
+            canonical_block=canonical_block,
+            intent_block=intent_block,
         )
 
     def transcript_block(self) -> str:

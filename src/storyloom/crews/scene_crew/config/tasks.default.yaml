@@ -2,155 +2,193 @@
 # Copyright (C) 2026 Ma Yijun (ma.yijun@outlook.com)
 # This file is part of StoryLoom — licensed under GPL v3, see LICENSE.
 #
-# 场景生成 Crew 的任务模板（6 个模板，3 个旧任务默认停用）
+# 场景生成 Crew 的任务 / 提示词模板
 # 本文件只用于首次播种；运行时的任务配置保存在数据库 task_configs 表，
 # Flow 与标准 Crew 共用数据库里的同一份 description / expected_output。
-# - agent / context 由 crew.py 的 @task 方法显式装配
-# - description 中的 {placeholder} 在 kickoff(inputs={...}) 时填充；
-#   JSON 示例的花括号已转义为 {{ }} 以兼容 .format 插值
-# - Flow 内的单 Agent 步骤直接 Agent.kickoff()，多角色同场才组建 Crew
-#   并在此处创建对应的动态 Task
+#
+# 两类模板：
+# - 标准任务（enabled: true）：由 crew.py 的 crew() 按 position / agent / context 装配
+# - 单 Agent 提示词（enabled: false）：不进入标准 Crew，由 crew.task_prompt()
+#   按 key 读取并填充占位符，供 Flow 的单 Agent 步骤使用
+#
+# description 中的 {placeholder} 在渲染时填充；
+# JSON 示例的花括号已转义为 {{ }} 以兼容 .format 插值。
 # ============================================================
 
-surprise_proposal:
-  description: |
-    故事: {project_title}
-    {memory_block}
-    本场景要求: {scene_brief}
-    {cooldown_hint}
-
-    当前活跃伏笔（可尝试关联）:
-    {active_foreshadowings}
-
-    请评估本场景是否需要意外元素。
-    如果需要，输出 JSON 提案，字段:
-    - surprise_type: character/information/environment/relationship/temporal
-    - description: 意外事件描述
-    - justification: 为什么合理
-    - impact_on_plot: 对后续剧情影响
-    - linked_foreshadow_id: 可关联的伏笔 ID(可为 null)
-    - severity: minor/moderate/major
-    如果不需要，输出: {{"no_surprise": true, "reason": "原因说明"}}
-  expected_output: "JSON 意外事件提案或不需要意外的声明"
-  enabled: false
-
-foreshadowing_ops:
-  description: |
-    故事: {project_title}
-    {memory_block}
-    本场景: {scene_brief}
-    在场角色: {present_characters}
-
-    ===== 当前伏笔状态表 =====
-    {foreshadow_table}
-
-    ===== 紧急提醒 =====
-    {urgent_alerts}
-
-    ===== SurpriseAgent 的意外提案 =====
-    {surprise_proposal}
-
-    请输出 JSON 格式的伏笔操作建议列表，每项包含:
-    - action: plant/reinforce/activate/resolve/subvert/alert
-    - foreshadow_id: 操作的伏笔 ID(新建时为 null)
-    - description: 具体操作描述
-    - new_foreshadow: 若 action=plant，填写新伏笔详情
-      (description, target_revelation, linked_characters, max_dormant_scenes)
-    - link_to_surprise: 是否与意外提案联动(bool)
-    输出格式: {{"operations": [...]}}
-  expected_output: "JSON 伏笔操作建议列表"
-  enabled: false
+# ---------------- 标准任务序列 ----------------
 
 director_plan:
   description: |
-    故事: {project_title}
-    {memory_block}
-    用户场景要求: {scene_brief}
+    你是本作导演兼创作总指挥。
+    {mode_hint}
 
-    ===== 时空锚定（规划前必须先完成）=====
-    1. 当前时刻与地点：明确此刻是几号、几点、谁在哪里
-    2. 与上轮连续性校验：上轮结束时的时刻与地点是否与本轮衔接，有无时间缺口或地点跳变
-    3. 信息迷雾总纲：本场景所有角色只能知道他们有途径知道的事
+    {shared_context}
+    {pre_context}
+    请输出一个 JSON 对象（不要 Markdown 代码围栏），包含以下部分：
+    {{
+      "surprise_idea": {{ "type": "...", "description": "...", "should_happen": true, "severity": "minor|moderate|major", "justification": "..." }},
+      "director_intent": {{ "goal": "...", "tone": "...", "key_events": ["..."], "do_not_happen": ["..."] }},
+      "foreshadow_ops": [ {{ "action": "plant|reinforce|resolve|subvert", ... }} ],
+      "consistency": {{ "passed": true, "conflicts": [], "retry_suggestion": "" }},
+    {memory_fact_schema}}}
 
-    ===== 意外 Agent 提案 =====
-    {surprise_proposal}
-
-    ===== 伏笔 Agent 建议 =====
-    {foreshadowing_ops}
-
-    作为导演，请综合以上所有信息，输出最终的'场景意图包' JSON:
-    - goal: 戏剧目标
-    - conflict: 冲突/伏笔
-    - emotion_arc: 情绪曲线
-    - forbidden: 禁止发生的事
-    - adopted_surprise: 采纳的意外（null 表示不采纳）
-    - adopted_foreshadow_ops: 采纳的伏笔操作列表
-    - rejection_reasons: 否决某提案的理由（如有）
-    你有权否决任何提案，但必须给出理由。
+    {memory_fact_rule}
+    foreshadow_ops 里每个操作的格式：
+    - plant: {{"action":"plant","new_foreshadow":{{"description":"...","linked_characters":[...],"target_revelation":"...","visible_to":[...]}}}}
+    - reinforce/resolve/subvert: {{"action":"...","foreshadow_id":"fs_xxx"}}
+    没有伏笔要操作时 foreshadow_ops 填空数组。
+    consistency 里自检人设/时间线/设定冲突；major 冲突把 severity 标记在 conflicts 里。
+    需要查看伏笔详细状态时，调用 query_active_foreshadows tool。
   expected_output: "JSON 场景意图包"
 
 actor_interaction:
   description: |
-    {focus_instruction}
+    请以【{character_name}】的身份，给出这一刻的内心想法、台词和行动。
+    简洁、符合人设，只写行动日志式的描述。
+    {wake_hint}
 
-    导演意图(仅供参考，不要直接复述):
-    {director_intent}
+    {intent_block}
 
-    背景资料:
     {rag_context}
 
     {memory_block}
+  expected_output: "{character_name} 的行动日志片段（3~5 句），描述想法、台词、行动"
 
-    要求：{character_name} 只能说他/她有途径知道的事（信息迷雾），
-    不得提及自己不在场、未被告知的事件；记得并兑现自己此前说过要做的事；
-    不迎合、不抢戏；言行要付出代价或留下痕迹。
-  expected_output: "{character_name}的行动与台词记录"
-
-consistency_check:
+actor_interaction_secondary:
   description: |
-    检查以下角色行动记录:
-    {actor_log}
+    现在请代入次要角色【{character_name}】。
+    只写这一个角色的台词与动作，不要替其他角色发言。
+    给出{character_name}在这一刻的简短反应/台词。
 
-    角色设定:
-    {character_data}
+    {intent_block}
 
-    活跃伏笔:
-    {foreshadow_data}
+    {rag_context}
 
-    ===== 本场景已采纳的伏笔/意外 =====
-    {director_constraints}
-
-    检查项：
-    1. 角色行为是否符合人设
-    2. 时间线是否合理
-    3. 已采纳的意外事件是否'合理但意外'而非'莫名其妙'
-    4. 伏笔操作是否与已有设定冲突
-    5. 信息越权：角色是否说出了他没有途径知道的信息
-    6. 关系跳变：好感/信任是否无事件依据地大幅变化
-    7. 数值矛盾：时间、金钱、物品数量是否前后一致
-    8. 承诺兑现：角色此前明确说过要做的事是否被正确处理
-    输出 JSON: {{"passed": ..., "conflicts": [...], "severity": "..."}}
-    只输出冲突结论，不要复述剧情。
-  expected_output: "JSON 一致性报告"
+    {memory_block}
+  expected_output: "{character_name} 的简短行动描述（1~2 句）"
+  agent: ensemble
   enabled: false
 
 prose_polish:
   description: |
-    请把以下角色行动日志，改写成统一风格('{style}')的正式小说正文（约 1200-1400 字）。
-    像一个隐形在场的叙述者一样，融合对话、动作、心理与环境描写。
+    {packet_contract}
 
-    本场景已采纳的伏笔与意外（必须自然体现，不可点破）:
-    {director_constraints}
+    你是本作的润色 Agent，把下面的行动日志写成流畅的中文叙事。
+    {output_hint}
 
-    ===== 写作规范 =====
-    1. 视角：从在场角色可感知的角度叙述，不写他们看不到的事（比如躲在门外偷听的人、他们不知道的暗线）
-    2. 心理活动：用"念头自己冒出来"的方式呈现（"这个念头自己冒了出来——"），不用"他感到很愤怒"式直白陈述；不喊口号、不总结、不灌鸡汤
-    3. 动作与手工：给足过程细节，允许失败与返工（裁歪、写坏、重贴、试错），让时间在手工里真实流逝
-    4. 氛围：环境、天气、光线、声音必须与角色当下的情绪基调对齐
-    5. 数字：涉及时间、金钱、数量时用具体数字并与前文一致，不许模糊
-    6. 伏笔与意外：自然织入，不能让读者觉得刻意；意外事件用节奏感和氛围烘托冲击力
-    7. 结尾：停在一个具体、可被行动回应的处境（门被推开、手机震动、车在楼下按喇叭），不总结、不感慨
+    【导演意图】:
+    {director_intent}
 
-    角色行动日志:
+    【角色互动日志】:
     {actor_log}
+
+    【文风偏好】: {style}
+
+    请只填写 prose（导演模式）或 prose + choices（游戏模式）字段。
   expected_output: "一段 1200-1400 字的小说正文"
+
+# ---------------- 单 Agent 提示词（不进入标准 Crew） ----------------
+
+adjudicate_action:
+  description: |
+    你是本作导演兼世界裁决者。{mode_rule}
+    {packet_contract}
+    当前节拍：{phase}；叙事目标：{goal}
+    世界状态：
+    {world_brief}
+    行动者：{actor}
+    行动：{action}
+    目标：{target}
+    请裁决该行动是否发生，并只填写 decision / narrative / reason / state / available 字段。state 只写必要变化，没有变化时至少给出 time_delta。
+  expected_output: "JSON 裁决包（decision / narrative / reason / state / available）"
+  agent: director
+  enabled: false
+
+npc_actions:
+  description: |
+    你扮演本作的所有次要角色。根据世界状态，为其中 1-2 个角色各给出一条主动行动；没有合适行动就返回空列表。
+    {packet_contract}
+    世界状态：
+    {world_brief}
+    可行动角色：{candidates}
+    只填写 npc_actions 字段。
+  expected_output: "只包含 npc_actions 的 JSON"
+  agent: ensemble
+  enabled: false
+
+side_stage_direct:
+  description: |
+    你是不出现在正文里的侧台导演，只裁决不在场角色之间已经/正在发生的互动。
+    【当前主场景】{scene_brief}
+    【唤醒原因】{reason}
+    {intent_block}【参与者】
+    {profiles}
+    【共享记忆（全知视角，仅供裁决时校验一致性，不得照抄进视角）】
+    {memory_block}
+    {rag_context}
+    {draft_block}输出一个 JSON 对象，不要输出任何其他文字，格式：
+    {{
+      "facts": "所有参与者都能观察到的客观事实，1~3 句",
+      "short_term": "幕间近景记录，保留关键细节，1~2 句",
+      "long_term": "压缩后的长期梗概，只留因果与结果，1 句",
+      "key_event": "若构成不可逆转折，写一条关键事件；否则空字符串",
+      "worldbook": ["值得长期检索的持久事实，每条一句；没有则空数组"],
+      "perspectives": {{"角色名": "该角色自己的视角、误解或隐瞒，1~2 句"}},
+      "messages": [{{"from": "角色名", "to": "收件人名", "content": "消息内容"}}]
+    }}
+    规则：
+    - facts 只写共同可观察的事实；秘密、误解、隐瞒只能放进对应视角；
+    - short_term / long_term / worldbook 必须是你自己压缩好的文本，不要照抄 facts；
+    - worldbook 只写关系变化、身份、位置、契约、承诺、秘密等可长期检索的持久事实，不写一次性动作细节；
+    - key_event 只在发生不可逆转折时填写，日常走动留空；
+    - perspectives 必须覆盖每个参与者；
+    - 不要替在场角色行动，不要让他们凭空获得秘密；
+    - messages 最多 2 条，收件人必须是作品中的角色；没有消息返回空数组；
+    - 只输出 JSON，不要解释。
+  expected_output: "侧台事件 JSON（facts / short_term / long_term / key_event / worldbook / perspectives / messages）"
+  agent: offscreen_director
+  enabled: false
+
+wake_character:
+  description: |
+    你被导演临时唤到这一场戏的取景框外，仅以【{name}】的身份回应。
+    【你是谁】性格/说话习惯: {persona}
+    当前动机: {motivation}
+    【此刻场景】{scene_brief}
+    【在场角色】{present}
+    【你的位置】你此刻不在上述场景中，只能依据自己的处境、记忆和消息渠道行动。
+    【唤醒来源】{source}
+    【唤醒原因】{reason}
+    {memory_block}
+    {rag}
+    {canonical_block}{intent_block}输出必须分为两段，顺序固定：
+    【沉睡期间经历】你上一次出场之后到此刻（不在当前场景的这段时间）去了哪、做了什么、见了谁、得知或隐瞒了什么。写 1~3 句具体、可追溯的经历；即使只是待着，也要写清当时的状态。若上面已给出侧台确认经历，直接据此复述，不要另编。这段经历会被写入你的私有记忆，后续唤醒会继续沿用，不能与已有记忆矛盾。
+    【此刻回应】你此刻的想法、一句台词或一个可执行的行动意图（1~4 句）。
+    要求：只写这个角色知道的事；不替其他角色说话，不描写自己看不到的事，不预知剧情。
+  expected_output: "两段式回应：【沉睡期间经历】1~3 句；【此刻回应】1~4 句"
+  agent: protagonist
+  enabled: false
+
+wake_character_hint:
+  description: |
+    【可唤醒角色（不在场，按需 function call）】: {candidates}
+    调用方式：wake_character(character="角色名", reason="为什么需要他/她，以及希望他/她回应什么", involves="可选：他/她沉睡期间可能互动的其他不在场角色名，逗号分隔")。
+    若你知道被唤醒角色最近和其他沉睡角色有互动，务必填写 involves：侧台导演会一次性裁决互动并补全所有参与者的记忆，避免各说各话。
+    只有剧情确实需要该角色通过消息、回忆、远程联络或突然到场参与时才调用；已在场角色不要唤醒；本场最多唤醒 {max_wakes} 人。
+    {mode_hint}
+  expected_output: "（提示词片段，无独立输出）"
+  agent: director
+  enabled: false
+
+foreshadow_conflict:
+  description: |
+    你是小说的世界观一致性审校员。作者准备回溯插入一条伏笔：它埋设在过去，但在已有正文中可能没有提到。
+    请检查这条伏笔的描述、真相、知情角色是否与已有角色设定、历史场景记忆、世界书条目或其它伏笔冲突。
+    只输出 JSON，不要 Markdown 代码围栏：
+    {{"passed": true, "conflicts": [{{"severity": "major|minor", "conflict": "...", "evidence": "..."}}]}}
+    没有冲突时 conflicts 为空数组。
+
+    {foreshadow_context}
+  expected_output: "JSON 冲突检查结果（passed / conflicts）"
+  agent: director
+  enabled: false

@@ -53,13 +53,13 @@ def test_create_project_persists_to_db(repo):
 
 
 def test_create_project_auto_seeds_agents_and_tasks(repo):
-    """新项目自动播种默认的 5 个 agent + 6 个 task"""
+    """新项目自动播种默认的 5 个 agent + 8 个 task"""
     repo.create_project("novel_b", "武侠江湖", "wuxia")
 
     agents = repo.list_agents(project_id="novel_b")
     tasks = repo.list_tasks(project_id="novel_b")
     assert len(agents) == 5
-    assert len(tasks) == 6
+    assert len(tasks) == 10
     # 归属正确的 project_id
     assert all(a["project_id"] == "novel_b" for a in agents)
     assert all(t["project_id"] == "novel_b" for t in tasks)
@@ -142,7 +142,7 @@ def test_delete_project_cascades_agents_and_tasks(repo):
     """删除项目时其所有 agent/task 配置级联清理（用底层 SQL 验证，绕开 list_agents 的自动 seed）"""
     repo.create_project("novel_cascade", "级联测试", "sci-fi")
     assert len(repo.list_agents(project_id="novel_cascade")) == 5
-    assert len(repo.list_tasks(project_id="novel_cascade")) == 6
+    assert len(repo.list_tasks(project_id="novel_cascade")) == 10
 
     result = repo.delete_project("novel_cascade")
     assert result is True
@@ -171,7 +171,7 @@ def test_delete_project_isolates_other_projects(repo):
     repo.delete_project("proj_drop")
 
     assert len(repo.list_agents(project_id="proj_keep")) == 5
-    assert len(repo.list_tasks(project_id="proj_keep")) == 6
+    assert len(repo.list_tasks(project_id="proj_keep")) == 10
     assert repo.get_project("proj_keep") is not None
 
 
@@ -441,7 +441,7 @@ def test_fresh_db_creates_tables_without_migration(tmp_path):
     repo.ensure_seeded()
     assert repo.project_exists(DEFAULT_PROJECT_ID)
     assert len(repo.list_agents(project_id=DEFAULT_PROJECT_ID)) == 5
-    assert len(repo.list_tasks(project_id=DEFAULT_PROJECT_ID)) == 6
+    assert len(repo.list_tasks(project_id=DEFAULT_PROJECT_ID)) == 10
 
     reset_repositories()
     reset_engines()
@@ -488,6 +488,7 @@ def test_reopening_migrated_db_is_idempotent(tmp_path):
 
     first = CrewConfigRepository(url)
     first.create_all()
+    # 旧项目保留自己的覆盖项，不把缺失的 Agent 写回数据库
     assert len(first.list_agents(project_id="old_novel")) == 1
     assert len(first.list_agents(project_id=DEFAULT_PROJECT_ID)) == 5
 
@@ -497,10 +498,26 @@ def test_reopening_migrated_db_is_idempotent(tmp_path):
     second = CrewConfigRepository(url)
     second.create_all()  # 此时表已带外键，不应再触发迁移
 
-    # old_novel 数据原样保留，不重复
+    # old_novel 数据库配置原样保留
     assert len(second.list_agents(project_id="old_novel")) == 1
     director = second.get_agent("director", project_id="old_novel")
     assert director["backstory"] == "旧背景"
+
+    # 运行时读取：数据库覆盖优先，缺失项回退 YAML 模板
+    effective = second.load_agents(project_id="old_novel")
+    assert len(effective) == 5
+    assert effective["director"]["backstory"] == "旧背景"
+    assert effective["director"]["role"] == "导演"
+    assert effective["protagonist"]["role"] == "角色演员 · {name}"
+    assert set(second.load_tasks(project_id="old_novel")) == {
+        "director_plan",
+        "actor_interaction",
+        "prose_polish",
+    }
+    side_stage = second.load_task_template(
+        "side_stage_direct", project_id="old_novel"
+    )
+    assert "侧台导演" in side_stage["description"]
 
     # demo 不重复播种
     assert len(second.list_agents(project_id=DEFAULT_PROJECT_ID)) == 5

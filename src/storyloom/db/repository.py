@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import yaml
-from sqlalchemy import func, inspect, select, text
+from sqlalchemy import delete, func, inspect, select, text
 from sqlalchemy.orm import Session
 
 from storyloom.db.base import database_url, get_engine
@@ -65,27 +65,40 @@ _TASK_FIELDS = (
     "position",
 )
 
-# 标准任务序列的装配关系（对应 crew.py 中 @task 的 agent/context 显式装配）
+# 任务模板的默认装配关系（标准任务按此顺序接入 Agent / context）
 _DEFAULT_TASK_WIRING: Dict[str, Dict[str, Any]] = {
-    "surprise_proposal": {"agent_key": "surprise", "context_keys": []},
-    "foreshadowing_ops": {"agent_key": "foreshadowing", "context_keys": []},
-    "director_plan": {
-        "agent_key": "director",
-        "context_keys": ["surprise_proposal", "foreshadowing_ops"],
-    },
+    "director_plan": {"agent_key": "director", "context_keys": []},
     "actor_interaction": {
         "agent_key": "protagonist",
         "context_keys": ["director_plan"],
     },
-    "consistency_check": {
-        "agent_key": "consistency",
-        "context_keys": ["actor_interaction"],
+    "actor_interaction_secondary": {
+        "agent_key": "ensemble",
+        "context_keys": [],
     },
     "prose_polish": {
         "agent_key": "prose",
-        "context_keys": ["consistency_check"],
+        "context_keys": ["actor_interaction"],
     },
+    # 单 Agent 提示词模板（enabled=false，不进入标准 Crew）
+    "adjudicate_action": {"agent_key": "director", "context_keys": []},
+    "npc_actions": {"agent_key": "ensemble", "context_keys": []},
+    "side_stage_direct": {
+        "agent_key": "offscreen_director",
+        "context_keys": [],
+    },
+    "wake_character": {"agent_key": "protagonist", "context_keys": []},
+    "wake_character_hint": {"agent_key": "director", "context_keys": []},
+    "foreshadow_conflict": {"agent_key": "director", "context_keys": []},
 }
+
+#: 已废弃的 Agent / Task key；种子同步时从数据库清理，避免旧项目继续加载死配置。
+_OBSOLETE_AGENT_KEYS = frozenset(
+    {"outline", "consistency", "surprise", "foreshadowing", "presentation"}
+)
+_OBSOLETE_TASK_KEYS = frozenset(
+    {"surprise_proposal", "foreshadowing_ops", "consistency_check", "present_text"}
+)
 
 
 class CrewConfigRepository:
@@ -96,6 +109,8 @@ class CrewConfigRepository:
         self.engine = get_engine(self.url)
         # 同一实例只做一次建表/迁移探测；失败时不置位，下次仍会重试
         self._schema_ready = False
+        # 已完成废弃配置清理的项目；避免每次读取配置都重复扫描
+        self._defaults_synced: set[str] = set()
 
     # ---------------- 基础设施 ----------------
 
@@ -496,7 +511,11 @@ class CrewConfigRepository:
                     )
 
     def ensure_seeded(self, project_id: str = DEFAULT_PROJECT_ID) -> None:
-        """建表；确保项目存在；若该项目还没有任何 Agent，则从 YAML 种子导入"""
+        """建表；确保项目存在；新项目导入 YAML 种子，旧项目清理废弃配置。
+
+        已有项目不会把缺失的默认项写进数据库：读取时以 YAML 模板兜底、
+        项目自己的数据库配置优先，保证每个项目可以有不同设定。
+        """
         self._ensure_schema()
         self.ensure_project(project_id)
         with self.session() as session:
@@ -510,6 +529,32 @@ class CrewConfigRepository:
             )
         if not has_agents:
             self.seed_from_yaml(project_id=project_id)
+            self._defaults_synced.add(project_id)
+            return
+        if project_id not in self._defaults_synced:
+            with self.session() as session:
+                self._prune_obsolete(session, project_id, SCENE_CREW)
+            self._defaults_synced.add(project_id)
+
+    @staticmethod
+    def _prune_obsolete(
+        session: Session, project_id: str, crew: str
+    ) -> None:
+        """删除已经退出代码的旧 Agent / Task 配置"""
+        session.execute(
+            delete(AgentConfigRow).where(
+                AgentConfigRow.project_id == project_id,
+                AgentConfigRow.crew == crew,
+                AgentConfigRow.key.in_(tuple(_OBSOLETE_AGENT_KEYS)),
+            )
+        )
+        session.execute(
+            delete(TaskConfigRow).where(
+                TaskConfigRow.project_id == project_id,
+                TaskConfigRow.crew == crew,
+                TaskConfigRow.key.in_(tuple(_OBSOLETE_TASK_KEYS)),
+            )
+        )
 
     # ---------------- 项目元数据读写 ----------------
 
@@ -935,71 +980,194 @@ class CrewConfigRepository:
     def load_agents(
         self, project_id: str = DEFAULT_PROJECT_ID, crew: str = SCENE_CREW
     ) -> Dict[str, Dict[str, Any]]:
-        """
-        返回 CrewAI 可直接使用的 agents 配置字典：
+        """返回 CrewAI 可直接使用的 agents 配置字典。
 
-            {"director": {"role": ..., "goal": ..., "backstory": ...}, ...}
+        解析顺序：YAML 模板兜底 → 当前项目的数据库配置覆盖。
+        数据库里没有的 Agent、或某个字段为空时，使用模板默认值；
+        每个项目可以只覆盖自己关心的 Agent / 字段。
         """
         self.ensure_seeded(project_id)
+        defaults = _load_yaml(_CONFIG_DIR / "agents.default.yaml")
         with self.session() as session:
             rows = session.scalars(
                 select(AgentConfigRow)
                 .where(
                     AgentConfigRow.project_id == project_id,
                     AgentConfigRow.crew == crew,
-                    AgentConfigRow.enabled.is_(True),
                 )
                 .order_by(AgentConfigRow.position, AgentConfigRow.id)
             ).all()
-            return {row.key: _agent_config(row) for row in rows}
+
+        row_map = {row.key: row for row in rows}
+        configs: Dict[str, Dict[str, Any]] = {}
+        order: List[str] = []
+        for row in rows:
+            if not row.enabled:
+                continue
+            base = _yaml_agent_config(defaults.get(row.key, {}))
+            for field in ("role", "goal", "backstory"):
+                value = getattr(row, field)
+                if value:
+                    base[field] = value
+            for field in ("allow_delegation", "verbose", "max_iter"):
+                value = getattr(row, field)
+                if value is not None:
+                    base[field] = value
+            if row.settings:
+                base.update(row.settings)
+            configs[row.key] = base
+            order.append(row.key)
+
+        for key, conf in defaults.items():
+            if key in row_map:
+                # 数据库里显式停用的 Agent 不再回退到模板
+                continue
+            configs[key] = _yaml_agent_config(conf)
+            order.append(key)
+
+        return {key: configs[key] for key in order}
 
     def load_tasks(
         self, project_id: str = DEFAULT_PROJECT_ID, crew: str = SCENE_CREW
     ) -> Dict[str, Dict[str, Any]]:
-        """返回 CrewAI 可直接使用的 tasks 配置字典"""
+        """返回 CrewAI 可直接使用的 tasks 配置字典。
+
+        解析顺序：YAML 模板兜底 → 当前项目的数据库配置覆盖。
+        """
         self.ensure_seeded(project_id)
+        defaults = _load_yaml(_CONFIG_DIR / "tasks.default.yaml")
         with self.session() as session:
             rows = session.scalars(
                 select(TaskConfigRow)
                 .where(
                     TaskConfigRow.project_id == project_id,
                     TaskConfigRow.crew == crew,
-                    TaskConfigRow.enabled.is_(True),
                 )
                 .order_by(TaskConfigRow.position, TaskConfigRow.id)
             ).all()
-            return {
-                row.key: {
-                    "description": row.description,
-                    "expected_output": row.expected_output,
-                }
-                for row in rows
+
+        row_map = {row.key: row for row in rows}
+        result: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            if not row.enabled:
+                continue
+            conf = defaults.get(row.key, {})
+            result[row.key] = {
+                "description": row.description or conf.get("description", ""),
+                "expected_output": row.expected_output
+                or conf.get("expected_output", ""),
             }
+
+        for key, conf in defaults.items():
+            if key in row_map or not conf.get("enabled", True):
+                continue
+            result[key] = {
+                "description": conf.get("description", ""),
+                "expected_output": conf.get("expected_output", ""),
+            }
+
+        return result
 
     def load_task_meta(
         self, project_id: str = DEFAULT_PROJECT_ID, crew: str = SCENE_CREW
     ) -> List[Dict[str, Any]]:
-        """返回任务的装配元信息（顺序、agent、context）"""
+        """返回任务的装配元信息（顺序、agent、context）。
+
+        与 load_tasks 一致：数据库覆盖优先，缺失项回退 YAML 模板。
+        """
         self.ensure_seeded(project_id)
+        defaults = _load_yaml(_CONFIG_DIR / "tasks.default.yaml")
         with self.session() as session:
             rows = session.scalars(
                 select(TaskConfigRow)
                 .where(
                     TaskConfigRow.project_id == project_id,
                     TaskConfigRow.crew == crew,
-                    TaskConfigRow.enabled.is_(True),
                 )
                 .order_by(TaskConfigRow.position, TaskConfigRow.id)
             ).all()
-            return [
+
+        row_map = {row.key: row for row in rows}
+        default_order = list(defaults)
+        default_index = {key: i for i, key in enumerate(default_order)}
+        meta: List[Dict[str, Any]] = []
+        row_positions: Dict[str, int] = {}
+        for row in rows:
+            if not row.enabled:
+                continue
+            conf = defaults.get(row.key, {})
+            wiring = _DEFAULT_TASK_WIRING.get(row.key, {})
+            row_positions[row.key] = row.position
+            meta.append(
                 {
                     "key": row.key,
-                    "agent_key": row.agent_key,
-                    "context_keys": list(row.context_keys or []),
+                    "agent_key": row.agent_key
+                    or conf.get("agent")
+                    or wiring.get("agent_key"),
+                    "context_keys": list(row.context_keys)
+                    if row.context_keys is not None
+                    else list(
+                        conf.get("context", wiring.get("context_keys", []))
+                    ),
                     "position": row.position,
                 }
-                for row in rows
-            ]
+            )
+
+        for key, conf in defaults.items():
+            if key in row_map or not conf.get("enabled", True):
+                continue
+            wiring = _DEFAULT_TASK_WIRING.get(key, {})
+            meta.append(
+                {
+                    "key": key,
+                    "agent_key": conf.get("agent") or wiring.get("agent_key"),
+                    "context_keys": list(
+                        conf.get("context", wiring.get("context_keys", []))
+                    ),
+                    # 缺失的标准任务按 YAML 中的相邻任务定位，
+                    # 不能直接追加到末尾，否则会破坏任务顺序与 context 依赖
+                    "position": _fallback_task_position(
+                        key, default_order, default_index, row_positions
+                    ),
+                }
+            )
+        meta.sort(key=lambda item: item["position"])
+        return meta
+
+    def load_task_template(
+        self,
+        key: str,
+        project_id: str = DEFAULT_PROJECT_ID,
+        crew: str = SCENE_CREW,
+    ) -> Optional[Dict[str, str]]:
+        """按 key 读取任务提示词模板（包含 enabled=false 的单 Agent 模板）。
+
+        数据库里有该项目自己的提示词就优先使用；没有配置或字段为空时
+        回退到 YAML 模板，这样每个项目都可以有独立的自定义 prompt。
+        """
+        self.ensure_seeded(project_id)
+        default = _load_yaml(_CONFIG_DIR / "tasks.default.yaml").get(key, {})
+        with self.session() as session:
+            row = session.scalar(
+                select(TaskConfigRow).where(
+                    TaskConfigRow.project_id == project_id,
+                    TaskConfigRow.crew == crew,
+                    TaskConfigRow.key == key,
+                )
+            )
+            if row is None:
+                if not default:
+                    return None
+                return {
+                    "description": default.get("description", ""),
+                    "expected_output": default.get("expected_output", ""),
+                }
+            return {
+                "description": row.description
+                or default.get("description", ""),
+                "expected_output": row.expected_output
+                or default.get("expected_output", ""),
+            }
 
     # ---------------- 读取：给管理界面 / CLI 用 ----------------
 
@@ -1655,6 +1823,9 @@ class CrewConfigRepository:
                     for name, value in payload.items():
                         setattr(row, name, value)
 
+            # 清理已经退出代码的旧配置，避免旧项目继续加载死 Agent / Task
+            self._prune_obsolete(session, project_id, crew)
+
         return inserted
 
 
@@ -1693,18 +1864,54 @@ def _load_yaml(path: Path) -> Dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _agent_config(row: AgentConfigRow) -> Dict[str, Any]:
-    """ORM → CrewAI agents 配置字典（只保留非空字段）"""
+def _fallback_task_position(
+    key: str,
+    default_order: List[str],
+    default_index: Dict[str, int],
+    row_positions: Dict[str, int],
+) -> float:
+    """为数据库缺失的模板任务推算排序位置。
+
+    以 YAML 中该任务前后的、数据库里真实存在的任务为锚点，插到它们之间；
+    两端都没有锚点时排到末尾。这样删除某个标准任务后，其余任务顺序和
+    context 依赖仍然正确。
+    """
+    index = default_index.get(key, len(default_order))
+    for prev in reversed(default_order[:index]):
+        if prev in row_positions:
+            return row_positions[prev] + 0.5
+    for nxt in default_order[index + 1:]:
+        if nxt in row_positions:
+            return row_positions[nxt] - 0.5
+    return (max(row_positions.values()) + 1) if row_positions else 0
+
+
+def _yaml_agent_config(conf: Dict[str, Any]) -> Dict[str, Any]:
+    """YAML 模板 → CrewAI agents 配置字典"""
     config: Dict[str, Any] = {
-        "role": row.role,
-        "goal": row.goal,
-        "backstory": row.backstory,
+        "role": conf.get("role", ""),
+        "goal": conf.get("goal", ""),
+        "backstory": conf.get("backstory", ""),
     }
     for field in ("allow_delegation", "verbose", "max_iter"):
-        value = getattr(row, field)
+        value = conf.get(field)
         if value is not None:
             config[field] = value
-    config.update(row.settings or {})
+    config.update(
+        {
+            k: v
+            for k, v in conf.items()
+            if k
+            not in {
+                "role",
+                "goal",
+                "backstory",
+                "allow_delegation",
+                "verbose",
+                "max_iter",
+            }
+        }
+    )
     return config
 
 

@@ -182,6 +182,7 @@ def resolve_side_stage(
             memory_block = ""
             rag_context = ""
     prompt = build_side_stage_prompt(
+        crew=crew,
         participants=participants,
         scene_brief=scene_brief,
         reason=reason,
@@ -528,6 +529,7 @@ def _add_worldbook_item(
 
 def build_side_stage_prompt(
     *,
+    crew: Any,
     participants: List[CharacterAsset],
     scene_brief: str,
     reason: str,
@@ -547,42 +549,15 @@ def build_side_stage_prompt(
         if draft_experience
         else ""
     )
-    memory_section = (
-        "【共享记忆（全知视角，仅供裁决时校验一致性，不得照抄进视角）】\n"
-        f"{memory_block or '（无）'}\n"
-        f"{rag_context or '【相关回忆检索】\n（无）'}\n"
-    )
-    return (
-        "你是不出现在正文里的侧台导演，只裁决不在场角色之间已经/正在"
-        "发生的互动。\n"
-        f"【当前主场景】{scene_brief or '（未提供）'}\n"
-        f"【唤醒原因】{reason or '需要补全沉睡期间的经历'}\n"
-        f"{intent_block}"
-        f"【参与者】\n{profiles}\n"
-        f"{memory_section}"
-        f"{draft_block}"
-        "输出一个 JSON 对象，不要输出任何其他文字，格式：\n"
-        "{\n"
-        '  "facts": "所有参与者都能观察到的客观事实，1~3 句",\n'
-        '  "short_term": "幕间近景记录，保留关键细节，1~2 句",\n'
-        '  "long_term": "压缩后的长期梗概，只留因果与结果，1 句",\n'
-        '  "key_event": "若构成不可逆转折，写一条关键事件；否则空字符串",\n'
-        '  "worldbook": ["值得长期检索的持久事实，每条一句；没有则空数组"],\n'
-        '  "perspectives": {"角色名": "该角色自己的视角、误解或隐瞒，1~2 句"},\n'
-        '  "messages": [{"from": "角色名", "to": "收件人名", '
-        '"content": "消息内容"}]\n'
-        "}\n"
-        "规则：\n"
-        "- facts 只写共同可观察的事实；秘密、误解、隐瞒只能放进对应视角；\n"
-        "- short_term / long_term / worldbook 必须是你自己压缩好的文本，"
-        "不要照抄 facts；\n"
-        "- worldbook 只写关系变化、身份、位置、契约、承诺、秘密等可长期"
-        "检索的持久事实，不写一次性动作细节；\n"
-        "- key_event 只在发生不可逆转折时填写，日常走动留空；\n"
-        "- perspectives 必须覆盖每个参与者；\n"
-        "- 不要替在场角色行动，不要让他们凭空获得秘密；\n"
-        "- messages 最多 2 条，收件人必须是作品中的角色；没有消息返回空数组；\n"
-        "- 只输出 JSON，不要解释。"
+    return crew.task_prompt(
+        "side_stage_direct",
+        scene_brief=scene_brief or "（未提供）",
+        reason=reason or "需要补全沉睡期间的经历",
+        intent_block=intent_block,
+        profiles=profiles,
+        memory_block=memory_block or "（无）",
+        rag_context=rag_context or "【相关回忆检索】\n（无）",
+        draft_block=draft_block,
     )
 
 

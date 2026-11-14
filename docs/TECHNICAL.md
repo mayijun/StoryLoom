@@ -37,14 +37,14 @@ Crew 是整个 StoryLoom 的核心协作单元，包含两种角色：
 > 世界裁决由导演 Agent 输出统一 JSON 完成；没有模型时退化为最小自由叙事兜底。
 > ExtensionHost 是 Crew 的 Tool Loader，把 mod/skill/policy 注册为 Crew 可用的工具。
 
-- **YAML 种子**：`crews/scene_crew/config/agents.default.yaml` + `tasks.default.yaml` 首次运行导入数据库，
-  之后数据库是唯一事实来源；
+- **YAML 种子**：`crews/scene_crew/config/agents.default.yaml` + `tasks.default.yaml` 是新项目的初始配置，
+  也是所有项目的兜底模板；已有项目不会把缺失的默认项写回数据库；
 - **任务模板单一来源**：Flow 内的单 Agent 步骤直接 `Agent.kickoff()`，提示词按 key 从
-  数据库 `task_configs` 读取（`task_prompt()` / `task_expected_output()`），与标准 Crew
-  共用同一份 description / expected_output，避免两处各写一遍导致漂移；
-- **迭代上限兜底**：无工具的单次创作 Agent 由 `AGENT_DEFAULTS` 收紧 `max_iter`
-  （主角 6、群演 4、导演 6、大纲 8、一致性 6、润色 4、意外 6、伏笔 6），
-  数据库里配置的同名字段优先；
+  当前项目的 `task_configs` 读取（`task_prompt()` / `task_expected_output()`），
+  项目没有自定义时回退 YAML 模板；标准 Crew 与 Flow 共用同一份 description / expected_output，
+  避免两处各写一遍导致漂移；单 Agent 提示词模板以 `enabled: false` 存放，不参与标准 Crew 装配；
+- **迭代上限**：`max_iter` 等 Agent 运行参数与 role/goal/backstory 一样存放在
+  `agents.default.yaml` 与数据库 `agent_configs`，代码中不再保留兜底默认值；
 - **可配置**：每个项目可独立增删改 Agent / Task、调整执行顺序、启停。
 
 ### 🔀 统一叙事引擎（NarrativeEngine）
@@ -248,16 +248,18 @@ uv run python scripts/reset_data.py --dry-run
 
 | 配置 | 1. 代码兜底 | 2. YAML 种子 | 3. 运行时权威 |
 |---|---|---|---|
-| Agent | `AGENT_DEFAULTS`（如 `max_iter`） | `agents.default.yaml` | 数据库 `agent_configs` |
+| Agent | 无（role/goal/backstory/max_iter 全部来自配置） | `agents.default.yaml` | 数据库 `agent_configs` |
 | Task | `_DEFAULT_TASK_WIRING`（任务的 agent / context） | `tasks.default.yaml` | 数据库 `task_configs` |
 | 记忆 | `MemorySettings` 内置默认值 | `memory_config.default.yaml` | 数据库 `memory_configs`（每项目一份） |
 | 模型 | 路由兜底 `deepseek.flash`、temperature 0.8 | `model_config.yaml` | —（运行时直接读取，无数据库层） |
 
 要点：
 
-- **数据库非空字段优先**：`null` 字段不会覆盖代码兜底，例如 `max_iter` 为空时使用 `AGENT_DEFAULTS`；
-- **种子只在首次生效**：项目还没有任何 Agent 行时才导入 YAML；已有项目改 YAML 不会自动生效，
-  需 `storyloom-config seed --overwrite`、配置导入导出，或用迁移脚本（仅同步任务模板与记忆种子）；
+- **数据库非空字段优先**：读取 Agent/Task 时以 YAML 模板兜底，当前项目的数据库配置逐字段覆盖；
+  数据库里没有的 Agent / Task 或空字段使用模板默认值，因此每个项目可以有不同设定；
+- **种子与清理**：新项目首次读取时导入完整 YAML；已有项目只清理已废弃的 Agent/Task
+  （如 outline / surprise / foreshadowing / consistency），不会写回缺失的默认项；
+  仍可用 `storyloom-config seed --overwrite` 强制覆盖；
 - **记忆按项目覆盖**：新建项目自动播种，旧项目首次读取时补种；`PATCH` 写数据库，
   重置接口用 YAML 覆盖数据库；`STORYLOOM_MEMORY_*` 环境变量当前未接入；
 - **模型是例外**：`model_config.yaml` 不落库，修改后需重启后端（或重建 registry）生效；
