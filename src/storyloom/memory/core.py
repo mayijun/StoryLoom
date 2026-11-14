@@ -20,12 +20,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from storyloom.memory.base import (
     CROWD_VIEWER,
     MEMORY_ITEM_MAX_CHARS,
-    PUBLIC_VIEWERS,
     MemoryItem,
     MemorySettings,
-    MemoryVisibility,
     TierSpec,
     WorkingMemory,
+    normalize_visible_to,
 )
 from storyloom.memory.compress import (
     build_compress_prompt,
@@ -176,8 +175,7 @@ class LayeredMemory:
             hits=item.hits,
             adoptions=item.adoptions,
             last_hit_scene=item.last_hit_scene,
-            visibility=item.visibility,
-            known_by=item.known_by,
+            visible_to=item.visible_to,
             tags=item.tags,
             source=item.source,
             active_foreshadow=item.active_foreshadow,
@@ -241,13 +239,13 @@ class LayeredMemory:
         brief: str = "",
         present_characters: Optional[List[str]] = None,
         active_foreshadow: bool = False,
-        known_by: Optional[List[str]] = None,
+        visible_to: Optional[List[str]] = None,
         crowd: bool = False,
         key: Optional[str] = None,
     ) -> MemoryItem:
         """把一个场景写入短期记忆，并触发压缩 / 降级评估。
 
-        ``known_by`` 缺省时用 ``present_characters`` 作为目击者集合；
+        ``visible_to`` 缺省时用 ``present_characters`` 作为目击者集合；
         两者都未提供时视为公开叙述。``crowd=True`` 表示有未具名路人见证。
 
         写入前会对 prose 做确定性摘要（默认 200 字），摘要本身不应超过
@@ -257,17 +255,19 @@ class LayeredMemory:
         """
         self._flush_pending_hits()
         item_id = f"scene:{key or scene_index}"
-        scope = known_by if known_by is not None else present_characters
+        scope = (
+            visible_to if visible_to is not None else present_characters
+        )
         explicit_scope = scope is not None
         witnesses = sorted({name for name in (scope or []) if name})
         if crowd:
             witnesses = sorted(set(witnesses) | {CROWD_VIEWER})
             explicit_scope = True
-        if PUBLIC_VIEWERS.intersection(witnesses):
-            visibility: MemoryVisibility = "public"
-            witnesses = []
-        else:
-            visibility = "restricted" if explicit_scope else "public"
+        visible_to = (
+            normalize_visible_to(visible_to=witnesses, default_public=False)
+            if explicit_scope
+            else ["all"]
+        )
         text = prose or brief
         summary = summarize(text)
         _warn_if_oversize(summary, "add_scene → short_term")
@@ -283,8 +283,7 @@ class LayeredMemory:
             summary=summary,
             importance=importance,
             scene_index=scene_index,
-            visibility=visibility,
-            known_by=witnesses,
+            visible_to=visible_to,
             tags=["scene"] + (["active_foreshadow"] if active_foreshadow else []),
             source="scene",
             active_foreshadow=active_foreshadow,
@@ -304,8 +303,7 @@ class LayeredMemory:
         scene_index: int = 0,
         importance: Optional[float] = None,
         tags: Optional[List[str]] = None,
-        visibility: MemoryVisibility = "public",
-        known_by: Optional[List[str]] = None,
+        visible_to: Optional[List[str]] = None,
         source: str = "asset",
     ) -> MemoryItem:
         """直接写入检索库（资产、历史场景回填、被降级旧记忆）
@@ -314,12 +312,13 @@ class LayeredMemory:
         只打 warning，不拆分也不截断。
         """
         _warn_if_oversize(text, f"add_archive_item {item_id}")
-        witnesses = sorted({name for name in (known_by or []) if name})
-        if PUBLIC_VIEWERS.intersection(witnesses):
-            visibility = "public"
-            witnesses = []
-        elif witnesses:
-            visibility = "restricted"
+        scope = (
+            ["all"]
+            if visible_to is None
+            else normalize_visible_to(
+                visible_to=visible_to, default_public=False
+            )
+        )
         item = MemoryItem(
             id=item_id,
             project_id=self.project_id,
@@ -332,8 +331,7 @@ class LayeredMemory:
                 else score_importance(text)
             ),
             scene_index=scene_index,
-            visibility=visibility,
-            known_by=witnesses,
+            visible_to=scope,
             tags=list(tags or []),
             source=source,
         )
@@ -345,7 +343,7 @@ class LayeredMemory:
         text: str,
         *,
         scene_index: int = 0,
-        known_by: Optional[List[str]] = None,
+        visible_to: Optional[List[str]] = None,
         tags: Optional[List[str]] = None,
         importance: Optional[float] = None,
         source: str = "agent_memory_fact",
@@ -377,12 +375,14 @@ class LayeredMemory:
             tags = sorted(set(tags or []) | {"classical_storage"})
         else:
             tags = sorted(set(tags or []))
-        witnesses = sorted({name for name in (known_by or []) if name})
-        if PUBLIC_VIEWERS.intersection(witnesses):
-            visibility: MemoryVisibility = "public"
-            witnesses = []
-        else:
-            visibility = "restricted" if witnesses else "public"
+        # Agent 省略 visible_to 或传空列表表示公开；非空列表才受限。
+        scope = (
+            normalize_visible_to(
+                visible_to=visible_to, default_public=False
+            )
+            if visible_to
+            else ["all"]
+        )
 
         if tier == "archive":
             item_id = f"arch_{uuid.uuid4().hex[:10]}"
@@ -410,8 +410,7 @@ class LayeredMemory:
             scene_index=scene_index,
             # 刚写入的压缩记忆从当前场景开始冷却，避免立即降级
             last_hit_scene=scene_index,
-            visibility=visibility,
-            known_by=witnesses,
+            visible_to=scope,
             tags=tags,
             source=source,
         )
@@ -425,9 +424,9 @@ class LayeredMemory:
     def sync_foreshadowings(self, foreshadowings: List[Any]) -> List[MemoryItem]:
         """把伏笔描述与真相投影成 archive 记忆条目。
 
-        两者共享同一 scope：默认 restricted + []（仅全知视角可见）；
-        创建时指定 known_by 的角色可见（例如某个配角天生知道）。
-        已存在的条目取 known_by 并集，保留后续“某人得知真相”的更新。
+        两者共享同一 scope：默认 []（仅全知视角可见）；
+        创建时指定 visible_to 的角色可见（例如某个配角天生知道）。
+        已存在的条目取 visible_to 并集，保留后续“某人得知真相”的更新。
         """
         keep: set[str] = set()
         touched: List[MemoryItem] = []
@@ -435,9 +434,10 @@ class LayeredMemory:
         for fs in foreshadowings:
             fid = fs.foreshadow_id
             initial = {
-                name for name in (getattr(fs, "known_by", None) or []) if name
+                name
+                for name in (getattr(fs, "visible_to", None) or [])
+                if name
             }
-            base_visibility = getattr(fs, "visibility", "restricted")
             entries = [
                 (f"foreshadow:{fid}", fs.description, ["foreshadow", "clue"]),
             ]
@@ -454,20 +454,17 @@ class LayeredMemory:
             for item_id, content, tags in entries:
                 keep.add(item_id)
                 existing = self.items.get(item_id)
-                merged = sorted(initial | set(existing.known_by if existing else []))
-                if base_visibility == "public" or PUBLIC_VIEWERS.intersection(
-                    merged
-                ):
-                    visibility: MemoryVisibility = "public"
-                    merged = []
-                else:
-                    visibility = "restricted"
+                merged = sorted(
+                    initial | set(existing.visible_to if existing else [])
+                )
+                scope = normalize_visible_to(
+                    visible_to=merged, default_public=False
+                )
 
                 if (
                     existing is not None
                     and existing.text == content
-                    and existing.visibility == visibility
-                    and sorted(existing.known_by) == merged
+                    and existing.visible_to == scope
                 ):
                     touched.append(existing)
                     continue
@@ -477,16 +474,14 @@ class LayeredMemory:
                             item_id,
                             content,
                             tags=tags,
-                            visibility=visibility,
-                            known_by=merged,
+                            visible_to=scope,
                             source="foreshadow",
                         )
                     )
                     continue
                 existing.text = content
                 existing.summary = summarize(content)
-                existing.visibility = visibility
-                existing.known_by = merged
+                existing.visible_to = scope
                 existing.tags = list(tags)
                 existing.source = "foreshadow"
                 self._put(existing)
@@ -514,15 +509,16 @@ class LayeredMemory:
 
         for raw in projection:
             existing = self.items.get(raw["id"])
-            visibility = raw.get("visibility", "public")
-            known_by = sorted(raw.get("known_by") or [])
+            visible_to = normalize_visible_to(
+                visible_to=raw.get("visible_to"),
+                default_public=True,
+            )
             raw_text = raw["text"]
             _warn_if_oversize(raw_text, f"sync_world_state → {raw['id']}")
             if (
                 existing is not None
                 and existing.text == raw_text
-                and existing.visibility == visibility
-                and sorted(existing.known_by) == known_by
+                and existing.visible_to == visible_to
             ):
                 continue
             tier = raw["tier"]
@@ -539,8 +535,7 @@ class LayeredMemory:
                 importance=raw.get("importance", 0.5),
                 scene_index=scene,
                 last_hit_scene=scene,
-                visibility=visibility,
-                known_by=known_by,
+                visible_to=visible_to,
                 tags=list(raw.get("tags", [])),
                 source="world_state",
             )
@@ -572,12 +567,32 @@ class LayeredMemory:
                 batch = self._pick_compress_batch(
                     layer, spec.compress_batch
                 )
+                if batch is None:
+                    # 没有同可见范围的同伴：不跨组合并，单条无损降级。
+                    if not self._demote_oldest_unprotected(layer):
+                        break
+                    continue
                 item = self._compress(batch, spec)
-                if item is not None:
-                    changed.append(item)
+                if item is None:
+                    break
+                changed.append(item)
 
         changed.extend(self._cool_key_events_overflow())
         return changed
+
+    def _demote_oldest_unprotected(
+        self, layer: List[MemoryItem]
+    ) -> bool:
+        """把最旧的非受保护条目原样迁入 archive；不改变文本与可见范围。"""
+        for item in layer:
+            if item.pinned or item.active_foreshadow:
+                continue
+            item.tier = "archive"
+            item.source = "demoted"
+            item.tags = sorted(set(item.tags) | {"demoted", "no_peer"})
+            self._put(item)
+            return True
+        return False
 
     def _cool_key_events_overflow(self) -> List[MemoryItem]:
         """把最冷的关键事件原样迁入世界书，不压缩、合并或丢弃。"""
@@ -667,34 +682,24 @@ class LayeredMemory:
     @staticmethod
     def _pick_compress_batch(
         layer: List[MemoryItem], batch_size: int
-    ) -> List[MemoryItem]:
-        """按可见范围分组选取压缩批次，避免把不同知情者的记忆混在一起。"""
-        groups: Dict[Tuple[str, Tuple[str, ...]], List[MemoryItem]] = {}
+    ) -> Optional[List[MemoryItem]]:
+        """只在完全相同的 ``visible_to`` 分组内选压缩批次，绝不跨组。"""
+        groups: Dict[Tuple[str, ...], List[MemoryItem]] = {}
         for item in layer:
-            key = (item.visibility, tuple(sorted(item.known_by)))
-            groups.setdefault(key, []).append(item)
+            groups.setdefault(tuple(item.visible_to), []).append(item)
+        candidates = [items for items in groups.values() if len(items) >= 2]
+        if not candidates:
+            return None
+        # 优先压缩条目最多的组；同规模时取更旧的一组，保证行为确定。
+        candidates.sort(
+            key=lambda items: (
+                -len(items),
+                items[0].scene_index,
+                items[0].created_at,
+            )
+        )
         size = max(1, batch_size)
-        for items in groups.values():
-            if len(items) >= 2:
-                return items[:size]
-        # 所有分组都只有 1 条：只能跨组合并，由 _scope_for_batch 取交集
-        return layer[: max(1, min(size, len(layer)))]
-
-    @staticmethod
-    def _scope_for_batch(
-        batch: List[MemoryItem],
-    ) -> Tuple[MemoryVisibility, List[str]]:
-        """压缩后的可见范围：公开才公开，否则取各来源 known_by 的交集。"""
-        if any(item.visibility == "public" for item in batch):
-            return "public", []
-        if not batch:
-            return "public", []
-        known = set(batch[0].known_by)
-        for item in batch[1:]:
-            known &= set(item.known_by)
-        if PUBLIC_VIEWERS.intersection(known):
-            return "public", []
-        return "restricted", sorted(known)
+        return candidates[0][:size]
 
     def _compress(
         self, batch: List[MemoryItem], spec: TierSpec
@@ -711,12 +716,14 @@ class LayeredMemory:
             classical=classical,
         )
 
+        scope = list(batch[0].visible_to) if batch else ["all"]
+
         text = ""
         display = ""
         paired = False
         if self.compress_fn is not None:
             try:
-                candidate = str(self.compress_fn(prompt)).strip()
+                candidate = str(self.compress_fn(prompt, scope)).strip()
                 if candidate:
                     text, display, paired = parse_compressed_output(
                         candidate, classical=classical
@@ -736,13 +743,12 @@ class LayeredMemory:
         display = clamp_compressed_text(
             display or text, MEMORY_ITEM_MAX_CHARS
         )
-
-        for child in batch:
-            self._drop(child.id)
         if not text:
             return None
 
-        visibility, known_by = self._scope_for_batch(batch)
+        for child in batch:
+            self._drop(child.id)
+
         last_scene = max(item.scene_index for item in batch)
         tags = {"compressed", target}
         if paired:
@@ -759,8 +765,7 @@ class LayeredMemory:
             scene_index=last_scene,
             # 刚压缩产生的记忆从当前场景开始计算冷却，避免立即降级
             last_hit_scene=last_scene,
-            visibility=visibility,
-            known_by=known_by,
+            visible_to=scope,
             tags=sorted(tags),
             source="compressed",
             active_foreshadow=any(item.active_foreshadow for item in batch),
@@ -851,7 +856,7 @@ class LayeredMemory:
             hits = list(hits)
         if shared:
             hits = [
-                pair for pair in hits if pair[0].visible_to(viewer)
+                pair for pair in hits if pair[0].is_visible_to(viewer)
             ][:limit]
 
         scene = current_scene
@@ -899,7 +904,7 @@ class LayeredMemory:
         for spec in self.settings.tiers:
             items = [
                 item for item in self._items_in(spec.name)
-                if item.visible_to(viewer)
+                if item.is_visible_to(viewer)
             ]
             if not items:
                 continue
@@ -909,7 +914,7 @@ class LayeredMemory:
                 lines.append(f"  - {body}")
         key_events = [
             item for item in self._items_in("key_events")
-            if item.visible_to(viewer)
+            if item.is_visible_to(viewer)
         ]
         if key_events and not any(
             spec.name == "key_events" for spec in self.settings.tiers

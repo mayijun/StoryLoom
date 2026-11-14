@@ -93,7 +93,7 @@ class Fact(BaseModel):
     predicate: str
     object: str
     truth: Literal["true", "false", "unknown"]
-    known_by: set[str]
+    visible_to: set[str]
     asserted_by: str | None
     source_event: str
 ```
@@ -104,12 +104,12 @@ class Fact(BaseModel):
 - 裁决 Agent 只信 `Fact`，不信 Agent 转述；
 - 写入 `Belief` 走裁决统一处理（谁告诉了谁）。
 
-第一阶段只启用 `known_by` 过滤（`known_only + scoped`）；欺骗 / 误解
+第一阶段只启用 `visible_to` 过滤（`known_only + scoped`）；欺骗 / 误解
 （`belief_full`）在 M2 开放。
 
 > 这里的 `Memory` 是**每个 Agent 的经历视图**；项目级的叙事记忆由 §5 的分层记忆系统维护。
-> 两者通过 `visibility` / `known_by` 对接：`public` 全员可见；`restricted` 只对
-> `known_by` 中的角色（可多人，可含 `crowd`）与全知视角（`gm` / `director` / `narrator`）可见。
+> 两者通过单一的 `visible_to` 对接：`["all"]` 全员可见；空列表只对全知视角
+> （`gm` / `director` / `narrator`）可见；其余为具名角色（可多人，可含 `crowd`）。
 >
 > 实现归属：`Fact` / `WorldState` / `StageDirective` 等运行时状态位于
 > `memory/state.py`；角色、地点、伏笔与项目元数据位于 `memory/models.py`。
@@ -367,7 +367,7 @@ WorldState
 ├── time_minutes / precision
 ├── characters: CharState（位置 / 情绪 / 健康 / 知识 / 目标 / 背包）
 ├── locations: LocationState（出口 / 旅行耗时 / 在场角色）
-├── facts: Fact（truth / known_by / asserted_by）
+├── facts: Fact（truth / visible_to / asserted_by）
 ├── flags / relationships
 ├── arc: ArcState（phase / tension_target / beats_remaining / info_budget）
 └── pending_promises（伏笔 / 命运承诺）
@@ -398,6 +398,8 @@ WorldState
 
 核心层固定为 `short_term → long_term → key_events` 三档（`working` / `archive` 是端点）；
 三档的容量与压缩由 `tiers` 有序列表配置，降级 / 回温由 `demotion` 配置。
+压缩方可配置为 `compression.provider = dedicated | director | character`：
+分别使用独立记忆模型、导演模型或按 `visible_to` 选择的角色侧模型。
 关键事件溢出不压缩：系统按近期剧情相关性、命中与场景时间选择冷事件，保留完整条目迁入
 `archive`，再次命中达到阈值后回到 `key_events`；pinned 与活跃伏笔不迁出。
 优先级：`MemorySettings` 代码默认 < `memory_config.default.yaml` 种子 < 项目 `memory_configs`；
@@ -454,22 +456,24 @@ Checkpoint 合并进记忆系统的设计理由：
 
 - 叙事记忆是**项目级**的，供导演、渲染与一致性检查使用；
 - `Fact / Belief / Memory` 是**角色级**的，Agent 只拿 `view(agent_id)`；
-- 叙事记忆用 `visibility` + `known_by` 表达知情范围：
-  - `public`：所有角色可见；
-  - `restricted`：`known_by` 中的角色可见，支持多人与 `crowd`（无名路人）；
-  - `restricted` + 空 `known_by`：只有全知视角（导演 / GM / 旁白）可见；
-- `secrets` 唯一存储在 `memory_items` 的 `secret:<角色>`（`archive + restricted + known_by=[角色]`），
-  `characters` 表不再保存该字段；旧列在 `create_all` 时一次性迁移后删除；
+- 叙事记忆统一用 `visible_to` 表达知情范围：
+  - `["all"]`：所有角色可见；
+  - 具名角色 / `crowd`：这些主体可见（可多人，`crowd` 表示无名路人）；
+  - 空列表：只有全知视角（导演 / GM / 旁白）可见；
+- `secrets` 唯一存储在 `memory_items` 的 `secret:<角色>`（`archive + visible_to=[角色]`），
+  `characters` 表不保存该字段；
 - 伏笔描述与真相分别投影为 `foreshadow:<id>` / `foreshadow_truth:<id>`，共享同一
-  `visibility + known_by`：默认仅全知视角可见，生成时可指定“天生知道”的角色；
+  `visible_to`：默认仅全知视角可见，生成时可指定“天生知道”的角色；
 - 回溯补录伏笔时先做结构检查（角色是否存在、场景时间线、重复/矛盾），再由导演视角
   对相关记忆做一致性检查；major 冲突以 409 阻断，LLM 不可用时降级为 minor 提示；
 - 世界书检索在 `LayeredMemory.retrieve` 先按 `viewer` 过滤候选池，再交给
   `fts` / `vector` / `hybrid`，三种后端共享同一可见性边界；
-- `Fact.known_by` 是**可变权威**：新增知情者后，`sync_world_state` 按稳定 id
-  `ws:fact:<id>` 原地更新对应记忆；场景记忆的 `known_by` 是**目击者集合**，不随事后传播改写；
-- 压缩合并跨可见范围时取 `known_by` 交集，避免把不同知情者的记忆合成公开信息；
-- 群演只是一个 LLM 实例串行扮演多个角色，`known_by` 仍按角色名记录，每个角色 Task
+- `Fact.visible_to` 是**可变权威**：新增知情者后，`sync_world_state` 按稳定 id
+  `ws:fact:<id>` 原地更新对应记忆；场景记忆的 `visible_to` 是**目击者集合**，不随事后传播改写；
+- 压缩严格按 `visible_to` 分区：只合并完全相同的可见范围，绝不跨组；
+  同组不足两条而层仍超容量时，最旧的非 pinned / 非活跃伏笔条目**原样**降级到 `archive`，
+  保留文本与可见范围，避免信息塌缩或受限内容被公开；
+- 群演只是一个 LLM 实例串行扮演多个角色，`visible_to` 仍按角色名记录，每个角色 Task
   用自己的 `viewer` 取记忆。
 
 ---

@@ -194,7 +194,7 @@
 
 `InformationPlan { source_ref, viewer, depth: hint/partial/confirm, content, required }`。
 
-`information_plan` 描述的是**导演意图**，实际进入角色上下文仍受 `visibility + known_by` 约束（A15 语义不变）。
+`information_plan` 描述的是**导演意图**，实际进入角色上下文仍受 `visible_to` 约束（A15 语义不变）。
 
 **节奏与余味**
 
@@ -220,7 +220,7 @@
 | `due_window` | `str` | 建议推进窗口，如“本章内” |
 | `status` | `open / advancing / settled / abandoned` | 状态 |
 
-伏笔自身状态仍由现有状态机维护（`apply_foreshadow_ops`），账本只做**调度视图**，不复制真相，也不绕过 `visibility`。
+伏笔自身状态仍由现有状态机维护（`apply_foreshadow_ops`），账本只做**调度视图**，不复制真相，也不绕过 `visible_to`。
 
 ### 5.4 计划与结果分离
 
@@ -335,7 +335,7 @@ LLM 频次：每章 1 次规划 + 每场最多 1 次结算，其余全为代码�
 
 ### 7.3 conceal 是唯一前置硬约束
 
-`conceal` 拼进导演提示词的禁令区，并延续 `visibility + known_by` 过滤：计划只能引用导演可见的信息，秘密对无权角色永不出现。
+`conceal` 拼进导演提示词的禁令区，并延续 `visible_to` 过滤：计划只能引用导演可见的信息，秘密对无权角色永不出现。
 
 ### 7.4 命运收束
 

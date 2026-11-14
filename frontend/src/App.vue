@@ -1249,9 +1249,9 @@ async function doCopyConfig() {
               </div>
               <div style="margin-top:2px;font-size:11px;color:var(--text-secondary);">
                 可见性:
-                <template v-if="fs.visibility === 'public'">公开</template>
-                <template v-else-if="fs.known_by?.length">
-                  仅 {{ fs.known_by.map(n => n === 'crowd' ? '路人' : n).join('、') }}
+                <template v-if="fs.visible_to?.includes('all')">公开</template>
+                <template v-else-if="fs.visible_to?.length">
+                  仅 {{ fs.visible_to.map(n => n === 'crowd' ? '路人' : n).join('、') }}
                 </template>
                 <template v-else>仅导演</template>
               </div>

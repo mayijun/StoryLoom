@@ -15,14 +15,35 @@ from pydantic import BaseModel, Field
 MemoryTier = Literal[
     "working", "short_term", "long_term", "key_events", "archive"
 ]
-MemoryVisibility = Literal["public", "restricted"]
 
 #: 全知视角：导演 / GM / 旁白可以看到所有受限记忆。
 OMNISCIENT_VIEWERS = frozenset({"gm", "director", "narrator"})
 #: 无名路人的虚拟主体；具名角色仍各自记录。
 CROWD_VIEWER = "crowd"
-#: known_by 中的公开哨兵。
+#: visible_to 中的公开哨兵。
 PUBLIC_VIEWERS = frozenset({"all", "public", "*"})
+
+
+def normalize_visible_to(
+    *,
+    visible_to: Optional[List[str]] = None,
+    default_public: bool = True,
+) -> List[str]:
+    """把可见范围规整成唯一的 ``visible_to`` 列表。
+
+    - ``["all"]`` 表示公开；
+    - ``[]`` 表示仅全知视角（gm / director / narrator）可见；
+    - ``crowd`` 与具名角色都是普通 viewer token；
+    - 全知 token 不进入存储，由判定函数隐含。
+    """
+    if visible_to is not None:
+        raw = [str(v).strip() for v in visible_to if str(v).strip()]
+    else:
+        raw = ["all"] if default_public else []
+
+    if PUBLIC_VIEWERS.intersection(raw):
+        return ["all"]
+    return sorted({v for v in raw if v not in OMNISCIENT_VIEWERS})
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "memory_config.default.yaml"
 
@@ -52,9 +73,8 @@ class MemoryItem(BaseModel):
     adoptions: int = 0
     last_hit_scene: int = 0
 
-    visibility: MemoryVisibility = "public"
-    #: restricted 时可见的角色名；可含 "crowd"（无名路人）
-    known_by: List[str] = Field(default_factory=list)
+    #: 可见范围：["all"] 公开；[] 仅全知视角；其余为具名角色 / crowd。
+    visible_to: List[str] = Field(default_factory=lambda: ["all"])
     tags: List[str] = Field(default_factory=list)
     source: str = "scene"
     active_foreshadow: bool = False
@@ -63,16 +83,14 @@ class MemoryItem(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
 
-    def visible_to(self, viewer: Optional[str]) -> bool:
-        if self.visibility == "public":
-            return True
-        if PUBLIC_VIEWERS.intersection(self.known_by):
+    def is_visible_to(self, viewer: Optional[str]) -> bool:
+        if PUBLIC_VIEWERS.intersection(self.visible_to):
             return True
         if viewer in OMNISCIENT_VIEWERS:
             return True
         if not viewer:
             return False
-        return viewer in self.known_by
+        return viewer in self.visible_to
 
     @classmethod
     def from_row(cls, row: Dict[str, Any]) -> "MemoryItem":
@@ -88,8 +106,7 @@ class MemoryItem(BaseModel):
             hits=row.get("hits", 0),
             adoptions=row.get("adoptions", 0),
             last_hit_scene=row.get("last_hit_scene", 0),
-            visibility=row.get("visibility", "public"),
-            known_by=list(row.get("known_by") or []),
+            visible_to=list(row.get("visible_to") or []),
             tags=list(row.get("tags") or []),
             source=row.get("source", "scene"),
             active_foreshadow=row.get("active_foreshadow", False),
@@ -136,6 +153,10 @@ class MemorySettings(BaseModel):
     top_k: int = 5
     # 压缩存储语言：vernacular 白话；classical 文言存储 + 白话展示
     compression_style: Literal["vernacular", "classical"] = "vernacular"
+    # 压缩方：dedicated 独立记忆模型；director 导演模型；character 角色侧模型
+    compression_provider: Literal[
+        "dedicated", "director", "character"
+    ] = "dedicated"
 
     @property
     def classical_compression(self) -> bool:
@@ -207,6 +228,7 @@ class MemorySettings(BaseModel):
             backend=retrieval.get("backend", "fts"),
             top_k=int(retrieval.get("top_k", 5)),
             compression_style=compression.get("style", "vernacular"),
+            compression_provider=compression.get("provider", "dedicated"),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -229,7 +251,10 @@ class MemorySettings(BaseModel):
                 "reheat_hits": self.reheat_hits,
             },
             "retrieval": {"backend": self.backend, "top_k": self.top_k},
-            "compression": {"style": self.compression_style},
+            "compression": {
+                "style": self.compression_style,
+                "provider": self.compression_provider,
+            },
         }
 
     @classmethod

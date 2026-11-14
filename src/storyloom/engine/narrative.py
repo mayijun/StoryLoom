@@ -34,7 +34,10 @@ from storyloom.crews.scene_crew.packet import (
     packet_to_result,
     parse_agent_packet,
 )
-from storyloom.memory.base import MEMORY_ITEM_MAX_CHARS
+from storyloom.memory.base import (
+    MEMORY_ITEM_MAX_CHARS,
+    PUBLIC_VIEWERS,
+)
 from storyloom.crews.scene_crew.context import PromptContextAssembler
 from storyloom.crews.scene_crew.offscreen import (
     drop_pending_side_stage,
@@ -208,8 +211,7 @@ def apply_foreshadow_ops(project: NovelProject, ops: List[dict]) -> None:
                 target_revelation=new_data.get("target_revelation", ""),
                 linked_characters=new_data.get("linked_characters", []),
                 max_dormant_scenes=new_data.get("max_dormant_scenes", 5),
-                visibility=new_data.get("visibility", "restricted"),
-                known_by=new_data.get("known_by", []),
+                visible_to=new_data.get("visible_to") or [],
             )
             project.foreshadowings.append(new_f)
             print(f"  🌱 新伏笔已种下: {new_f.description}")
@@ -1179,7 +1181,7 @@ class NarrativeEngine:
         )
         memory_fact_schema = (
             '  "memory_facts": [ { "tier": "short_term", "text": "…", '
-            '"display_text": "…", "known_by": [], "tags": [] } ]\n'
+            '"display_text": "…", "visible_to": [], "tags": [] } ]\n'
         )
         memory_fact_rule = (
             "memory_facts 用 text 存文言文，display_text 存同义白话文；"
@@ -1210,7 +1212,7 @@ class NarrativeEngine:
             "\n"
             f"{memory_fact_rule}\n"
             "foreshadow_ops 里每个操作的格式：\n"
-            "- plant: {\"action\":\"plant\",\"new_foreshadow\":{\"description\":\"...\",\"linked_characters\":[...],\"target_revelation\":\"...\",\"visibility\":\"restricted|public\",\"known_by\":[...]}}\n"
+            "- plant: {\"action\":\"plant\",\"new_foreshadow\":{\"description\":\"...\",\"linked_characters\":[...],\"target_revelation\":\"...\",\"visible_to\":[...]}}\n"
             "- reinforce/resolve/subvert: {\"action\":\"...\",\"foreshadow_id\":\"fs_xxx\"}\n"
             "没有伏笔要操作时 foreshadow_ops 填空数组。\n"
             "consistency 里自检人设/时间线/设定冲突；major 冲突把 severity 标记在 conflicts 里。"
@@ -1469,7 +1471,9 @@ class NarrativeEngine:
         """回溯插入伏笔前的结构检查（不调用 LLM）。"""
         issues: List[Dict[str, Any]] = []
         names = {c.name for c in project.characters}
-        for name in fs.known_by:
+        for name in fs.visible_to:
+            if name in PUBLIC_VIEWERS:
+                continue
             if name not in names and name != "crowd":
                 issues.append(
                     {
@@ -1554,7 +1558,7 @@ class NarrativeEngine:
                     )
                     or []
                 )
-                for name in fs.known_by:
+                for name in fs.visible_to:
                     if name in names and name not in present:
                         issues.append(
                             {
@@ -1589,8 +1593,7 @@ class NarrativeEngine:
                 "description": fs.description,
                 "target_revelation": fs.target_revelation,
                 "planted_in_scene": fs.planted_in_scene,
-                "visibility": fs.visibility,
-                "known_by": fs.known_by,
+                "visible_to": fs.visible_to,
                 "linked_characters": fs.linked_characters,
             },
             "project": {
@@ -1615,7 +1618,7 @@ class NarrativeEngine:
                     "target_revelation": f.target_revelation,
                     "status": f.status.value,
                     "planted_in_scene": f.planted_in_scene,
-                    "known_by": f.known_by,
+                    "visible_to": f.visible_to,
                 }
                 for f in project.foreshadowings
             ],
@@ -1923,7 +1926,7 @@ class NarrativeEngine:
                 emotion = f"，{c['emotion']}" if c.get("emotion") else ""
                 lines.append(f"- {c['name']}{emotion}")
 
-        # —— 事实：按 known_by 过滤后的条目 ——
+        # —— 事实：按 visible_to 过滤后的条目 ——
         if view["facts"]:
             lines.append("已知事实：")
             for f in view["facts"]:
@@ -2004,11 +2007,12 @@ def _apply_memory_facts(
                 text=str(fact.get("text") or "").strip(),
                 display_text=display or None,
                 scene_index=scene_index,
-                known_by=[
+                visible_to=[
                     str(v).strip()
-                    for v in (fact.get("known_by") or [])
+                    for v in (fact.get("visible_to") or [])
                     if str(v).strip()
-                ] or None,
+                ]
+                or None,
                 tags=[
                     str(v).strip()
                     for v in (fact.get("tags") or [])

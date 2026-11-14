@@ -59,7 +59,7 @@ class VectorBackend:
         pool = candidates or []
         scored: List[Tuple[MemoryItem, float]] = []
         for item in pool:
-            if not item.visible_to(viewer):
+            if not item.is_visible_to(viewer):
                 continue
             vec = self._vectors.get(item.id)
             if vec is None:

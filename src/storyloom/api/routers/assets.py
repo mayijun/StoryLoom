@@ -144,8 +144,7 @@ async def transition_foreshadowing(
         scenes_since_last_mention=fs.scenes_since_last_mention,
         max_dormant_scenes=fs.max_dormant_scenes,
         linked_characters=fs.linked_characters,
-        visibility=fs.visibility,
-        known_by=fs.known_by,
+        visible_to=fs.visible_to,
     )
 
 

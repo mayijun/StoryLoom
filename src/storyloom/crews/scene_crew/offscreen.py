@@ -311,8 +311,7 @@ def queue_side_stage(
             scene_index=scene_index,
             importance=0.05,
             tags=[PENDING_TAG, "offscreen", "side_stage"],
-            visibility="restricted",
-            known_by=[],
+            visible_to=[],
             source=PENDING_SOURCE,
         )
     except Exception:  # noqa: BLE001 - 登记失败时由调用方退回同步
@@ -394,7 +393,7 @@ def write_side_stage_memory(
             text=f"幕间经过：{long_text}",
             scene_index=scene_index,
             tags=["offscreen", "side_stage", "long_term"],
-            known_by=names,
+            visible_to=names,
         )
         # 关键事件：只在导演判定为不可逆转折时写入
         if event.key_event:
@@ -408,7 +407,7 @@ def write_side_stage_memory(
                     "side_stage",
                     "key_event",
                 ],
-                known_by=names,
+                visible_to=names,
             )
         # 世界书：持久事实逐条落库，供流程与关系检索
         for index, entry in enumerate(event.worldbook_entries):
@@ -423,7 +422,7 @@ def write_side_stage_memory(
                 text=f"侧台事实：{entry}",
                 scene_index=scene_index,
                 tags=["offscreen", "side_stage", "worldbook"],
-                known_by=names,
+                visible_to=names,
             )
         # 各自视角：只写本人，保留误解与隐瞒
         for name, text in event.perspectives.items():
@@ -445,7 +444,7 @@ def write_side_stage_memory(
                     "worldbook",
                     "perspective",
                 ],
-                known_by=[name],
+                visible_to=[name],
             )
         # 延迟消息：先补进收件人记忆，正文需要时再送达
         for message in event.messages:
@@ -471,7 +470,7 @@ def write_side_stage_memory(
                 ),
                 scene_index=scene_index,
                 tags=["offscreen", "side_stage", "worldbook", "message"],
-                known_by=[recipient],
+                visible_to=[recipient],
             )
     except Exception:  # noqa: BLE001 - 记忆写入失败不阻断唤醒
         pass
@@ -484,7 +483,7 @@ def _add_condensed(
     text: str,
     scene_index: int,
     tags: List[str],
-    known_by: List[str],
+    visible_to: List[str],
 ) -> None:
     """写入导演已压缩好的长期记忆 / 关键事件。"""
     writer = getattr(memory, "add_condensed", None)
@@ -495,7 +494,7 @@ def _add_condensed(
         text=text,
         scene_index=scene_index,
         tags=tags,
-        known_by=known_by,
+        visible_to=visible_to,
         source="side_stage",
     )
 
@@ -507,7 +506,7 @@ def _add_worldbook_item(
     text: str,
     scene_index: int,
     tags: List[str],
-    known_by: List[str],
+    visible_to: List[str],
 ) -> None:
     """写入世界书（archive 检索层）。
 
@@ -522,7 +521,7 @@ def _add_worldbook_item(
         text=text,
         scene_index=scene_index,
         tags=tags,
-        known_by=known_by,
+        visible_to=visible_to,
         source="side_stage",
     )
 

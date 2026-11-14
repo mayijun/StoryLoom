@@ -47,8 +47,7 @@ def test_foreshadowing_defaults():
     assert f.reinforcement_count == 0
     assert f.scenes_since_last_mention == 0
     assert f.foreshadow_id.startswith("fs_")
-    assert f.visibility == "restricted"
-    assert f.known_by == []
+    assert f.visible_to == []
 
 
 def test_project_lookup_and_defaults():

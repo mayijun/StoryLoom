@@ -364,7 +364,7 @@ G17 请求体示例：
 | A11 短期压缩 / 重启恢复 | 追加生成第 7 个短场景（超过短期上限 6）后重启，检查 `counts` 中短期已压缩、长期/常驻已恢复 |
 | A13 历史场景回填 | §3.5 |
 | A14 检索后端切换 | §4.4 |
-| A15 角色 secrets | `GET .../memory` 中 secret 条目为 `restricted + known_by=[角色]`；默认 `prompt_block` 不含 secret，按角色取 prompt 时只有本人可见 |
+| A15 角色 secrets | `GET .../memory` 中 secret 条目为 `visible_to=[角色]`；默认 `prompt_block` 不含 secret，按角色取 prompt 时只有本人可见 |
 
 ---
 

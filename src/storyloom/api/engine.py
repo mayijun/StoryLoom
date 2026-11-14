@@ -71,6 +71,11 @@ from storyloom.memory import (
     MemoryIndexer,
     MemorySettings,
 )
+from storyloom.memory.base import (
+    CROWD_VIEWER,
+    OMNISCIENT_VIEWERS,
+    PUBLIC_VIEWERS,
+)
 from storyloom.engine import NarrativeEngine, TurnBoot, TurnResult
 from storyloom.extensions.host import ExtensionRegistry
 from storyloom.crews.scene_crew.packet import compose_scene
@@ -191,8 +196,7 @@ class StoryEngine:
                 scenes_since_last_mention=f["scenes_since_last_mention"],
                 linked_characters=list(f.get("linked_characters", [])),
                 linked_surprise_ids=list(f.get("linked_surprise_ids", [])),
-                visibility=f.get("visibility", "restricted"),
-                known_by=list(f.get("known_by", [])),
+                visible_to=list(f.get("visible_to") or []),
             )
             for f in repo.list_foreshadowings(meta["project_id"])
         ]
@@ -301,7 +305,7 @@ class StoryEngine:
         self, project_id, char: CharacterAsset, secrets: str = ""
     ):
         project = self._get_or_load_project(project_id)
-        # 角色秘密的唯一存储是 restricted 记忆条目
+        # 角色秘密的唯一存储是 visible_to 受限的记忆条目
         get_repository().upsert_character(
             project_id,
             name=char.name,
@@ -329,8 +333,7 @@ class StoryEngine:
                     f"secret:{char.name}",
                     secrets,
                     tags=["secret", "asset"],
-                    visibility="restricted",
-                    known_by=[char.name],
+                    visible_to=[char.name],
                     source="asset",
                 )
             else:
@@ -397,8 +400,7 @@ class StoryEngine:
             scenes_since_last_mention=fs.scenes_since_last_mention,
             linked_characters=fs.linked_characters,
             linked_surprise_ids=fs.linked_surprise_ids,
-            visibility=fs.visibility,
-            known_by=fs.known_by,
+            visible_to=fs.visible_to,
         )
         project.foreshadowings = [
             f for f in project.foreshadowings
@@ -475,8 +477,7 @@ class StoryEngine:
             scenes_since_last_mention=fs.scenes_since_last_mention,
             linked_characters=fs.linked_characters,
             linked_surprise_ids=fs.linked_surprise_ids,
-            visibility=fs.visibility,
-            known_by=fs.known_by,
+            visible_to=fs.visible_to,
         )
 
     def delete_foreshadowing(self, project_id, foreshadow_id: str) -> bool:
@@ -617,8 +618,7 @@ class StoryEngine:
                 scenes_since_last_mention=f.scenes_since_last_mention,
                 max_dormant_scenes=f.max_dormant_scenes,
                 linked_characters=f.linked_characters,
-                visibility=f.visibility,
-                known_by=f.known_by,
+                visible_to=f.visible_to,
             )
             for f in project.foreshadowings
         ]
@@ -672,7 +672,9 @@ class StoryEngine:
             repo=repo,
             settings=self._memory_settings_for(project_id),
             backend=backend,
-            compress_fn=self._memory_compress_fn,
+            compress_fn=lambda prompt, scope: self._memory_compress_fn(
+                project_id, prompt, scope
+            ),
         )
         indexer = MemoryIndexer(memory)
         scenes = repo.list_scenes(project_id)
@@ -744,26 +746,51 @@ class StoryEngine:
         except Exception:
             return ""
 
-    def _memory_llm(self):
-        """记忆压缩使用的低温模型，避免压缩时脑补。"""
-        if self.router is None:
-            return None
-        try:
-            llm, _ = self.router.get_llm_for_role("memory")
-            return llm
-        except Exception:
-            return None
+    def _compression_role(
+        self, project_id: str, scope: Optional[List[str]]
+    ) -> str:
+        """按配置与可见范围选择压缩方模型角色。"""
+        provider = self._memory_settings_for(
+            project_id
+        ).compression_provider
+        if provider == "dedicated":
+            return "memory"
+        if provider == "director":
+            return "director"
 
-    def _memory_compress_fn(self, prompt: str) -> str:
-        """分层记忆压缩：让 LLM 按目标层规则动态压缩。
+        names = [
+            v
+            for v in (scope or [])
+            if v not in PUBLIC_VIEWERS
+            and v not in OMNISCIENT_VIEWERS
+            and v != CROWD_VIEWER
+        ]
+        if len(names) != 1:
+            # 公开 / 多人 / 路人视角没有唯一角色，交给群像或导演。
+            return "ensemble" if names else "director"
+        project = self._get_or_load_project(project_id)
+        character = next(
+            (c for c in project.characters if c.name == names[0]), None
+        )
+        if character is not None and character.importance_tier == "primary":
+            return "protagonist"
+        return "ensemble"
+
+    def _memory_compress_fn(
+        self, project_id: str, prompt: str, scope: Optional[List[str]] = None
+    ) -> str:
+        """分层记忆压缩：按项目配置选择独立 / 导演 / 角色侧模型。
 
         失败或没有可用模型时返回空串，由 LayeredMemory 走确定性选择性兜底。
         """
-        llm = self._memory_llm()
-        if llm is None:
+        if self.router is None:
             return ""
         try:
-            return str(llm.call([{"role": "user", "content": prompt}])).strip()
+            role = self._compression_role(project_id, scope)
+            llm, _ = self.router.get_llm_for_role(role)
+            return str(
+                llm.call([{"role": "user", "content": prompt}])
+            ).strip()
         except Exception:
             return ""
 
@@ -1034,7 +1061,9 @@ class StoryEngine:
                 record.memory_snapshot,
                 repo=get_repository(),
                 settings=self._memory_settings_for(project_id),
-                compress_fn=self._memory_compress_fn,
+                compress_fn=lambda prompt, scope: self._memory_compress_fn(
+                    project_id, prompt, scope
+                ),
             )
         # 同步「最近一回合」，保证读档后立即存档能保存读档时点的场景与选项
         scene = StageScene(

@@ -32,9 +32,11 @@ class FakeCompressor:
 
     def __init__(self) -> None:
         self.prompts: list[str] = []
+        self.scopes: list[list[str]] = []
 
-    def __call__(self, prompt: str) -> str:
+    def __call__(self, prompt: str, scope: list[str]) -> str:
         self.prompts.append(prompt)
+        self.scopes.append(list(scope))
         history_calls = sum("「关键事件」" in item for item in self.prompts)
         long_calls = sum("「长期剧情记忆」" in item for item in self.prompts)
         if "「关键事件」" in prompt:
@@ -184,8 +186,7 @@ def test_key_events_overflow_cools_coldest_without_losing_information(
             importance=0.95,
             scene_index=0,
             last_hit_scene=0,
-            visibility="restricted",
-            known_by=["林凡"],
+            visible_to=["林凡"],
         ),
         MemoryItem(
             id="key_events:cold",
@@ -233,7 +234,7 @@ def test_key_events_overflow_cools_coldest_without_losing_information(
     assert {"demoted", "key_event_overflow"}.issubset(cold.tags)
     for field in (
         "id", "text", "summary", "importance", "scene_index",
-        "hits", "adoptions", "last_hit_scene", "visibility", "known_by",
+        "hits", "adoptions", "last_hit_scene", "visible_to",
     ):
         assert getattr(cold, field) == getattr(original_cold, field)
     assert fake.prompts == []
@@ -512,8 +513,8 @@ def test_demotion_rules_fall_back_to_global_thresholds():
         assert rule.miss_scenes == 3
 
 
-def test_compression_across_scopes_intersects_known_by(repo):
-    """跨可见范围压缩时取交集，避免把不同知情者的记忆混成公开信息。"""
+def test_compression_never_merges_different_visible_to(repo):
+    """不同可见范围不得合并；无同组同伴时最旧单条无损降级。"""
     settings = MemorySettings(
         tiers=[
             TierSpec(
@@ -534,17 +535,16 @@ def test_compression_across_scopes_intersects_known_by(repo):
         2, "李四知道的第二条线索。", present_characters=["李四"]
     )
 
-    compressed = [
-        item
-        for item in memory._items_in("long_term")
+    assert [
+        item for item in memory._items_in("long_term")
         if item.source == "compressed"
-    ]
-    assert compressed
-    assert compressed[0].visibility == "restricted"
-    assert compressed[0].known_by == []
-    assert not compressed[0].visible_to("张三")
-    assert not compressed[0].visible_to("李四")
-    assert compressed[0].visible_to("director")
+    ] == []
+    demoted = memory.items["scene:1"]
+    assert demoted.tier == "archive"
+    assert demoted.source == "demoted"
+    assert demoted.visible_to == ["张三"]
+    assert {"demoted", "no_peer"}.issubset(demoted.tags)
+    assert "第一条线索" in demoted.text
 
 
 def test_easiest_threshold_demotes_long_and_key_events_to_world_book(repo):
@@ -646,7 +646,7 @@ class DualCompressor:
         self.prompts: list[str] = []
         self.with_display = with_display
 
-    def __call__(self, prompt: str) -> str:
+    def __call__(self, prompt: str, scope: list[str]) -> str:
         self.prompts.append(prompt)
         if not self.with_display:
             return "【文言存储】\n林凡入青云，败敌，主线易。"
@@ -787,3 +787,87 @@ def test_agent_memory_fact_without_display_falls_back_to_prose(repo):
     assert items
     assert all("林凡入青云" not in item.summary for item in items)
     assert "林凡入青云" not in memory.prompt_block(viewer="director")
+
+
+def test_compression_preserves_same_scope(repo):
+    """同 visible_to 的条目可以压缩，产物保持完全相同的范围。"""
+    settings = MemorySettings(
+        tiers=[
+            TierSpec(
+                name="short_term", max_items=1,
+                compress_batch=2, compress_into="long_term",
+            ),
+        ],
+        key_events_max_items=20,
+    )
+    memory = LayeredMemory(
+        "p_same_scope", repo=repo, settings=settings,
+        compress_fn=FakeCompressor(),
+    )
+    memory.add_scene(1, "张三看到黑衣人。", present_characters=["张三"])
+    memory.add_scene(2, "张三追进小巷。", present_characters=["张三"])
+
+    long_term = memory._items_in("long_term")
+    assert len(long_term) == 1
+    assert long_term[0].visible_to == ["张三"]
+    assert "scene:1" not in memory.items
+    assert "scene:2" not in memory.items
+
+
+def test_empty_compress_output_falls_back_without_losing_sources(repo):
+    """压缩方返回空串时走确定性兜底，来源仍被合并而不是丢失。"""
+    settings = MemorySettings(
+        tiers=[
+            TierSpec(
+                name="short_term", max_items=1,
+                compress_batch=2, compress_into="long_term",
+            ),
+        ],
+        key_events_max_items=20,
+    )
+    memory = LayeredMemory(
+        "p_empty_compress", repo=repo, settings=settings,
+        compress_fn=lambda prompt, scope: "",
+    )
+    memory.add_scene(1, "第一条线索。", present_characters=["张三"])
+    memory.add_scene(2, "第二条线索。", present_characters=["张三"])
+
+    long_term = memory._items_in("long_term")
+    assert len(long_term) == 1
+    assert long_term[0].text
+    assert long_term[0].visible_to == ["张三"]
+    assert "scene:1" not in memory.items
+    assert "scene:2" not in memory.items
+
+
+def test_all_pinned_overflow_does_not_loop(repo):
+    """全部受保护时允许暂时超容量，且 consolidate 必须能退出。"""
+    settings = MemorySettings(
+        tiers=[
+            TierSpec(
+                name="short_term", max_items=0,
+                compress_batch=2, compress_into="long_term",
+            ),
+        ],
+        key_events_max_items=20,
+    )
+    memory = LayeredMemory(
+        "p_all_pinned", repo=repo, settings=settings,
+        compress_fn=FakeCompressor(),
+    )
+    for index in (1, 2):
+        memory._put(
+            MemoryItem(
+                id=f"pinned:{index}",
+                project_id="p_all_pinned",
+                tier="short_term",
+                text=f"受保护记忆 {index}",
+                pinned=True,
+                scene_index=index,
+                visible_to=["张三" if index == 1 else "李四"],
+            )
+        )
+
+    assert memory.consolidate() == []
+    assert len(memory._items_in("short_term")) == 2
+    assert all(item.pinned for item in memory._items_in("short_term"))

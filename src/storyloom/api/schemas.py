@@ -158,8 +158,7 @@ class ForeshadowingView(BaseModel):
     scenes_since_last_mention: int
     max_dormant_scenes: int
     linked_characters: List[str]
-    visibility: Literal["public", "restricted"] = "restricted"
-    known_by: List[str] = Field(default_factory=list)
+    visible_to: List[str] = Field(default_factory=list)
 
 
 class ForeshadowTransition(BaseModel):
@@ -409,6 +408,7 @@ class MemoryPatchRequest(BaseModel):
     key_events: Optional[Dict[str, Any]] = None
     demotion: Optional[Dict[str, Any]] = None
     retrieval: Optional[Dict[str, Any]] = None
+    compression: Optional[Dict[str, Any]] = None
 
 
 class ExtensionResolveRequest(BaseModel):

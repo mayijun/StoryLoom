@@ -12,6 +12,7 @@ from storyloom.api.schemas import (
     TurnRequest,
 )
 from storyloom.db import get_repository, reset_engines, reset_repositories
+from storyloom.memory import MemorySettings
 from storyloom.memory.checkpoint import SaveService
 
 
@@ -43,7 +44,10 @@ def apis(tmp_path, monkeypatch):
     # 游戏回合的叙述润色改为假模型返回，避免真实 LLM 调用导致超时
     monkeypatch.setattr(engine, "_game_prose_fn", _fake_prose)
     # 记忆压缩同样走确定性兜底
-    monkeypatch.setattr(engine, "_memory_compress_fn", lambda prompt: "")
+    monkeypatch.setattr(
+        engine, "_memory_compress_fn",
+        lambda project_id, prompt, scope=None: "",
+    )
     # Crew 叙事增强层整体关闭（一致性 / 意外 / 伏笔 / 导演 / 润色）
     # NarrativeEngine._kickoff 优先走 crew.run_agent，直接 patch SceneCrew 即可
     monkeypatch.setattr(SceneCrew, "run_agent", _fake_crew_run)
@@ -285,3 +289,51 @@ def test_turn_quota_exceeded(apis):
         )
     )
     assert result["status"] == "quota_exceeded"
+
+
+def test_compression_provider_selects_role(apis, monkeypatch):
+    from storyloom.api.engine import StoryEngine, engine
+
+    def _settings(provider):
+        monkeypatch.setattr(
+            engine,
+            "_memory_settings_for",
+            lambda project_id: MemorySettings(
+                compression_provider=provider
+            ),
+        )
+
+    _settings("dedicated")
+    assert engine._compression_role("m0api", ["玩家"]) == "memory"
+    _settings("director")
+    assert engine._compression_role("m0api", ["玩家"]) == "director"
+    _settings("character")
+    assert engine._compression_role("m0api", ["玩家"]) == "protagonist"
+    assert engine._compression_role("m0api", ["侍卫长"]) == "ensemble"
+    assert engine._compression_role("m0api", ["玩家", "侍卫长"]) == "ensemble"
+    assert engine._compression_role("m0api", ["all"]) == "director"
+    assert engine._compression_role("m0api", []) == "director"
+
+    roles = []
+
+    class StubLLM:
+        def call(self, messages):
+            return "压缩结果"
+
+    class StubRouter:
+        def get_llm_for_role(self, role):
+            roles.append(role)
+            return StubLLM(), None
+
+    monkeypatch.setattr(engine, "router", StubRouter())
+    monkeypatch.setattr(
+        engine, "_compression_role", lambda project_id, scope: "protagonist"
+    )
+    # apis fixture 把实例方法替换成了空串；这里直接测原始类方法。
+    assert (
+        StoryEngine._memory_compress_fn(
+            engine, "m0api", "prompt", ["玩家"]
+        )
+        == "压缩结果"
+    )
+    assert roles == ["protagonist"]

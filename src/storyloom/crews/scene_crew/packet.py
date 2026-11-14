@@ -68,7 +68,7 @@ class MemoryFact(BaseModel):
     text: str = ""
     # text 的白话展示版；文言记忆存储模式下必填，否则可省略
     display_text: str = ""
-    known_by: List[str] = Field(default_factory=list)
+    visible_to: List[str] = Field(default_factory=list)
     tags: List[str] = Field(default_factory=list)
 
     def is_valid(self) -> bool:
@@ -121,7 +121,7 @@ PACKET_CONTRACT = f"""\
       "tier": "short_term",
       "text": "本回合场景摘要，≤ {MEMORY_ITEM_MAX_CHARS} 字。已经是压缩好的最终形态。",
       "display_text": "text 的白话展示版；启用文言记忆存储时必填，否则可省略。",
-      "known_by": ["知晓该事实的角色名，可省略"],
+      "visible_to": ["可见该事实的角色名；省略或空表示公开"],
       "tags": ["scene | foreshadow | ...，可省略"]
     }}
   ]
@@ -186,7 +186,7 @@ PACKET_CONTRACT = f"""\
 #   □ 没有环境描写、没有情绪渲染、没有"仿佛""似乎"
 #   □ 关键事实不丢：人物、地点、行动、结果、承诺、关键物品
 #   □ tier 只写 short_term（long_term/key_events/archive 是 memory 系统后台负责的）
-#   □ known_by 只在信息有保密范围时填（"只有林和王福知道"）
+#   □ visible_to 只在信息有保密范围时填（"只有林和王福知道"）
 #   □ tags 让记忆系统在压缩/降级时保留正确分类
 
 # ─────────────────────────────────────────────────────
@@ -207,7 +207,7 @@ PACKET_CONTRACT = f"""\
     {{
       "tier": "short_term",
       "text": "本回合场景摘要，≤ {MEMORY_ITEM_MAX_CHARS} 字。已经是压缩好的版本。",
-      "known_by": ["知晓该事实的角色名，可省略"],
+      "visible_to": ["可见该事实的角色名；省略或空表示公开"],
       "tags": ["scene | foreshadow | ...，可省略"]
     }}
   ]
@@ -304,9 +304,9 @@ def parse_agent_packet(raw: str) -> AgentPacket:
             tier=str(item.get("tier") or "short_term"),
             text=str(item.get("text") or "").strip(),
             display_text=str(item.get("display_text") or "").strip(),
-            known_by=[
+            visible_to=[
                 str(v).strip()
-                for v in _as_list(item.get("known_by"))
+                for v in _as_list(item.get("visible_to"))
                 if str(v).strip()
             ],
             tags=[

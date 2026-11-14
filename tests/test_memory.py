@@ -56,7 +56,7 @@ def test_add_condensed_writes_requested_tier_with_scope(repo):
         "long_term",
         "林晚确认老周替人转移货物，码头线索坐实。",
         scene_index=3,
-        known_by=["林晚", "老周"],
+        visible_to=["林晚", "老周"],
         tags=["side_stage"],
         source="side_stage",
     )
@@ -64,13 +64,12 @@ def test_add_condensed_writes_requested_tier_with_scope(repo):
         "key_events",
         "老周向走私船转移关键木箱，被林晚目击。",
         scene_index=3,
-        known_by=["林晚", "老周"],
+        visible_to=["林晚", "老周"],
     )
 
     assert long_item.tier == "long_term"
     assert key_item.tier == "key_events"
-    assert long_item.visibility == "restricted"
-    assert long_item.known_by == ["林晚", "老周"]
+    assert long_item.visible_to == ["林晚", "老周"]
     assert long_item.last_hit_scene == 3
 
     assert "林晚确认老周" in memory.prompt_block(viewer="林晚")
@@ -88,8 +87,7 @@ def test_pending_side_stage_is_hidden_from_world_book_retrieval(repo):
         "side_stage_pending:asp_1",
         '{"focus": "林晚", "reason": "确认码头目击者"}',
         tags=["side_stage_pending"],
-        visibility="restricted",
-        known_by=[],
+        visible_to=[],
         source="side_stage_pending",
     )
 
@@ -121,7 +119,7 @@ def test_backfill_refreshes_assets_without_overwriting_layered_scenes(repo):
     memory.add_archive_item("char:旧名", "旧名：已离场。动机：无")
     memory.add_archive_item(
         "secret:林夏", "林夏的秘密：旧秘密",
-        visibility="restricted", known_by=["林夏"],
+        visible_to=["林夏"],
     )
     memory.add_archive_item("loc:旧港", "旧港：已废弃")
     memory.add_archive_item("lore:keep", "不应被清理的设定")
@@ -172,8 +170,7 @@ def test_world_book_matching_respects_viewer_across_backends(repo):
         memory.add_archive_item(
             "secret:林夏",
             secret_text,
-            visibility="restricted",
-            known_by=["林夏"],
+            visible_to=["林夏"],
             source="asset",
         )
         assert "前朝公主" in memory.retrieval_block(
@@ -185,24 +182,24 @@ def test_world_book_matching_respects_viewer_across_backends(repo):
         )
 
 
-def test_sync_foreshadowings_preserves_later_known_by(repo):
+def test_sync_foreshadowings_preserves_later_visible_to(repo):
     memory = LayeredMemory("p_fs_union", repo=repo)
     fs = Foreshadowing(
         description="旧航海图",
         planted_in_scene="scene_1",
         target_revelation="航海图指向密道入口",
-        known_by=["林夏"],
+        visible_to=["林夏"],
     )
     memory.sync_foreshadowings([fs])
     truth_id = f"foreshadow_truth:{fs.foreshadow_id}"
-    assert memory.items[truth_id].known_by == ["林夏"]
+    assert memory.items[truth_id].visible_to == ["林夏"]
 
-    # 后续阿泽得知真相：资产侧 known_by 为空也不应覆盖记忆侧
-    fs.known_by = []
-    memory.items[truth_id].known_by = ["林夏", "阿泽"]
+    # 后续阿泽得知真相：资产侧 visible_to 为空也不应覆盖记忆侧
+    fs.visible_to = []
+    memory.items[truth_id].visible_to = ["林夏", "阿泽"]
     memory._put(memory.items[truth_id])
     memory.sync_foreshadowings([fs])
-    assert set(memory.items[truth_id].known_by) == {"林夏", "阿泽"}
+    assert set(memory.items[truth_id].visible_to) == {"林夏", "阿泽"}
 
     memory.sync_foreshadowings([])
     assert truth_id not in memory.items

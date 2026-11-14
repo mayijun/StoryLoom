@@ -75,7 +75,7 @@
 | M0-11 | `memory/state.py` | `WorldState.switch_mode` / `apply_override` / `rollback_override` · 模式切换 checkpoint · `FactOverride` 审计与回滚 | ✅ `memory/state.py` |
 | M0-12 | `crews/scene_crew/outline.py` | 起承转合节拍 · 张力目标 · 信息预算（OutlineAgent 职能） | ✅ `crews/scene_crew/outline.py`（Crew 生成参数） |
 | M0-13 | `crews/scene_crew/crew.py` | NPC 自主：记忆 → 反思 → 计划 → 提案（EnsembleAgent 输出 `npc_actions`） | ✅ `SceneCrew.npc_actions` |
-| M0-14 | `memory/` 分层记忆 v2 | 核心层 `working → short_term → long_term → key_events`（三层策略可配）· 短期超阈值压缩进长期 · 长期低重要性且与活跃伏笔无关时降级到检索库 · 命中后可回温 · `fts` 默认 / `vector` / `hybrid` 同级可选 · 历史场景与资产回填 · 重启恢复 · `visibility + known_by` 可见性过滤（角色秘密 / 伏笔描述与真相 / 世界书召回） | ✅ `memory/` 包 + `src/storyloom/config/memory_config.default.yaml`（默认种子）+ 每项目 `memory_configs` |
+| M0-14 | `memory/` 分层记忆 v2 | 核心层 `working → short_term → long_term → key_events`（三层策略可配）· 短期超阈值只在同一 `visible_to` 组内压缩进长期 · 长期低重要性且与活跃伏笔无关时降级到检索库 · 命中后可回温 · `fts` 默认 / `vector` / `hybrid` 同级可选 · 历史场景与资产回填 · 重启恢复 · 单一 `visible_to` 可见性过滤（角色秘密 / 伏笔描述与真相 / 世界书召回）· `compression.provider` 可选独立压缩者 / 导演 / 角色模型 | ✅ `memory/` 包 + `src/storyloom/config/memory_config.default.yaml`（默认种子）+ 每项目 `memory_configs` |
 
 > M0-13 的 NPC 自主消费 M0-14 的分层记忆；M0-14 可与 W1/W2 并行，但必须在 NPC 自主之前完成。
 
@@ -89,8 +89,8 @@
 | L3 `key_events` | 身份、世界规则、活跃伏笔、核心设定 | 是（pinned） | 是 |
 | L4 `archive` | 环境、世界观、角色背景、已解决伏笔、被降级旧记忆 | 按需检索 | 是 |
 
-- 短期超过 `max_items`（默认 6）→ 取最旧 batch 压缩为长期；
-- 长期超过 `max_items`（默认 8）→ 压缩为 key_events / arc；
+- 短期超过 `max_items`（默认 6）→ 只在**完全相同 `visible_to`** 的组内取最旧 batch 压缩为长期；层容量仍是全局上限，不跨组取交集；
+- 长期超过 `max_items`（默认 8）→ 同样按 `visible_to` 分区压缩为 key_events / arc；某组不足两条且层仍超容量时，把最旧的非 pinned / 非活跃伏笔单条无损降级到 L4，绝不跨组合并；
 - 关键事件溢出 → 按近期相关性与使用热度选择冷事件，完整迁入 L4，不合并或丢弃；
 - 长期重要性低于 0.35、连续 10 场景未命中、无活跃伏笔、非 pinned → 降级到 L4；
 - 普通降级记忆被检索并采用 2 次 → 回温为 `long_term`；溢出的关键事件回温为 `key_events`；
@@ -119,7 +119,7 @@
 
 - TFC 五档动态计算（固定 `L2`，接口预留）；
 - Fate / Casting / 好感度 / 路线图；
-- Belief 欺骗与误解（只做 `known_by` 过滤）；
+- Belief 欺骗与误解（只做 `visible_to` 过滤）；
 - 审核策略执行（只留 `ModerationGate` 接口，默认 passthrough）；
 - 图片 / 音频渲染（只解析 `asset` manifest）；
 - Mod v2（Python 包 + `capabilities`，只预留接口）；
@@ -149,7 +149,7 @@
 | A12 | 低重要性长期记忆，连续 10 场景未命中且无活跃伏笔 | 自动降级到检索库；再次检索命中 2 次后回温 | ✅ |
 | A13 | 旧项目已有历史场景 | 索引自动回填；中文专名（如「航海图」）可检索到对应场景 | ✅ |
 | A14 | 切换 `fts` / `vector` / `hybrid` | 后端可切换；无 embedding 时 `vector` / `hybrid` 自动降级，生成不中断 | ✅ |
-| A15 | 角色秘密 / 伏笔真相 | `secret:<角色>` 与 `foreshadow_truth:<id>` 按 `visibility + known_by` 过滤；无权角色 prompt 不出现 | ✅ |
+| A15 | 角色秘密 / 伏笔真相 | `secret:<角色>` 与 `foreshadow_truth:<id>` 按单一 `visible_to` 过滤；无权角色 prompt 不出现 | ✅ |
 
 ### 2.6 性能指标（已压测）
 
@@ -191,9 +191,9 @@
 | 循环 | `NarrativeEngine.play_turn` + 上限保护 + async + 超时；旧 `TurnLoop` 为兼容 shim | `engine/narrative.py` | P0 ✅ |
 | 扩展 | 统一 manifest + `ExtensionHost` + 四类扩展加载 · per-instance | `extensions/manifest.py` / `host.py` | P0 ✅ |
 | 存档 | `CheckpointStore`（文件快照 + 回放） | `memory/checkpoint.py` | P0 ✅ |
-| 信息隔离 | `view(agent_id)` 按 `known_by` 过滤 | `memory/state.py` | P0 ✅ |
+| 信息隔离 | `view(agent_id)` 按 `visible_to` 过滤 | `memory/state.py` | P0 ✅ |
 | 记忆生命周期 | 分层核心记忆 / 压缩 / 降级回温 / 三后端检索 | `memory/` | P0 ✅ |
-| 记忆隐私 | `visibility` + `include_private_for` | `memory/base.py` / `indexer.py` | P0 ✅ |
+| 记忆隐私 | 单一 `visible_to`（`["all"]` 公开 / `[]` 仅全知 / 具名角色与 `crowd`） | `memory/base.py` / `indexer.py` | P0 ✅ |
 | API | `/game/...` 端点 + `/extensions/resolve` + `/memory`，全部 async | `api/routers/` | P0 ✅ |
 | 前端 | 游戏模式：对话框 / 选项 / backlog / 存档 | `frontend/src/components/GamePanel.vue` | P0 ✅ |
 | 双模式策略 | `SceneCrew.adjudicate(mode=)` / 模式切换 checkpoint / `FactOverride` 回滚 | `memory/state.py` | P0 ✅ |

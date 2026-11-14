@@ -191,8 +191,7 @@ def test_apply_template_writes_all_assets(repo):
         if item["id"].endswith("::secret:玩家")
     )
     assert "荒古圣体" in secret["text"]
-    assert secret["visibility"] == "restricted"
-    assert secret["known_by"] == ["玩家"]
+    assert secret["visible_to"] == ["玩家"]
 
     locations = repo.list_locations("pid_assets")
     assert [loc["name"] for loc in locations] == [

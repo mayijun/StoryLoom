@@ -101,7 +101,7 @@ class LexicalBackend:
             return []
         terms = query_terms(q)
         for item in items:
-            if not item.visible_to(viewer):
+            if not item.is_visible_to(viewer):
                 continue
             body = " ".join(
                 [item.text, item.summary, " ".join(item.tags)]

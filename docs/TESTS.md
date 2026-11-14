@@ -1,28 +1,29 @@
 # 后端测试用例清单
 
 > 运行：`uv run pytest -q`（根目录）。
-> 当前基线：**16 个文件 / 207 个用例全部通过**。
+> 当前基线：**17 个文件 / 234 个用例全部通过**。
 > 进度口径见 [MVP.md](MVP.md)；性能基线见 `scripts/bench_m0.py`。
 
 | 文件 | 用例数 | 覆盖范围 |
 |---|---|---|
 | `test_project_persistence.py` | 24 | 项目落库、迁移、外键、级联 |
 | `test_templates.py` | 31 | 模板注册 / 应用 / 引擎 / 路由 |
-| `test_scene_asset_persistence.py` | 18 | 场景与资产持久化 |
+| `test_scene_asset_persistence.py` | 17 | 场景与资产持久化 |
 | `test_author_p1.py` | 16 | P1：伏笔流转 / 导出 / 指标 / 配置迁移 |
 | `test_templates_integration.py` | 14 | 模板端到端集成 |
 | `test_chapter_structure.py` | 13 | 章节结构与场景归属 |
 | `test_m0.py` | 27 | M0 验收 A1–A15 + 运行时保护 |
-| `test_memory_compression.py` | 20 | 记忆分层压缩 / 无损溢出 / 文言双轨 / 降级回温 / 按层阈值 |
-| `test_m0_api.py` | 13 | M0 API（game / memory / extensions） |
+| `test_memory_compression.py` | 23 | 记忆分层压缩 / 按 `visible_to` 分区 / 无损溢出 / 文言双轨 / 降级回温 / 按层阈值 |
+| `test_m0_api.py` | 14 | M0 API（game / memory / extensions） |
+| `test_character_wake.py` | 15 | 角色唤醒与在场校验 |
 | `test_db_config.py` | 7 | Agent/Task 配置种子与迁移 |
 | `test_flow.py` | 6 | 作者模式 Flow 与伏笔操作 |
 | `test_scene_edit_regenerate.py` | 6 | 场景编辑与单场景重跑 |
 | `test_api_tasks.py` | 5 | Task 配置 API |
 | `test_api_agents.py` | 4 | Agent 配置 API |
 | `test_assets.py` | 4 | 资产模型默认值 |
-| `test_memory.py` | 6 | 双模式统一记忆 / 世界书召回 / 数据库回填 |
-| **合计** | **207** | |
+| `test_memory.py` | 8 | 双模式统一记忆 / 世界书召回 / 数据库回填 |
+| **合计** | **234** | |
 
 ---
 
@@ -89,7 +90,7 @@
 | `test_project_lookup_and_defaults` | 项目查找与默认值 |
 | `test_surprise_type_values` | 意外类型枚举 |
 
-### 1.4 场景 / 资产持久化 — `test_scene_asset_persistence.py`（18）
+### 1.4 场景 / 资产持久化 — `test_scene_asset_persistence.py`（17）
 
 | 用例 | 验证点 |
 |---|---|
@@ -110,7 +111,6 @@
 | `test_upsert_foreshadowing_persists` | 伏笔落库 |
 | `test_foreshadowing_cascades_with_project` | 伏笔随项目级联 |
 | `test_engine_rebuilds_assets_from_db` | 重启后资产从 DB 恢复 |
-| `test_legacy_character_secrets_migrate_to_memory` | 旧 `characters.secrets` 迁成 restricted 记忆条目并删除旧列 |
 
 ### 1.5 章节结构 — `test_chapter_structure.py`（13）
 
@@ -152,16 +152,18 @@
 | `test_apply_resolve_closes_foreshadow` | 回收关闭伏笔 |
 | `test_advance_scene_counters_increments` | 场景计数推进 |
 
-### 1.8 分层记忆 — `test_memory.py`（6）
+### 1.8 分层记忆 — `test_memory.py`（8）
 
 | 用例 | 验证点 |
 |---|---|
 | `test_layered_memory_separates_core_prompt_and_world_book` | 核心层 `prompt_block` 与世界书 `retrieval_block` 分离 |
 | `test_director_flow_retrieves_world_book_from_layered_memory` | 导演流程按需召回世界书 |
+| `test_add_condensed_writes_requested_tier_with_scope` | 导演指定的层与 `visible_to` 写入后重启仍保持 |
+| `test_pending_side_stage_is_hidden_from_world_book_retrieval` | `visible_to=[]` 的待处理分支不进入任何检索 |
 | `test_backfill_refreshes_assets_without_overwriting_layered_scenes` | 历史回填刷新资产，不覆盖已有分层场景；秘密条目不被误清 |
 | `test_scene_memory_scopes_by_witnesses_and_crowd` | 场景按在场角色隔离，crowd 只对路人视角可见 |
-| `test_world_book_matching_respects_viewer_across_backends` | fts / hybrid / vector 世界书召回都按 viewer 过滤 restricted 条目 |
-| `test_sync_foreshadowings_preserves_later_known_by` | 伏笔描述/真相双投影；后续新增知情者不被资产侧覆盖 |
+| `test_world_book_matching_respects_viewer_across_backends` | fts / hybrid / vector 世界书召回都按 viewer 过滤受限条目 |
+| `test_sync_foreshadowings_preserves_later_visible_to` | 伏笔描述/真相双投影；后续新增知情者不被资产侧覆盖 |
 
 ---
 
@@ -200,7 +202,7 @@
 |---|---|---|
 | `test_a1_llm_packet_can_express_guard_intercept` | A1 | 导演 Agent JSON 可表达护卫拦截：位置 / 情绪 / 时间更新 |
 | `test_a2_llm_packet_can_reject_teleport_with_available_locations` | A2 | JSON 裁决拒绝非法移动 + `available` 给出可去地点 |
-| `test_a3_fact_visibility_filters_by_known_by` | A3 | `Fact` 按 `known_by` 过滤视图 |
+| `test_a3_fact_visibility_filters_by_visible_to` | A3 | `Fact` 按 `visible_to` 过滤视图 |
 | `test_a3b_world_context_fog_hides_unseeable` | A3 | 世界简报不泄露不可见信息 |
 | `test_a3b_world_context_gm_sees_everything` | A3 | 裁决视角可读取完整世界简报 |
 | `test_a3c_multi_viewer_fact_projection_and_sync` | A3 | 多知情者保持 restricted，新增知情者原地更新 |
@@ -216,7 +218,7 @@
 | `test_a14_backends_switch_and_degrade` | A14 | fts / vector / hybrid 切换与降级 |
 | `test_a15_secrets_visibility` | A15 | secrets 只对本人与全知视角可见 |
 | `test_character_secret_stored_only_in_memory` | A15 | 角色秘密唯一存储在 `secret:<角色>` 记忆条目 |
-| `test_foreshadow_truth_visible_to_director_and_known_character` | A15 | 伏笔描述/真相按 `known_by` 过滤，默认仅导演可见 |
+| `test_foreshadow_truth_visible_to_director_and_known_character` | A15 | 伏笔描述/真相按 `visible_to` 过滤，默认仅导演可见 |
 | `test_foreshadow_retroactive_conflict_blocks` | A15 | 回溯补录伏笔：未知角色/历史冲突阻断 |
 | `test_freeform_text_enters_narrative_pipeline_without_action_parser` | M0-3 | 自由文本无需动作分类即可进入叙事流水线 |
 | `test_agent_suggestions_render_as_free_text_choices` | M0-3 | Agent JSON 的 `choices` 渲染为快捷输入 |
@@ -226,7 +228,7 @@
 | `test_quota_rejects_when_no_turns_left` | §2.3-5 | 请求级配额超限拒绝 |
 | `test_director_mode_turn_runs_without_touching_game_entry` | A6 | 导演模式不回归游戏入口 |
 
-### 3.2 API — `test_m0_api.py`（13）
+### 3.2 API — `test_m0_api.py`（14）
 
 | 用例 | 验证点 |
 |---|---|
@@ -243,8 +245,9 @@
 | `test_turn_applies_overrides_before_narrative` | 叙事前应用 `FactOverride` |
 | `test_turn_timeout_returns_timeout_status` | 回合超时返回 timeout 状态 |
 | `test_turn_quota_exceeded` | 回合配额耗尽拒绝 |
+| `test_compression_provider_selects_role` | `compression.provider` 按 `visible_to` 选择独立压缩者 / 导演 / 角色模型 |
 
-### 3.3 记忆分层压缩与配置 — `test_memory_compression.py`（20）
+### 3.3 记忆分层压缩与配置 — `test_memory_compression.py`（23）
 
 | 用例 | 验证点 |
 |---|---|
@@ -266,7 +269,10 @@
 | `test_demotion_rules_fall_back_to_global_thresholds` | 分层未配置时回退全局阈值 |
 | `test_easiest_threshold_demotes_long_and_key_events_to_world_book` | 最宽松阈值下长期与关键事件均可降级 |
 | `test_demotion_skips_pinned_and_active_foreshadowing` | pinned 与活跃伏笔不降级 |
-| `test_compression_across_scopes_intersects_known_by` | 跨可见范围压缩取交集，不泄漏给单个知情者 |
+| `test_compression_never_merges_different_visible_to` | 不同可见范围各自独立压缩，绝不跨组合并或取交集 |
+| `test_compression_preserves_same_scope` | 同一 `visible_to` 组压缩后完整保留该可见范围 |
+| `test_empty_compress_output_falls_back_without_losing_sources` | 压缩模型返回空时确定性兜底，不丢源记忆 |
+| `test_all_pinned_overflow_does_not_loop` | 无可压缩同组批次且全部受保护时退出循环，不降级 pinned |
 
 ---
 

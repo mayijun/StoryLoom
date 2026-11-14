@@ -48,7 +48,10 @@ def client(tmp_path, monkeypatch):
     # 游戏回合的叙述润色改为假模型返回，避免真实 LLM 调用导致超时
     monkeypatch.setattr(engine, "_game_prose_fn", _fake_prose)
     # 记忆压缩同样走确定性兜底
-    monkeypatch.setattr(engine, "_memory_compress_fn", lambda prompt: "")
+    monkeypatch.setattr(
+        engine, "_memory_compress_fn",
+        lambda project_id, prompt, scope=None: "",
+    )
     # NarrativeEngine._kickoff 优先走 crew.run_agent，直接 patch SceneCrew 即可
     monkeypatch.setattr(SceneCrew, "run_agent", _fake_crew_run)
     engine._project_runtime.clear()

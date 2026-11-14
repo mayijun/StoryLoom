@@ -17,7 +17,10 @@ from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 
 from pydantic import BaseModel, Field
 
-from storyloom.memory.base import OMNISCIENT_VIEWERS, PUBLIC_VIEWERS
+from storyloom.memory.base import (
+    OMNISCIENT_VIEWERS,
+    PUBLIC_VIEWERS,
+)
 from storyloom.memory.models import NovelProject
 
 
@@ -40,9 +43,19 @@ class Fact(BaseModel):
     predicate: str
     object: str
     truth: Literal["true", "false", "unknown"] = "true"
-    known_by: Set[str] = Field(default_factory=set)
+    #: 可见范围：空集仅全知视角；{"all"} 公开；其余为具名角色 / crowd。
+    visible_to: Set[str] = Field(default_factory=set)
     asserted_by: Optional[str] = None
     source_event: str = ""
+
+    def is_visible_to(self, viewer: Optional[str]) -> bool:
+        if PUBLIC_VIEWERS.intersection(self.visible_to):
+            return True
+        if viewer in OMNISCIENT_VIEWERS:
+            return True
+        if not viewer:
+            return False
+        return viewer in self.visible_to
 
 
 class CharState(BaseModel):
@@ -55,7 +68,7 @@ class CharState(BaseModel):
     status: Literal["active", "absent", "dead", "imprisoned"] = "active"
     inventory: List[str] = Field(default_factory=list)
     goals: List[str] = Field(default_factory=list)
-    # 角色相信的事实 id（M0 只做 known_by 过滤，belief 全量留到 M2）
+    # 角色相信的事实 id（M0 只做 visible_to 过滤，belief 全量留到 M2）
     beliefs: List[str] = Field(default_factory=list)
 
 
@@ -191,7 +204,7 @@ class WorldState(BaseModel):
                 subject=char.name,
                 predicate="身份",
                 object=char.motivation or "未知",
-                known_by={char.name, "gm"},
+                visible_to={char.name},
                 source_event="boot",
             )
             facts[f.id] = f
@@ -235,16 +248,16 @@ class WorldState(BaseModel):
     def view(self, agent_id: str) -> Dict[str, Any]:
         """角色视图：只返回该角色能知道的事实与在场信息。
 
-        - 事实按 known_by 过滤（gm / director 全知）；
+        - 事实按 visible_to 过滤（gm / director / narrator 全知）；
         - 只返回当前地点与其出口，不泄露未探索地图；
         - 不含其他角色的背包、秘密与信念。
         """
-        omniscient = agent_id in ("gm", "director", "narrator")
+        omniscient = agent_id in OMNISCIENT_VIEWERS
         actor = self.characters.get(agent_id)
         visible_facts = [
             f.model_dump(mode="json")
             for f in self.facts.values()
-            if omniscient or agent_id in f.known_by
+            if f.is_visible_to(agent_id)
         ]
 
         if omniscient:
@@ -307,13 +320,11 @@ class WorldState(BaseModel):
         for fact in self.facts.values():
             if fact.truth == "unknown":
                 continue
-            visibility, known_by = self._fact_scope(fact)
             items.append({
                 "id": f"ws:fact:{fact.id}",
                 "tier": "long_term",
                 "text": f"{fact.subject}{fact.predicate}{fact.object}",
-                "visibility": visibility,
-                "known_by": known_by,
+                "visible_to": sorted(fact.visible_to),
                 "importance": 0.7,
                 "tags": ["world_state", "fact"],
             })
@@ -323,7 +334,7 @@ class WorldState(BaseModel):
                 "id": f"ws:rel:{key}",
                 "tier": "long_term",
                 "text": f"关系 {key} = {value}",
-                "visibility": "public",
+                "visible_to": ["all"],
                 "importance": 0.6,
                 "tags": ["world_state", "relationship"],
             })
@@ -340,7 +351,7 @@ class WorldState(BaseModel):
                 "id": f"ws:promise:{promise.promise_id}",
                 "tier": "long_term",
                 "text": f"未兑现承诺：{promise.description}{deadline}",
-                "visibility": "public",
+                "visible_to": ["all"],
                 "importance": 0.8,
                 "tags": ["world_state", "promise"],
             })
@@ -355,26 +366,12 @@ class WorldState(BaseModel):
                 "id": f"ws:event:{event.event_id}",
                 "tier": "key_events",
                 "text": event.summary,
-                "visibility": "public",
+                "visible_to": ["all"],
                 "importance": 0.85,
                 "tags": ["world_state", "event"],
             })
 
         return items
-
-    def _fact_scope(self, fact: "Fact") -> Tuple[str, List[str]]:
-        """把 Fact.known_by 投影成 (visibility, known_by)。
-
-        只有显式公开哨兵才是 public；两个知情者不等于公开。
-        """
-        known = {
-            name
-            for name in fact.known_by
-            if name not in OMNISCIENT_VIEWERS
-        }
-        if PUBLIC_VIEWERS.intersection(known):
-            return "public", []
-        return "restricted", sorted(known)
 
     # ---------------- 合并 ----------------
 

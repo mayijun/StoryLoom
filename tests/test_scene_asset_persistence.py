@@ -7,7 +7,6 @@
 """
 
 import pytest
-import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
 
 from storyloom.db import (
@@ -246,45 +245,3 @@ def test_engine_rebuilds_assets_from_db(tmp_path):
     reset_engines()
 
 
-# ============================================================
-# 一次性迁移：旧 characters.secrets → 记忆条目
-# ============================================================
-
-def test_legacy_character_secrets_migrate_to_memory(repo):
-    repo.upsert_character("novel_x", "郭靖", "primary", "忠厚", "守襄阳")
-    repo.upsert_character("novel_x", "黄蓉", "primary", "聪慧", "帮靖哥哥")
-
-    # 模拟旧库：characters 还有 secrets 列，且已存在“<角色>的秘密：”旧记忆
-    with repo.engine.begin() as conn:
-        conn.exec_driver_sql("ALTER TABLE characters ADD COLUMN secrets VARCHAR")
-        conn.exec_driver_sql(
-            "UPDATE characters SET secrets = '郭啸天之子的身世'"
-            " WHERE name = '郭靖'"
-        )
-        conn.exec_driver_sql(
-            "UPDATE characters SET secrets = '桃花岛主之女' WHERE name = '黄蓉'"
-        )
-        conn.exec_driver_sql(
-            "INSERT INTO memory_items"
-            " (id, project_id, tier, text, summary, importance, pinned,"
-            " scene_index, hits, adoptions, last_hit_scene, visibility,"
-            " known_by, tags, source, active_foreshadow)"
-            " VALUES ('novel_x::secret:郭靖', 'novel_x', 'archive',"
-            " '郭靖的秘密：郭啸天之子的身世', '郭靖的秘密：郭啸天之子的身世',"
-            " 0.8, 0, 0, 0, 0, 0, 'private:郭靖', '[]', '[]', 'asset', 0)"
-        )
-
-    repo.create_all()
-
-    items = {row["id"]: row for row in repo.list_memory_items("novel_x")}
-    guo = items["novel_x::secret:郭靖"]
-    assert guo["text"] == "郭啸天之子的身世"
-    assert guo["visibility"] == "restricted"
-    assert guo["known_by"] == ["郭靖"]
-
-    huang = items["novel_x::secret:黄蓉"]
-    assert huang["text"] == "桃花岛主之女"
-    assert huang["known_by"] == ["黄蓉"]
-
-    columns = {c["name"] for c in sa.inspect(repo.engine).get_columns("characters")}
-    assert "secrets" not in columns

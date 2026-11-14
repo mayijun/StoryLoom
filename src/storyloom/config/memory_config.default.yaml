@@ -49,3 +49,6 @@ compression:
   # vernacular: 白话存储；classical: 文言存储 + 白话展示。
   # 文言模式只提高存储密度，玩家/导演界面与 Agent prompt 始终读白话版。
   style: vernacular
+  # 压缩方：dedicated 独立记忆模型；director 导演模型；
+  # character 角色侧模型（按可见范围选择 protagonist / ensemble）。
+  provider: dedicated

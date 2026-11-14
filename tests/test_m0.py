@@ -156,12 +156,12 @@ def test_a2_llm_packet_can_reject_teleport_with_available_locations(world):
 # ---------------- A3：信息隔离 ----------------
 
 
-def test_a3_fact_visibility_filters_by_known_by(world):
+def test_a3_fact_visibility_filters_by_visible_to(world):
     fact = Fact(
         subject="玩家",
         predicate="经历",
         object="曾在北境见过国王",
-        known_by={"玩家", "gm"},
+        visible_to={"玩家", "gm"},
     )
     world.facts[fact.id] = fact
 
@@ -180,23 +180,22 @@ def test_a3c_multi_viewer_fact_projection_and_sync(repo, world):
         subject="玩家",
         predicate="经历",
         object="曾在北境见过国王",
-        known_by={"玩家", "国王", "gm"},
+        visible_to={"玩家", "国王", "gm"},
     )
     world.facts[fact.id] = fact
 
     memory = LayeredMemory("p_multi_viewer", repo=repo)
     memory.sync_world_state(world, current_scene=1)
     item = memory.items[f"ws:fact:{fact.id}"]
-    assert item.visibility == "restricted"
-    assert item.known_by == ["国王", "玩家"]
+    assert item.visible_to == ["国王", "玩家"]
     assert "经历" in memory.prompt_block(viewer="玩家")
     assert "经历" in memory.prompt_block(viewer="国王")
     assert "经历" not in memory.prompt_block(viewer="侍卫长")
 
-    fact.known_by.add("侍卫长")
+    fact.visible_to.add("侍卫长")
     memory.sync_world_state(world, current_scene=2)
     item = memory.items[f"ws:fact:{fact.id}"]
-    assert "侍卫长" in item.known_by
+    assert "侍卫长" in item.visible_to
     assert "经历" in memory.prompt_block(viewer="侍卫长")
 
 
@@ -216,7 +215,7 @@ def test_a3b_world_context_fog_hides_unseeable(project, world):
         subject="国王",
         predicate="秘密",
         object="准备逃亡",
-        known_by={"国王", "gm"},
+        visible_to={"国王", "gm"},
     )
     world.facts[hidden.id] = hidden
 
@@ -247,7 +246,7 @@ def test_a3b_world_context_gm_sees_everything(project, world):
         subject="国王",
         predicate="秘密",
         object="准备逃亡",
-        known_by={"国王", "gm"},
+        visible_to={"国王", "gm"},
     )
     world.facts[hidden.id] = hidden
 
@@ -460,16 +459,14 @@ def test_a15_secrets_visibility(repo, project):
         "secret:玩家",
         "你的真实身份是王室的私生子。",
         tags=["secret", "asset"],
-        visibility="restricted",
-        known_by=["玩家"],
+        visible_to=["玩家"],
         source="asset",
     )
     memory.add_archive_item(
         "secret:国王",
         "父亲失踪与你有关。",
         tags=["secret", "asset"],
-        visibility="restricted",
-        known_by=["国王"],
+        visible_to=["国王"],
         source="asset",
     )
     assert memory.retrieve("私生子", viewer="国王") == []
@@ -499,8 +496,7 @@ def test_character_secret_stored_only_in_memory(repo):
         item for item in items if item["id"].endswith("::secret:林夏")
     )
     assert secret["text"] == "她是前朝公主。"
-    assert secret["visibility"] == "restricted"
-    assert secret["known_by"] == ["林夏"]
+    assert secret["visible_to"] == ["林夏"]
 
     repo.upsert_character(
         "p_secret", "林夏", "primary", "冷静", "寻亲", secrets=""
@@ -517,7 +513,7 @@ def test_foreshadow_truth_visible_to_director_and_known_character(repo):
         description="旅店墙上的旧航海图",
         planted_in_scene="scene_1",
         target_revelation="航海图指向王室密道",
-        known_by=["林夏"],
+        visible_to=["林夏"],
     )
     memory.sync_foreshadowings([fs])
 
@@ -540,7 +536,7 @@ def test_foreshadow_retroactive_conflict_blocks(project):
         description="宫廷密令",
         planted_in_scene="scene_1",
         target_revelation="国王早已知道真相",
-        known_by=["不存在的角色"],
+        visible_to=["不存在的角色"],
     )
 
     issues = asyncio.run(engine.check_foreshadow_conflicts(project, fs))
@@ -562,7 +558,7 @@ def test_foreshadow_retroactive_conflict_blocks(project):
 
     engine.crew = _StubDirectorCrew()
     engine._kickoff = _fake_kickoff
-    fs.known_by = []
+    fs.visible_to = []
     issues = asyncio.run(engine.check_foreshadow_conflicts(project, fs))
     assert any(
         issue["severity"] == "major"

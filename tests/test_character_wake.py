@@ -283,7 +283,7 @@ def test_woken_character_first_supplements_dormant_experience():
     long_item, key_item = memory.condensed
     assert long_item["tier"] == "long_term"
     assert "码头线索坐实" in long_item["text"]
-    assert long_item["known_by"] == ["林晚", "老周"]
+    assert long_item["visible_to"] == ["林晚", "老周"]
     assert long_item["source"] == "side_stage"
     assert key_item["tier"] == "key_events"
     assert "走私船转移关键木箱" in key_item["text"]
@@ -300,7 +300,7 @@ def test_woken_character_first_supplements_dormant_experience():
     ) = memory.archive
 
     assert world_relation["item_id"].endswith(":world:0")
-    assert world_relation["known_by"] == ["林晚", "老周"]
+    assert world_relation["visible_to"] == ["林晚", "老周"]
     assert world_relation["source"] == "side_stage"
     assert "worldbook" in world_relation["tags"]
     assert "互相知道对方在码头夜间活动" in world_relation["text"]
@@ -309,14 +309,14 @@ def test_woken_character_first_supplements_dormant_experience():
     assert "替不明雇主转移" in world_box["text"]
 
     assert world_lin["item_id"].endswith(":p:林晚")
-    assert world_lin["known_by"] == ["林晚"]
+    assert world_lin["visible_to"] == ["林晚"]
     assert "码头蹲守" in world_lin["text"]
 
-    assert world_zhou["known_by"] == ["老周"]
+    assert world_zhou["visible_to"] == ["老周"]
     assert "被林晚远远看见" in world_zhou["text"]
 
     assert world_msg["item_id"].startswith("offscreen_msg:")
-    assert world_msg["known_by"] == ["玩家"]
+    assert world_msg["visible_to"] == ["玩家"]
     assert "别去码头" in world_msg["text"]
 
     block = registry.transcript_block()
@@ -479,8 +479,7 @@ def test_game_mode_wake_registers_pending_instead_of_calling_llm():
     assert len(memory.archive) == 1
     pending = memory.archive[0]
     assert pending["source"] == "side_stage_pending"
-    assert pending["visibility"] == "restricted"
-    assert pending["known_by"] == []
+    assert pending["visible_to"] == []
     assert "side_stage_pending" in pending["tags"]
 
     payload = parse_pending_request(pending["text"])
@@ -539,7 +538,7 @@ def test_drain_side_stage_lands_memory_worldbook_and_echo():
     assert sum(
         1 for item in memory.archive if item["source"] == "side_stage"
     ) == 5
-    assert memory.archive[-1]["known_by"] == ["玩家"]
+    assert memory.archive[-1]["visible_to"] == ["玩家"]
     assert [item["tier"] for item in memory.condensed] == [
         "long_term",
         "key_events",

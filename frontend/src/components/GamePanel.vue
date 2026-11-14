@@ -111,10 +111,11 @@ function itemSourceLabel(item: any) {
   return item.source || '条目'
 }
 
-function visibilityLabel(item: any) {
-  if (item.visibility === 'public') return '公开'
-  const names: string[] = (item.known_by || []).map((name: string) =>
-    name === 'crowd' ? '路人' : name
+function visibleToLabel(item: any) {
+  const scope: string[] = item.visible_to || []
+  if (scope.includes('all')) return '公开'
+  const names = scope.map((name: string) =>
+    name === 'crowd' ? '路人' : name,
   )
   return names.length ? `仅 ${names.join('、')}` : '仅导演'
 }
@@ -654,7 +655,7 @@ const statusBar = () => {
                 <div class="tier-text">{{ item.summary || item.text }}</div>
                 <div class="tier-tags">
                   <span>{{ itemSourceLabel(item) }}</span>
-                  <span>{{ visibilityLabel(item) }}</span>
+                  <span>{{ visibleToLabel(item) }}</span>
                   <span>重要度 {{ Number(item.importance ?? 0).toFixed(2) }}</span>
                   <span v-if="item.pinned">📌 固定</span>
                 </div>
@@ -673,7 +674,7 @@ const statusBar = () => {
                 <div class="tier-text">{{ item.tags?.includes('classical_storage') ? (item.summary || item.text) : item.text }}</div>
                 <div class="tier-tags">
                   <span>{{ itemSourceLabel(item) }}</span>
-                  <span>{{ visibilityLabel(item) }}</span>
+                  <span>{{ visibleToLabel(item) }}</span>
                   <span v-if="item.scene_index">场景 {{ item.scene_index }}</span>
                   <span v-if="item.pinned">📌 固定</span>
                 </div>

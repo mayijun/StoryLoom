@@ -54,7 +54,7 @@ class MemoryIndexer:
                 scene_index=index,
                 importance=score_importance(text, brief=brief),
                 tags=["scene", "backfill"],
-                known_by=present or None,
+                visible_to=present or None,
                 source="backfill",
             )
             if len(self.memory.items) > before:

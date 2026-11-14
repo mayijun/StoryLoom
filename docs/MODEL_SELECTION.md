@@ -127,7 +127,7 @@ M0 已落地叙事节拍、记忆压缩、Mod v1，以及由 LLM 完成的世界
 | CastingAdjudicator | 配额、重名、必要性检查 | 部分 | 规则优先，LLM 只做必要性判断 |
 | FateManager | 压力计算、倒数器、收束触发 | **否** | 确定性算法 + seed |
 | EnsembleAgent | NPC 记忆 → 反思 → 计划 → 提案 | 是 | 按 `importance_tier`：关键角色用中档模型，群演合并一次调用 |
-| MemoryCompressor | 批量压缩短期记忆 → 长期摘要 | 是 | DeepSeek-Flash / Ollama（低温、JSON） |
+| MemoryCompressor | 按 `visible_to` 分区批量压缩同组短期记忆 → 长期摘要 | 是 | 默认 `dedicated` 用 `memory` 角色；也可配 `director` 或 `character` |
 | FactOverrideParser | 导演改写事实 → 结构化 `FactOverride` | 是 | DeepSeek V4 Pro（结构化 JSON） |
 | Mod v1 | YAML 规则与钩子注册 | **否** | — |
 
